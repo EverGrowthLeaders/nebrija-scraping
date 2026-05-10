@@ -352,3 +352,169 @@ export async function updateBusinessFromCallReport({ providerCallId, outcome, qu
 function stableBusinessKey(place) {
   return [place.name, place.address, place.latitude, place.longitude].filter(Boolean).join("|");
 }
+
+export async function listExtractionJobs({ limit = 50, offset = 0 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const result = await query(
+    `SELECT j.*,
+            (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
+            (SELECT COUNT(*)::int FROM businesses b
+              WHERE b.niche = j.niche AND b.city = j.city AND b.created_at >= j.created_at) AS leads_count
+       FROM extraction_jobs j
+      ORDER BY j.created_at DESC
+      LIMIT $1 OFFSET $2`,
+    [safeLimit, safeOffset]
+  );
+  const totalRow = await query(`SELECT COUNT(*)::int AS total FROM extraction_jobs`);
+  return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
+}
+
+export async function findExtractionJobDetail(id) {
+  const job = await query(`SELECT * FROM extraction_jobs WHERE id = $1`, [id]);
+  if (!job.rows[0]) return null;
+  const stats = await query(
+    `SELECT
+        (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = $1) AS candidates_count,
+        (SELECT COUNT(*)::int FROM businesses b
+          WHERE b.niche = $2 AND b.city = $3 AND b.created_at >= $4) AS leads_count`,
+    [id, job.rows[0].niche, job.rows[0].city, job.rows[0].created_at]
+  );
+  return { ...job.rows[0], ...stats.rows[0] };
+}
+
+export async function listBusinesses({ limit = 50, offset = 0, status, niche, city, search } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const where = [];
+  const params = [];
+  if (status) {
+    params.push(status);
+    where.push(`status = $${params.length}::lead_status`);
+  }
+  if (niche) {
+    params.push(niche);
+    where.push(`niche = $${params.length}`);
+  }
+  if (city) {
+    params.push(city);
+    where.push(`city = $${params.length}`);
+  }
+  if (search) {
+    params.push(`%${search}%`);
+    where.push(`(name ILIKE $${params.length} OR website ILIKE $${params.length} OR address ILIKE $${params.length})`);
+  }
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  params.push(safeLimit);
+  params.push(safeOffset);
+  const result = await query(
+    `SELECT id, name, niche, city, website, phone_e164, status, score, has_online_booking, has_chatbot,
+            created_at, updated_at
+       FROM businesses
+       ${whereClause}
+      ORDER BY score DESC, updated_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  const totalRow = await query(
+    `SELECT COUNT(*)::int AS total FROM businesses ${whereClause}`,
+    params.slice(0, params.length - 2)
+  );
+  return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
+}
+
+export async function findBusinessDetail(id) {
+  const business = await query(`SELECT * FROM businesses WHERE id = $1`, [id]);
+  if (!business.rows[0]) return null;
+  const [contacts, calls, crawlerRuns] = await Promise.all([
+    query(
+      `SELECT id, kind, value, confidence, source_url, created_at
+         FROM business_contacts WHERE business_id = $1
+         ORDER BY confidence DESC, created_at DESC`,
+      [id]
+    ),
+    query(
+      `SELECT id, status, outcome, qualified, started_at, ended_at, duration_seconds, summary, recording_url, created_at
+         FROM voice_calls WHERE business_id = $1
+         ORDER BY created_at DESC LIMIT 25`,
+      [id]
+    ),
+    query(
+      `SELECT id, provider, status, root_url, pages_succeeded, pages_failed, started_at, finished_at, created_at
+         FROM crawler_runs WHERE business_id = $1
+         ORDER BY created_at DESC LIMIT 10`,
+      [id]
+    )
+  ]);
+  return {
+    business: business.rows[0],
+    contacts: contacts.rows,
+    calls: calls.rows,
+    crawlerRuns: crawlerRuns.rows
+  };
+}
+
+export async function listVoiceCalls({ limit = 50, offset = 0, outcome, qualified } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const where = [];
+  const params = [];
+  if (outcome) {
+    params.push(outcome);
+    where.push(`vc.outcome = $${params.length}`);
+  }
+  if (qualified === "true" || qualified === true) {
+    where.push(`vc.qualified = TRUE`);
+  } else if (qualified === "false" || qualified === false) {
+    where.push(`vc.qualified = FALSE`);
+  }
+  const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
+  params.push(safeLimit);
+  params.push(safeOffset);
+  const result = await query(
+    `SELECT vc.id, vc.provider_call_id, vc.status, vc.outcome, vc.qualified, vc.duration_seconds, vc.cost,
+            vc.started_at, vc.ended_at, vc.summary, vc.recording_url, vc.created_at,
+            b.id AS business_id, b.name AS business_name, b.city AS business_city, b.niche AS business_niche
+       FROM voice_calls vc
+       LEFT JOIN businesses b ON b.id = vc.business_id
+       ${whereClause}
+      ORDER BY vc.created_at DESC
+      LIMIT $${params.length - 1} OFFSET $${params.length}`,
+    params
+  );
+  const totalRow = await query(
+    `SELECT COUNT(*)::int AS total FROM voice_calls vc ${whereClause}`,
+    params.slice(0, params.length - 2)
+  );
+  return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
+}
+
+export async function findVoiceCallDetail(id) {
+  const result = await query(
+    `SELECT vc.*, b.id AS business_id, b.name AS business_name, b.city AS business_city,
+            b.niche AS business_niche, b.website AS business_website
+       FROM voice_calls vc
+       LEFT JOIN businesses b ON b.id = vc.business_id
+      WHERE vc.id = $1`,
+    [id]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getDashboardMetrics() {
+  const result = await query(`
+    SELECT
+      (SELECT COUNT(*)::int FROM businesses) AS total_leads,
+      (SELECT COUNT(*)::int FROM businesses WHERE status = 'qualified') AS qualified_leads,
+      (SELECT COUNT(*)::int FROM businesses WHERE status = 'called') AS called_leads,
+      (SELECT COUNT(*)::int FROM businesses WHERE created_at > NOW() - INTERVAL '24 hours') AS leads_last_24h,
+      (SELECT COUNT(*)::int FROM extraction_jobs WHERE status IN ('queued', 'running')) AS active_campaigns,
+      (SELECT COUNT(*)::int FROM extraction_jobs) AS total_campaigns,
+      (SELECT COUNT(*)::int FROM voice_calls) AS total_calls,
+      (SELECT COUNT(*)::int FROM voice_calls WHERE qualified = TRUE) AS qualified_calls,
+      (SELECT COUNT(*)::int FROM voice_calls WHERE created_at > NOW() - INTERVAL '24 hours') AS calls_last_24h,
+      (SELECT COALESCE(SUM(cost), 0)::numeric FROM voice_calls) AS total_cost,
+      (SELECT COALESCE(SUM(duration_seconds), 0)::int FROM voice_calls) AS total_duration_seconds
+  `);
+  return result.rows[0];
+}

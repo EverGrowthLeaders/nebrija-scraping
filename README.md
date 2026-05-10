@@ -81,6 +81,7 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 
 - `DATABASE_URL`
 - `REDIS_URL`
+- `TEST_JOBS_API_KEYS`
 - `FIRECRAWL_BASE_URL`
 - `FIRECRAWL_API_KEY`
 - `GOOGLE_MAPS_API_KEY`
@@ -88,6 +89,26 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `NEBRIJA_ASSISTANT_ID`
 - `NEBRIJA_PHONE_NUMBER_ID`
 - `NEBRIJA_WEBHOOK_SECRET`
+
+## API interna de test
+
+Los endpoints `/api/test-jobs/*` requieren `x-api-key` o `Authorization: Bearer`.
+
+Health interno:
+
+```bash
+curl http://localhost:3100/api/test-jobs/health \
+  -H "x-api-key: $TEST_JOBS_API_KEY"
+```
+
+Lanzar crawl real con Firecrawl:
+
+```bash
+curl -X POST http://localhost:3100/api/test-jobs \
+  -H "content-type: application/json" \
+  -H "x-api-key: $TEST_JOBS_API_KEY" \
+  -d '{"type":"business_crawl","website":"https://example.com"}'
+```
 
 ## Tests
 

@@ -5,6 +5,7 @@ import { extractEmails, extractLeadSignals, selectBusinessUrls } from "../packag
 import { calculateLeadScore, nextOutreachChannel } from "../packages/core/src/scoring.mjs";
 import { parseEndOfCallReport } from "../packages/core/src/vapiReport.mjs";
 import { normalizeMapResponse, normalizeScrapeResponse, normalizeSearchResponse } from "../packages/core/src/firecrawl.mjs";
+import { isAuthorizedApiKey, parseApiKeys } from "../packages/core/src/auth.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -100,4 +101,11 @@ test("normalizes Firecrawl response variants", () => {
   ]);
   assert.equal(normalizeScrapeResponse({ data: { markdown: "# Hola", links: ["https://x.test"] } }).links[0].url, "https://x.test");
   assert.equal(normalizeSearchResponse({ data: [{ url: "https://result.test" }] })[0].url, "https://result.test");
+});
+
+test("authorizes test job API keys from bearer or x-api-key headers", () => {
+  const keys = parseApiKeys("alpha,\nbravo");
+  assert.equal(isAuthorizedApiKey({ "x-api-key": "alpha" }, keys), true);
+  assert.equal(isAuthorizedApiKey({ authorization: "Bearer bravo" }, keys), true);
+  assert.equal(isAuthorizedApiKey({ authorization: "Bearer charlie" }, keys), false);
 });

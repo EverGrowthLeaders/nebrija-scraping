@@ -1,3 +1,5 @@
+import { parseApiKeys } from "./auth.mjs";
+
 const intFromEnv = (name, fallback) => {
   const raw = process.env[name];
   if (raw == null || raw === "") return fallback;
@@ -28,6 +30,9 @@ export const config = {
     prefix: process.env.QUEUE_PREFIX || "lexington",
     concurrency: intFromEnv("WORKER_CONCURRENCY", 4),
     autoDispatchVoice: boolFromEnv("AUTO_DISPATCH_VOICE", false)
+  },
+  testJobs: {
+    apiKeys: parseApiKeys(process.env.TEST_JOBS_API_KEYS || process.env.INTERNAL_API_KEYS)
   },
   crawler: {
     provider: process.env.CRAWLER_PROVIDER || "firecrawl",
