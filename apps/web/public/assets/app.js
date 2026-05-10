@@ -848,7 +848,6 @@ function openCampaignModal() {
       <div class="field"><label>Origen</label>
         <select class="select" name="sourceType">
           <option value="google_places_api">google_places_api</option>
-          <option value="open_web">open_web</option>
         </select>
       </div>
       <div class="field"><label>Límite solicitado</label><input class="input" name="requestedLimit" type="number" min="1" placeholder="1000" /></div>
