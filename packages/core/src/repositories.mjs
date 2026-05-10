@@ -39,7 +39,12 @@ export async function upsertGoogleCandidate({ extractionJobId, place, queryText,
        (extraction_job_id, place_id, query, city, niche, raw_payload)
      VALUES ($1, $2, $3, $4, $5, $6)
      ON CONFLICT (place_id, query)
-     DO UPDATE SET raw_payload = EXCLUDED.raw_payload, expires_at = NOW() + INTERVAL '7 days'
+     DO UPDATE SET
+       extraction_job_id = EXCLUDED.extraction_job_id,
+       city = EXCLUDED.city,
+       niche = EXCLUDED.niche,
+       raw_payload = EXCLUDED.raw_payload,
+       expires_at = NOW() + INTERVAL '7 days'
      RETURNING *`,
     [extractionJobId, place.placeId, queryText, city, niche, place.raw || {}]
   );
@@ -382,7 +387,7 @@ export async function listExtractionJobs({ limit = 50, offset = 0 } = {}) {
     `SELECT j.*,
             (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
             (SELECT COUNT(*)::int FROM businesses b
-              WHERE b.niche = j.niche AND b.city = j.city AND b.created_at >= j.created_at) AS leads_count
+              WHERE b.niche = j.niche AND b.city = j.city AND b.updated_at >= j.created_at) AS leads_count
        FROM extraction_jobs j
       ORDER BY j.created_at DESC
       LIMIT $1 OFFSET $2`,
@@ -399,7 +404,7 @@ export async function findExtractionJobDetail(id) {
     `SELECT
         (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = $1) AS candidates_count,
         (SELECT COUNT(*)::int FROM businesses b
-          WHERE b.niche = $2 AND b.city = $3 AND b.created_at >= $4) AS leads_count`,
+          WHERE b.niche = $2 AND b.city = $3 AND b.updated_at >= $4) AS leads_count`,
     [id, job.rows[0].niche, job.rows[0].city, job.rows[0].created_at]
   );
   return { ...job.rows[0], ...stats.rows[0] };
