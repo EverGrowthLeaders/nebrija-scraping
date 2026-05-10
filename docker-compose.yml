@@ -1,17 +1,37 @@
+x-app-environment: &app-environment
+  NODE_ENV: production
+  DATABASE_URL: postgresql://${POSTGRES_USER:-lexington}:${POSTGRES_PASSWORD:-lexington_dev_password}@postgres:5432/${POSTGRES_DB:-lexington}
+  REDIS_URL: redis://redis:6379
+  PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3100}
+  QUEUE_PREFIX: ${QUEUE_PREFIX:-lexington}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+  AUTO_DISPATCH_VOICE: ${AUTO_DISPATCH_VOICE:-false}
+  CRAWLER_PROVIDER: ${CRAWLER_PROVIDER:-firecrawl}
+  CRAWLER_MAX_PAGES_PER_BUSINESS: ${CRAWLER_MAX_PAGES_PER_BUSINESS:-8}
+  CRAWLER_REQUEST_TIMEOUT_MS: ${CRAWLER_REQUEST_TIMEOUT_MS:-45000}
+  CRAWLER_RESPECT_ROBOTS: ${CRAWLER_RESPECT_ROBOTS:-true}
+  FIRECRAWL_BASE_URL: ${FIRECRAWL_BASE_URL:-https://api.firecrawl.dev/v2}
+  FIRECRAWL_API_KEY: ${FIRECRAWL_API_KEY:-}
+  FIRECRAWL_ORIGIN_HEADER: ${FIRECRAWL_ORIGIN_HEADER:-}
+  GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY:-}
+  GOOGLE_PLACES_BASE_URL: ${GOOGLE_PLACES_BASE_URL:-https://places.googleapis.com/v1}
+  GOOGLE_PLACES_FIELD_MASK: ${GOOGLE_PLACES_FIELD_MASK:-places.id,places.displayName,places.formattedAddress,places.location}
+  NEBRIJA_API_BASE_URL: ${NEBRIJA_API_BASE_URL:-https://nebrijaai.com/api/v1}
+  NEBRIJA_API_KEY: ${NEBRIJA_API_KEY:-}
+  NEBRIJA_ASSISTANT_ID: ${NEBRIJA_ASSISTANT_ID:-}
+  NEBRIJA_PHONE_NUMBER_ID: ${NEBRIJA_PHONE_NUMBER_ID:-}
+  NEBRIJA_WEBHOOK_SECRET: ${NEBRIJA_WEBHOOK_SECRET:-}
+
 services:
   api:
     build: .
-    container_name: lexington-api
     restart: unless-stopped
     command: ["node", "apps/api/src/server.mjs"]
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lexington}:${POSTGRES_PASSWORD:-lexington_dev_password}@postgres:5432/${POSTGRES_DB:-lexington}
-      REDIS_URL: redis://redis:6379
+      <<: *app-environment
       PORT: 3000
     ports:
-      - "${API_PORT:-3000}:3000"
+      - "${API_PORT:-3100}:3000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -20,14 +40,9 @@ services:
 
   worker:
     build: .
-    container_name: lexington-worker
     restart: unless-stopped
     command: ["node", "apps/worker/src/index.mjs"]
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-lexington}:${POSTGRES_PASSWORD:-lexington_dev_password}@postgres:5432/${POSTGRES_DB:-lexington}
-      REDIS_URL: redis://redis:6379
+    environment: *app-environment
     depends_on:
       postgres:
         condition: service_healthy
@@ -36,14 +51,11 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: lexington-postgres
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-lexington}
       POSTGRES_USER: ${POSTGRES_USER:-lexington}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lexington_dev_password}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
@@ -55,10 +67,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: lexington-redis
     restart: unless-stopped
-    ports:
-      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:

@@ -6,14 +6,18 @@ Sistema de prospeccion B2B con PostgreSQL, Redis, workers internos, Firecrawl se
 
 ```bash
 cp .env.example .env
-docker compose up -d
+docker compose -f docker-compose.yml -f compose.local.yml up -d
 ```
 
 Servicios:
 
-- API: `http://localhost:3000`
+- API: `http://localhost:3100`
 - PostgreSQL: `localhost:5432`
 - Redis: `localhost:6379`
+
+En Dokploy se usa `docker-compose.yml` directamente. La API publica por defecto el
+puerto host `3100`, mientras que PostgreSQL y Redis quedan solo dentro de la red
+del compose.
 
 ## Firecrawl self-hosted
 
@@ -44,7 +48,7 @@ Si tu despliegue expone Firecrawl sin `/v2`, cambia `FIRECRAWL_BASE_URL` al path
 Crear campana:
 
 ```bash
-curl -X POST http://localhost:3000/campaigns \
+curl -X POST http://localhost:3100/campaigns \
   -H 'content-type: application/json' \
   -d '{"niche":"clinica dental","city":"Madrid","sourceType":"google_places_api","requestedLimit":1000}'
 ```
@@ -52,7 +56,7 @@ curl -X POST http://localhost:3000/campaigns \
 Importar negocio manual:
 
 ```bash
-curl -X POST http://localhost:3000/businesses \
+curl -X POST http://localhost:3100/businesses \
   -H 'content-type: application/json' \
   -d '{"name":"Clinica Demo","website":"https://example.com","city":"Madrid","niche":"clinica dental"}'
 ```
@@ -60,7 +64,7 @@ curl -X POST http://localhost:3000/businesses \
 Lanzar crawl:
 
 ```bash
-curl -X POST http://localhost:3000/businesses/<business-id>/crawl \
+curl -X POST http://localhost:3100/businesses/<business-id>/crawl \
   -H 'content-type: application/json' \
   -d '{}'
 ```
@@ -68,7 +72,7 @@ curl -X POST http://localhost:3000/businesses/<business-id>/crawl \
 Lanzar llamada:
 
 ```bash
-curl -X POST http://localhost:3000/businesses/<business-id>/call \
+curl -X POST http://localhost:3100/businesses/<business-id>/call \
   -H 'content-type: application/json' \
   -d '{}'
 ```
