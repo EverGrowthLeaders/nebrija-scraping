@@ -26,13 +26,7 @@ export class FirecrawlClient {
   }
 
   async map(url, options = {}) {
-    const response = await this.request("/map", {
-      url,
-      limit: options.limit || 100,
-      sitemap: options.sitemap || "include",
-      search: options.search,
-      location: options.location
-    });
+    const response = await this.request("/map", buildMapRequestBody(url, options));
     return normalizeMapResponse(response);
   }
 
@@ -54,6 +48,16 @@ export class FirecrawlClient {
     });
     return normalizeSearchResponse(response);
   }
+}
+
+export function buildMapRequestBody(url, options = {}) {
+  const body = {
+    url,
+    limit: options.limit || 100
+  };
+  if (options.search) body.search = options.search;
+  if (options.location) body.location = options.location;
+  return body;
 }
 
 export function normalizeMapResponse(response) {

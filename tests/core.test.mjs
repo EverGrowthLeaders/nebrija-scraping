@@ -4,7 +4,12 @@ import { normalizeSpanishPhone } from "../packages/core/src/phone.mjs";
 import { extractEmails, extractLeadSignals, selectBusinessUrls } from "../packages/core/src/extractors.mjs";
 import { calculateLeadScore, nextOutreachChannel } from "../packages/core/src/scoring.mjs";
 import { parseEndOfCallReport } from "../packages/core/src/vapiReport.mjs";
-import { normalizeMapResponse, normalizeScrapeResponse, normalizeSearchResponse } from "../packages/core/src/firecrawl.mjs";
+import {
+  buildMapRequestBody,
+  normalizeMapResponse,
+  normalizeScrapeResponse,
+  normalizeSearchResponse
+} from "../packages/core/src/firecrawl.mjs";
 import { isAuthorizedApiKey, parseApiKeys } from "../packages/core/src/auth.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
@@ -101,6 +106,13 @@ test("normalizes Firecrawl response variants", () => {
   ]);
   assert.equal(normalizeScrapeResponse({ data: { markdown: "# Hola", links: ["https://x.test"] } }).links[0].url, "https://x.test");
   assert.equal(normalizeSearchResponse({ data: [{ url: "https://result.test" }] })[0].url, "https://result.test");
+});
+
+test("builds Firecrawl map request without unsupported sitemap field", () => {
+  assert.deepEqual(buildMapRequestBody("https://example.com", { limit: 2 }), {
+    url: "https://example.com",
+    limit: 2
+  });
 });
 
 test("authorizes test job API keys from bearer or x-api-key headers", () => {
