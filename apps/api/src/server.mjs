@@ -731,10 +731,10 @@ async function serveStatic(pathname, res) {
     throw error;
   }
   const mime = STATIC_MIME[path.extname(safePath).toLowerCase()] || "application/octet-stream";
-  const headers = { "content-type": mime };
-  if (path.extname(safePath) !== ".html") {
-    headers["cache-control"] = "public, max-age=300";
-  }
+  const headers = {
+    "content-type": mime,
+    "cache-control": path.extname(safePath) === ".html" ? "no-store" : "no-cache"
+  };
   res.writeHead(200, headers);
   res.end(buffer);
   return true;

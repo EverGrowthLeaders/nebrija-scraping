@@ -323,6 +323,10 @@ async function router() {
         await r.render({ params: match.slice(1), search });
       } catch (err) {
         console.error(err);
+        if (err.status === 401) {
+          await showLogin();
+          return;
+        }
         view.innerHTML = `<div class="empty"><h4>Error al cargar</h4><p>${escape(err.message)}</p></div>`;
       }
       window.scrollTo({ top: 0 });
