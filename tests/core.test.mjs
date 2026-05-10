@@ -10,6 +10,7 @@ import {
   normalizeScrapeResponse,
   normalizeSearchResponse
 } from "../packages/core/src/firecrawl.mjs";
+import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
 import { isAuthorizedApiKey, parseApiKeys } from "../packages/core/src/auth.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
@@ -113,6 +114,36 @@ test("builds Firecrawl map request without unsupported sitemap field", () => {
     url: "https://example.com",
     limit: 2
   });
+});
+
+test("adds lead fields to Google Places field masks", () => {
+  const fieldMask = mergePlacesFieldMask("places.id,places.displayName");
+  assert.equal(fieldMask.includes("places.id"), true);
+  assert.equal(fieldMask.includes("places.websiteUri"), true);
+  assert.equal(fieldMask.includes("places.internationalPhoneNumber"), true);
+  assert.equal(fieldMask.includes("places.userRatingCount"), true);
+});
+
+test("normalizes Google Places lead fields", () => {
+  const [place] = normalizePlaces([
+    {
+      id: "place-1",
+      displayName: { text: "Abogados Demo" },
+      formattedAddress: "Calle Demo 1, Logroño",
+      websiteUri: "https://abogados.example",
+      internationalPhoneNumber: "+34 600 111 222",
+      rating: 4.7,
+      userRatingCount: 42,
+      googleMapsUri: "https://maps.google.com/?cid=123",
+      location: { latitude: 42.46, longitude: -2.45 }
+    }
+  ]);
+
+  assert.equal(place.website, "https://abogados.example");
+  assert.equal(place.phoneE164, "+34600111222");
+  assert.equal(place.rating, 4.7);
+  assert.equal(place.reviewCount, 42);
+  assert.equal(place.sourceUrl, "https://maps.google.com/?cid=123");
 });
 
 test("authorizes test job API keys from bearer or x-api-key headers", () => {

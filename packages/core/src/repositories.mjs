@@ -48,31 +48,53 @@ export async function upsertGoogleCandidate({ extractionJobId, place, queryText,
 
 export async function upsertBusinessFromGoogleCandidate({ place, city, niche, sourceUrl }) {
   const syntheticKey = place.placeId || stableBusinessKey(place);
+  const status = place.website || place.phoneE164 ? "enriched" : "enrichment_pending";
   const result = await query(
     `INSERT INTO businesses
-       (place_id, external_source, name, address, city, niche, latitude, longitude, source_url, raw_payload, status)
-     VALUES ($1, 'google_places_candidate', $2, $3, $4, $5, $6, $7, $8, $9, 'scraped')
+       (place_id, external_source, name, phone, phone_e164, website, address, city, niche,
+        latitude, longitude, rating, review_count, source_url, raw_payload, status)
+     VALUES ($1, 'google_places_candidate', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::lead_status)
      ON CONFLICT (place_id)
      DO UPDATE SET
        name = COALESCE(EXCLUDED.name, businesses.name),
+       phone = COALESCE(EXCLUDED.phone, businesses.phone),
+       phone_e164 = COALESCE(EXCLUDED.phone_e164, businesses.phone_e164),
+       website = COALESCE(EXCLUDED.website, businesses.website),
        address = COALESCE(EXCLUDED.address, businesses.address),
        city = COALESCE(EXCLUDED.city, businesses.city),
        niche = COALESCE(EXCLUDED.niche, businesses.niche),
        latitude = COALESCE(EXCLUDED.latitude, businesses.latitude),
        longitude = COALESCE(EXCLUDED.longitude, businesses.longitude),
+       rating = COALESCE(EXCLUDED.rating, businesses.rating),
+       review_count = COALESCE(EXCLUDED.review_count, businesses.review_count),
+       source_url = COALESCE(businesses.source_url, EXCLUDED.source_url),
        raw_payload = businesses.raw_payload || EXCLUDED.raw_payload,
+       status = CASE
+         WHEN businesses.status IN ('new', 'scraped', 'enrichment_pending')
+              AND (EXCLUDED.website IS NOT NULL OR EXCLUDED.phone_e164 IS NOT NULL)
+           THEN 'enriched'::lead_status
+         WHEN businesses.status = 'scraped'
+           THEN 'enrichment_pending'::lead_status
+         ELSE businesses.status
+       END,
        updated_at = NOW()
      RETURNING *`,
     [
       syntheticKey,
       place.name || "Unknown business",
+      place.phone || null,
+      place.phoneE164 || null,
+      place.website || null,
       place.address || null,
       city || null,
       niche || null,
       place.latitude ?? null,
       place.longitude ?? null,
-      sourceUrl || null,
-      place.raw || {}
+      place.rating ?? null,
+      place.reviewCount ?? null,
+      sourceUrl || place.sourceUrl || null,
+      place.raw || {},
+      status
     ]
   );
   return result.rows[0];

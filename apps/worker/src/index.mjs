@@ -90,9 +90,36 @@ async function runGoogleDiscovery(job) {
           place,
           city: extractionJob.city,
           niche: extractionJob.niche,
-          sourceUrl: null
+          sourceUrl: place.sourceUrl
         });
         businessCount += 1;
+        if (place.website) {
+          await recordProvenance({
+            businessId: business.id,
+            fieldName: "website",
+            sourceType: "google_places",
+            sourceUrl: place.sourceUrl,
+            sourceRecordId: place.placeId,
+            observedValue: place.website
+          });
+        }
+        if (place.phoneE164) {
+          await upsertContact({
+            businessId: business.id,
+            kind: "phone",
+            value: place.phoneE164,
+            confidence: 0.9,
+            sourceUrl: place.sourceUrl
+          });
+          await recordProvenance({
+            businessId: business.id,
+            fieldName: "phone_e164",
+            sourceType: "google_places",
+            sourceUrl: place.sourceUrl,
+            sourceRecordId: place.placeId,
+            observedValue: place.phoneE164
+          });
+        }
         await queues.webDiscovery.add("discover", {
           businessId: business.id
         });
@@ -137,7 +164,10 @@ async function runWebDiscovery(job) {
   const query = [`"${business.name}"`, business.city, business.niche, "web oficial"].filter(Boolean).join(" ");
   const results = await firecrawl.search(query, { limit: 5 });
   const website = chooseOfficialWebsite(results, business);
-  if (!website) return { website: null, results: results.length };
+  if (!website) {
+    if (business.phone_e164) await queues.scoring.add("score", { businessId: business.id });
+    return { website: null, results: results.length };
+  }
 
   await updateBusinessEnrichment({
     businessId,
