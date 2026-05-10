@@ -1,0 +1,72 @@
+services:
+  api:
+    build: .
+    container_name: lexington-api
+    restart: unless-stopped
+    command: ["node", "apps/api/src/server.mjs"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lexington}:${POSTGRES_PASSWORD:-lexington_dev_password}@postgres:5432/${POSTGRES_DB:-lexington}
+      REDIS_URL: redis://redis:6379
+      PORT: 3000
+    ports:
+      - "${API_PORT:-3000}:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: .
+    container_name: lexington-worker
+    restart: unless-stopped
+    command: ["node", "apps/worker/src/index.mjs"]
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-lexington}:${POSTGRES_PASSWORD:-lexington_dev_password}@postgres:5432/${POSTGRES_DB:-lexington}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: lexington-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-lexington}
+      POSTGRES_USER: ${POSTGRES_USER:-lexington}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lexington_dev_password}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infra/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-lexington} -d ${POSTGRES_DB:-lexington}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: lexington-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:

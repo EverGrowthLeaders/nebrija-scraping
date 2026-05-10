@@ -1,0 +1,22 @@
+{
+  "name": "lexington-prospecting-saas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev:api": "node --watch apps/api/src/server.mjs",
+    "dev:worker": "node --watch apps/worker/src/index.mjs",
+    "start:api": "node apps/api/src/server.mjs",
+    "start:worker": "node apps/worker/src/index.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "bullmq": "^5.48.0",
+    "ioredis": "^5.5.0",
+    "pg": "^8.13.1",
+    "pino": "^9.6.0"
+  }
+}
