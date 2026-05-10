@@ -32,6 +32,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html,
 body {
   margin: 0;
@@ -293,6 +297,7 @@ a {
 }
 .topbar__actions {
   display: flex;
+  align-items: center;
   gap: 8px;
 }
 
@@ -344,6 +349,18 @@ a {
 }
 .btn--gold:hover {
   filter: brightness(1.05);
+}
+.btn--google {
+  justify-content: center;
+  width: 100%;
+  background: #fff;
+  color: #202124;
+  border-color: rgba(255, 255, 255, 0.2);
+  font-weight: 650;
+}
+.btn--google:hover {
+  background: #f8fafd;
+  border-color: rgba(66, 133, 244, 0.45);
 }
 .btn--sm {
   padding: 6px 10px;
@@ -415,6 +432,16 @@ a {
   letter-spacing: 0.04em;
   text-transform: uppercase;
   color: var(--text-muted);
+}
+.card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.card__head h3 {
+  margin: 0;
 }
 
 .kpi-grid {
@@ -665,6 +692,15 @@ a {
   resize: vertical;
   font-family: inherit;
 }
+.textarea--notes {
+  min-height: 140px;
+  line-height: 1.55;
+}
+.form-hint {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-faint);
+}
 .search {
   position: relative;
 }
@@ -900,3 +936,119 @@ a {
   animation: spin 0.7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Login gate ────────────────────────────────────── */
+.login-shell {
+  position: relative;
+  z-index: 2;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.login-card {
+  width: min(390px, 100%);
+  background: rgba(17, 17, 17, 0.86);
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  padding: 26px;
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+}
+.login-card__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 10px;
+  color: var(--gold);
+  background: rgba(255, 215, 0, 0.08);
+  border: 1px solid rgba(255, 215, 0, 0.22);
+  margin-bottom: 18px;
+}
+.login-card h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  line-height: 1.15;
+}
+.login-card p {
+  margin: 0 0 20px;
+  color: var(--text-muted);
+}
+.login-card__error {
+  padding: 10px 12px;
+  margin-bottom: 14px;
+  border: 1px solid rgba(165, 0, 33, 0.45);
+  border-radius: 8px;
+  background: rgba(165, 0, 33, 0.1);
+  color: #ffb0bf;
+  font-size: 13px;
+}
+.login-card__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text-muted);
+}
+.session-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  max-width: 280px;
+  padding: 4px 4px 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(17, 17, 17, 0.7);
+}
+.session-chip img,
+.session-chip__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.session-chip__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-3);
+  color: var(--gold);
+  font-weight: 700;
+}
+.session-chip__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.15;
+}
+.session-chip__text strong,
+.session-chip__text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.session-chip__text strong {
+  font-size: 12px;
+}
+.session-chip__text span {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+@media (max-width: 860px) {
+  .topbar {
+    align-items: flex-start;
+    gap: 12px;
+    flex-direction: column;
+  }
+  .topbar__actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .session-chip {
+    max-width: 100%;
+  }
+}

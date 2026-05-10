@@ -2,6 +2,10 @@
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 const view = $("#view");
+const appShell = $(".app");
+
+let currentSession = null;
+let healthTimer = null;
 
 const escape = (str) =>
   String(str ?? "")
@@ -86,9 +90,11 @@ const renderScore = (score) => {
 
 // ── HTTP ──────────────────────────────────────────────────
 async function api(path, options = {}) {
+  const { skipAuthRedirect = false, ...fetchOptions } = options;
   const res = await fetch(path, {
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
-    ...options
+    credentials: "same-origin",
+    headers: { "content-type": "application/json", ...(fetchOptions.headers || {}) },
+    ...fetchOptions
   });
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -98,10 +104,135 @@ async function api(path, options = {}) {
     } catch {}
     const err = new Error(message);
     err.status = res.status;
+    if (res.status === 401 && !skipAuthRedirect) showLogin();
     throw err;
   }
   if (res.status === 204) return null;
   return res.json();
+}
+
+// ── Auth shell ────────────────────────────────────────────
+async function bootstrap() {
+  appShell.hidden = true;
+  showAuthLoading();
+  await pingHealth();
+  try {
+    const session = await api("/api/session", { skipAuthRedirect: true });
+    setSession(session);
+    showAppShell();
+    if (!location.hash) location.hash = "#/";
+    await router();
+  } catch (err) {
+    if (err.status === 401) {
+      await showLogin(new URLSearchParams(location.search).get("auth") === "failed" ? "No se pudo completar el acceso con Google." : "");
+    } else {
+      await showLogin("No se pudo comprobar la sesión.");
+    }
+  }
+  healthTimer = setInterval(pingHealth, 30_000);
+}
+
+function setSession(session) {
+  currentSession = session;
+  renderSessionChip();
+}
+
+function showAppShell() {
+  $("#login-shell")?.remove();
+  appShell.hidden = false;
+  renderSessionChip();
+}
+
+function showAuthLoading() {
+  renderLoginShell(`
+    <div class="login-card__status">
+      <span class="spinner"></span>
+      <span>Comprobando sesión...</span>
+    </div>
+  `);
+}
+
+async function showLogin(message = "") {
+  appShell.hidden = true;
+  closeModal();
+  let status = { configured: true, allowedDomains: [] };
+  try {
+    status = await api("/auth/google/status", { skipAuthRedirect: true });
+  } catch {
+    status = { configured: false, allowedDomains: [] };
+  }
+  const domainCopy = status.allowedDomains?.length
+    ? `Dominios permitidos: ${status.allowedDomains.join(", ")}`
+    : "Acceso por cuenta Google verificada.";
+  renderLoginShell(`
+    <div class="login-card__mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="24" height="24">
+        <path fill="currentColor" d="M16 2.5 4.5 8.7v9.7c0 6.6 4.7 10.7 11.5 13.1 6.8-2.4 11.5-6.5 11.5-13.1V8.7L16 2.5Zm0 4.4 7.5 4v7.5c0 4.5-3.1 7.5-7.5 9.4-4.4-1.9-7.5-4.9-7.5-9.4V10.9l7.5-4Z"/>
+      </svg>
+    </div>
+    <h1>Acceso seguro</h1>
+    <p>${escape(domainCopy)}</p>
+    ${message ? `<div class="login-card__error">${escape(message)}</div>` : ""}
+    ${
+      status.configured
+        ? `<a class="btn btn--google" href="/auth/google/start" data-action="google-login">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path fill="#4285F4" d="M21.6 12.23c0-.78-.07-1.53-.2-2.23H12v4.22h5.38a4.6 4.6 0 0 1-2 3.02v2.5h3.23c1.89-1.74 2.99-4.3 2.99-7.51Z"/>
+              <path fill="#34A853" d="M12 22c2.7 0 4.96-.9 6.61-2.44l-3.23-2.5c-.9.6-2.04.95-3.38.95-2.6 0-4.8-1.76-5.59-4.12H3.08v2.59A10 10 0 0 0 12 22Z"/>
+              <path fill="#FBBC05" d="M6.41 13.89A6 6 0 0 1 6.1 12c0-.65.11-1.29.31-1.89V7.52H3.08A10 10 0 0 0 2 12c0 1.61.39 3.14 1.08 4.48l3.33-2.59Z"/>
+              <path fill="#EA4335" d="M12 5.99c1.47 0 2.79.5 3.83 1.5l2.85-2.85C16.95 3.03 14.69 2 12 2a10 10 0 0 0-8.92 5.52l3.33 2.59C7.2 7.75 9.4 5.99 12 5.99Z"/>
+            </svg>
+            Entrar con Google
+          </a>`
+        : `<button class="btn btn--google" type="button" disabled>Google OAuth no configurado</button>`
+    }
+  `);
+}
+
+function renderLoginShell(inner) {
+  let shell = $("#login-shell");
+  if (!shell) {
+    shell = document.createElement("section");
+    shell.id = "login-shell";
+    shell.className = "login-shell";
+    document.body.appendChild(shell);
+  }
+  shell.innerHTML = `<div class="login-card">${inner}</div>`;
+}
+
+async function logout() {
+  try {
+    await api("/auth/logout", { method: "POST", body: "{}", skipAuthRedirect: true });
+  } finally {
+    currentSession = null;
+    await showLogin();
+  }
+}
+
+function renderSessionChip() {
+  const host = $("[data-bind='session-chip']");
+  if (!host || !currentSession) return;
+  const user = currentSession.user || {};
+  const tenant = currentSession.tenant || {};
+  host.hidden = false;
+  host.innerHTML = `
+    <div class="session-chip">
+      ${
+        user.avatarUrl
+          ? `<img src="${escape(user.avatarUrl)}" alt="" />`
+          : `<span class="session-chip__avatar">${escape((user.name || user.email || "?").slice(0, 1).toUpperCase())}</span>`
+      }
+      <span class="session-chip__text">
+        <strong>${escape(user.name || user.email || "Usuario")}</strong>
+        <span>${escape(tenant.name || tenant.slug || "Workspace")}</span>
+      </span>
+      <button class="btn btn--icon btn--ghost" data-action="logout" type="button" title="Salir" aria-label="Salir">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+          <path fill="currentColor" d="M10 17v-2h4v-2h-4v-2l-4 3 4 3ZM4 3h9a2 2 0 0 1 2 2v3h-2V5H4v14h9v-3h2v3a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm13.6 5.4L22.2 13l-4.6 4.6-1.4-1.4 2.2-2.2H12v-2h6.4l-2.2-2.2 1.4-1.4Z"/>
+        </svg>
+      </button>
+    </div>
+  `;
 }
 
 // ── Toast ─────────────────────────────────────────────────
@@ -217,11 +348,12 @@ function setCurrentCrumb(text) {
 window.addEventListener("hashchange", router);
 
 // ── Top bar actions ───────────────────────────────────────
-$(".topbar").addEventListener("click", (e) => {
+$(".topbar").addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-action]");
   if (!btn) return;
   if (btn.dataset.action === "refresh") router();
   if (btn.dataset.action === "new-campaign") openCampaignModal();
+  if (btn.dataset.action === "logout") await logout();
 });
 
 // ── Overview ──────────────────────────────────────────────
@@ -607,6 +739,15 @@ async function renderLeadDetail({ params }) {
 
       <div style="display:flex;flex-direction:column;gap:14px">
         <div class="card">
+          <div class="card__head">
+            <h3>Notas de scoring</h3>
+            <button class="btn btn--sm" data-action="save-scoring-notes" type="button">Guardar</button>
+          </div>
+          <textarea class="textarea textarea--notes" data-bind="scoring-notes" placeholder="Añade contexto comercial, objeciones o criterios de priorización...">${escape(b.scoring_notes || "")}</textarea>
+          <div class="form-hint">Visible solo dentro de este workspace.</div>
+        </div>
+
+        <div class="card">
           <h3>Contactos (${data.contacts.length})</h3>
           ${
             data.contacts.length
@@ -678,6 +819,7 @@ async function renderLeadDetail({ params }) {
   $("[data-action='lead-crawl']", view).addEventListener("click", () => leadAction(b, "crawl"));
   $("[data-action='lead-score']", view).addEventListener("click", () => leadAction(b, "score"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
+  $("[data-action='save-scoring-notes']", view).addEventListener("click", () => saveScoringNotes(b.id));
 }
 
 async function leadAction(business, kind) {
@@ -690,6 +832,23 @@ async function leadAction(business, kind) {
     );
   } catch (err) {
     toast(`No se pudo lanzar (${err.message})`, "error");
+  }
+}
+
+async function saveScoringNotes(businessId) {
+  const button = $("[data-action='save-scoring-notes']", view);
+  const textarea = $("[data-bind='scoring-notes']", view);
+  button.disabled = true;
+  try {
+    await api(`/api/businesses/${businessId}/scoring-notes`, {
+      method: "PATCH",
+      body: JSON.stringify({ scoringNotes: textarea.value })
+    });
+    toast("Notas guardadas", "ok");
+  } catch (err) {
+    toast(`No se pudieron guardar las notas (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -942,8 +1101,6 @@ function bindRowNav(scope) {
 
 // ── Boot ──────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
-  if (!location.hash) location.hash = "#/";
-  router();
-  pingHealth();
-  setInterval(pingHealth, 30_000);
+  if (healthTimer) clearInterval(healthTimer);
+  bootstrap();
 });

@@ -54,6 +54,16 @@ export const config = {
       process.env.GOOGLE_PLACES_FIELD_MASK ||
       "places.id,places.displayName,places.formattedAddress,places.location"
   },
+  auth: {
+    googleClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || "",
+    googleClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || "",
+    allowedGoogleDomains: (process.env.GOOGLE_ALLOWED_DOMAINS || "")
+      .split(",")
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean),
+    sessionCookieName: process.env.SESSION_COOKIE_NAME || "lex_session",
+    sessionTtlDays: intFromEnv("SESSION_TTL_DAYS", 14)
+  },
   nebrija: {
     apiBaseUrl: trimTrailingSlash(process.env.NEBRIJA_API_BASE_URL || "https://nebrijaai.com/api/v1"),
     apiKey: process.env.NEBRIJA_API_KEY || "",

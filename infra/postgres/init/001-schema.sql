@@ -30,9 +30,50 @@ BEGIN
   END IF;
 END $$;
 
+CREATE TABLE IF NOT EXISTS tenants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  slug TEXT NOT NULL UNIQUE,
+  google_domain TEXT UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+INSERT INTO tenants (id, name, slug, google_domain)
+VALUES ('00000000-0000-0000-0000-000000000001', 'Default Workspace', 'default', NULL)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  google_sub TEXT NOT NULL UNIQUE,
+  email TEXT NOT NULL,
+  name TEXT,
+  avatar_url TEXT,
+  role TEXT NOT NULL DEFAULT 'owner',
+  last_login_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (tenant_id, email)
+);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  user_agent TEXT,
+  ip_address TEXT,
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS businesses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  place_id TEXT UNIQUE,
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  place_id TEXT,
   external_source TEXT NOT NULL DEFAULT 'open_web_or_licensed_source',
   name TEXT NOT NULL,
   category TEXT,
@@ -51,6 +92,7 @@ CREATE TABLE IF NOT EXISTS businesses (
   has_online_booking BOOLEAN DEFAULT FALSE,
   has_chatbot BOOLEAN DEFAULT FALSE,
   score INTEGER NOT NULL DEFAULT 0,
+  scoring_notes TEXT,
   niche TEXT,
   status lead_status NOT NULL DEFAULT 'new',
   source_url TEXT,
@@ -74,9 +116,10 @@ CREATE TABLE IF NOT EXISTS business_contacts (
 
 CREATE TABLE IF NOT EXISTS extraction_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   niche TEXT NOT NULL,
   city TEXT NOT NULL,
-  source_type TEXT NOT NULL DEFAULT 'open_web',
+  source_type TEXT NOT NULL DEFAULT 'google_places_api',
   bbox JSONB,
   grid_step DOUBLE PRECISION,
   status job_status NOT NULL DEFAULT 'queued',
@@ -90,6 +133,7 @@ CREATE TABLE IF NOT EXISTS extraction_jobs (
 
 CREATE TABLE IF NOT EXISTS google_place_candidates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   extraction_job_id UUID REFERENCES extraction_jobs(id) ON DELETE SET NULL,
   place_id TEXT NOT NULL,
   query TEXT,
@@ -98,8 +142,7 @@ CREATE TABLE IF NOT EXISTS google_place_candidates (
   status TEXT NOT NULL DEFAULT 'candidate',
   expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '7 days',
   raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE (place_id, query)
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE TABLE IF NOT EXISTS data_provenance (
@@ -115,6 +158,7 @@ CREATE TABLE IF NOT EXISTS data_provenance (
 
 CREATE TABLE IF NOT EXISTS crawler_runs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   business_id UUID REFERENCES businesses(id) ON DELETE SET NULL,
   provider TEXT NOT NULL,
   root_url TEXT NOT NULL,
@@ -131,6 +175,7 @@ CREATE TABLE IF NOT EXISTS crawler_runs (
 
 CREATE TABLE IF NOT EXISTS crawled_pages (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   crawler_run_id UUID NOT NULL REFERENCES crawler_runs(id) ON DELETE CASCADE,
   business_id UUID REFERENCES businesses(id) ON DELETE SET NULL,
   url TEXT NOT NULL,
@@ -145,6 +190,7 @@ CREATE TABLE IF NOT EXISTS crawled_pages (
 
 CREATE TABLE IF NOT EXISTS outreach_attempts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
   channel TEXT NOT NULL,
   status TEXT NOT NULL,
@@ -158,6 +204,7 @@ CREATE TABLE IF NOT EXISTS outreach_attempts (
 
 CREATE TABLE IF NOT EXISTS voice_calls (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   business_id UUID REFERENCES businesses(id) ON DELETE SET NULL,
   provider TEXT NOT NULL DEFAULT 'nebrijaai',
   provider_call_id TEXT UNIQUE,
@@ -183,6 +230,7 @@ CREATE TABLE IF NOT EXISTS voice_calls (
 
 CREATE TABLE IF NOT EXISTS webhook_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
   provider TEXT NOT NULL,
   event_type TEXT NOT NULL,
   provider_event_id TEXT,
@@ -194,15 +242,28 @@ CREATE TABLE IF NOT EXISTS webhook_events (
   payload JSONB NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_businesses_place_id
-  ON businesses(place_id)
+CREATE UNIQUE INDEX IF NOT EXISTS idx_businesses_tenant_place_id_unique
+  ON businesses(tenant_id, place_id)
   WHERE place_id IS NOT NULL;
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_google_candidates_tenant_place_query_unique
+  ON google_place_candidates(tenant_id, place_id, query);
+
 CREATE INDEX IF NOT EXISTS idx_businesses_status_city_niche
-  ON businesses(status, city, niche);
+  ON businesses(tenant_id, status, city, niche);
 
 CREATE INDEX IF NOT EXISTS idx_businesses_score
-  ON businesses(score DESC);
+  ON businesses(tenant_id, score DESC);
+
+CREATE INDEX IF NOT EXISTS idx_tenants_google_domain
+  ON tenants(google_domain)
+  WHERE google_domain IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_users_tenant_email
+  ON users(tenant_id, email);
+
+CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash
+  ON user_sessions(token_hash);
 
 CREATE INDEX IF NOT EXISTS idx_business_contacts_lookup
   ON business_contacts(kind, value);
@@ -215,6 +276,12 @@ CREATE INDEX IF NOT EXISTS idx_webhook_events_provider_call_id
 
 CREATE INDEX IF NOT EXISTS idx_google_place_candidates_expiry
   ON google_place_candidates(expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_created
+  ON extraction_jobs(tenant_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_voice_calls_tenant_created
+  ON voice_calls(tenant_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_data_provenance_business_field
   ON data_provenance(business_id, field_name);

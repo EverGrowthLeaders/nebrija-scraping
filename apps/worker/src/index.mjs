@@ -1,6 +1,7 @@
 import { config } from "../../../packages/core/src/config.mjs";
 import { logger } from "../../../packages/core/src/logger.mjs";
 import { closeDb } from "../../../packages/core/src/db.mjs";
+import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { createQueue, createWorker, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
 import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs";
@@ -27,6 +28,8 @@ import {
 const firecrawl = new FirecrawlClient();
 const googlePlaces = new GooglePlacesClient();
 const nebrija = new NebrijaClient();
+
+await ensureRuntimeSchema();
 
 const queues = {
   webDiscovery: createQueue(QUEUE_NAMES.webDiscovery),
@@ -61,8 +64,9 @@ logger.info(
 
 async function runGoogleDiscovery(job) {
   const { extractionJobId } = job.data;
-  const extractionJob = await findExtractionJob(extractionJobId);
+  const extractionJob = await findExtractionJob(extractionJobId, { tenantId: job.data.tenantId });
   if (!extractionJob) throw new Error(`extraction job not found: ${extractionJobId}`);
+  const tenantId = extractionJob.tenant_id;
 
   await updateExtractionJob(extractionJobId, {
     status: "running",
@@ -80,6 +84,7 @@ async function runGoogleDiscovery(job) {
       for (const place of places) {
         if (!place.placeId) continue;
         await upsertGoogleCandidate({
+          tenantId,
           extractionJobId,
           place,
           queryText,
@@ -87,6 +92,7 @@ async function runGoogleDiscovery(job) {
           niche: extractionJob.niche
         });
         const business = await upsertBusinessFromGoogleCandidate({
+          tenantId,
           place,
           city: extractionJob.city,
           niche: extractionJob.niche,
@@ -121,6 +127,7 @@ async function runGoogleDiscovery(job) {
           });
         }
         await queues.webDiscovery.add("discover", {
+          tenantId,
           businessId: business.id
         });
       }
@@ -153,11 +160,12 @@ async function runGoogleDiscovery(job) {
 
 async function runWebDiscovery(job) {
   const { businessId } = job.data;
-  const business = await findBusinessById(businessId);
+  const business = await findBusinessById(businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${businessId}`);
+  const tenantId = business.tenant_id;
 
   if (business.website) {
-    await queues.businessCrawl.add("crawl", { businessId, rootUrl: business.website });
+    await queues.businessCrawl.add("crawl", { tenantId, businessId, rootUrl: business.website });
     return { website: business.website, source: "existing" };
   }
 
@@ -165,7 +173,7 @@ async function runWebDiscovery(job) {
   const results = await firecrawl.search(query, { limit: 5 });
   const website = chooseOfficialWebsite(results, business);
   if (!website) {
-    if (business.phone_e164) await queues.scoring.add("score", { businessId: business.id });
+    if (business.phone_e164) await queues.scoring.add("score", { tenantId, businessId: business.id });
     return { website: null, results: results.length };
   }
 
@@ -182,14 +190,16 @@ async function runWebDiscovery(job) {
     sourceUrl: website,
     observedValue: website
   });
-  await queues.businessCrawl.add("crawl", { businessId, rootUrl: website });
+  await queues.businessCrawl.add("crawl", { tenantId, businessId, rootUrl: website });
   return { website, results: results.length };
 }
 
 async function runBusinessCrawl(job) {
   const { businessId, rootUrl } = job.data;
-  const business = businessId ? await findBusinessById(businessId) : null;
+  const business = businessId ? await findBusinessById(businessId, { tenantId: job.data.tenantId }) : null;
+  const tenantId = business?.tenant_id || job.data.tenantId;
   const crawlerRun = await createCrawlerRun({
+    tenantId,
     businessId: business?.id,
     provider: config.crawler.provider,
     rootUrl
@@ -241,6 +251,7 @@ async function runBusinessCrawl(job) {
       aggregate.signals.hasContactForm ||= extracted.signals.hasContactForm;
 
       await persistCrawledPage({
+        tenantId,
         crawlerRunId: crawlerRun.id,
         businessId: business?.id,
         url,
@@ -301,7 +312,7 @@ async function runBusinessCrawl(job) {
         hasChatbot: aggregate.signals.hasChatbot
       }
     });
-    await queues.scoring.add("score", { businessId: business.id });
+    await queues.scoring.add("score", { tenantId, businessId: business.id });
   }
 
   await updateCrawlerRun(crawlerRun.id, {
@@ -321,23 +332,23 @@ async function runBusinessCrawl(job) {
 }
 
 async function runScoring(job) {
-  const business = await findCallableBusinessById(job.data.businessId);
+  const business = await findCallableBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
   const score = calculateLeadScore(business);
-  await updateBusinessScore({ businessId: business.id, score });
+  await updateBusinessScore({ tenantId: business.tenant_id, businessId: business.id, score });
   const channel = nextOutreachChannel({
     score,
     phone_e164: business.phone_e164,
     email_count: business.email_count
   });
   if (config.queues.autoDispatchVoice && ["voice", "voice_then_email"].includes(channel)) {
-    await queues.voiceCall.add("call", { businessId: business.id });
+    await queues.voiceCall.add("call", { tenantId: business.tenant_id, businessId: business.id });
   }
   return { score, channel };
 }
 
 async function runVoiceCall(job) {
-  const business = await findCallableBusinessById(job.data.businessId);
+  const business = await findCallableBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
   if (!business.phone_e164) throw new Error(`business has no phone_e164: ${business.id}`);
 

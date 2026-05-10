@@ -19,6 +19,26 @@ En Dokploy se usa `docker-compose.yml` directamente. La API publica por defecto 
 puerto host `3100`, mientras que PostgreSQL y Redis quedan solo dentro de la red
 del compose.
 
+La interfaz usa solo login con Google. Configura en Google Cloud un OAuth Client
+tipo Web y anade como redirect URI:
+
+```text
+${PUBLIC_BASE_URL}/auth/google/callback
+```
+
+Variables:
+
+```env
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
+GOOGLE_ALLOWED_DOMAINS=evergrowthleaders.com
+SESSION_COOKIE_NAME=lex_session
+SESSION_TTL_DAYS=14
+```
+
+`GOOGLE_ALLOWED_DOMAINS` es opcional, pero recomendado para evitar que cualquier
+cuenta Google pueda crear su propio workspace y consumir cuota.
+
 ## Firecrawl self-hosted
 
 Este repo asume Firecrawl desplegado fuera del compose, por ejemplo en Dokploy.
@@ -44,6 +64,9 @@ Si tu despliegue expone Firecrawl sin `/v2`, cambia `FIRECRAWL_BASE_URL` al path
 7. `POST /webhooks/nebrija/calls` ingiere `end-of-call-report` estilo Vapi.
 
 ## Endpoints utiles
+
+Los endpoints funcionales usan la sesion del navegador. Para automatizacion sin
+sesion de Google, usa `/api/test-jobs/*` con `TEST_JOBS_API_KEYS`.
 
 Crear campana:
 
@@ -82,6 +105,9 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `DATABASE_URL`
 - `REDIS_URL`
 - `TEST_JOBS_API_KEYS`
+- `GOOGLE_OAUTH_CLIENT_ID`
+- `GOOGLE_OAUTH_CLIENT_SECRET`
+- `GOOGLE_ALLOWED_DOMAINS`
 - `FIRECRAWL_BASE_URL`
 - `FIRECRAWL_API_KEY`
 - `GOOGLE_MAPS_API_KEY`

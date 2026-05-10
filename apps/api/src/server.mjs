@@ -7,21 +7,29 @@ import { config } from "../../../packages/core/src/config.mjs";
 import { logger } from "../../../packages/core/src/logger.mjs";
 import { closeDb } from "../../../packages/core/src/db.mjs";
 import { isAuthorizedApiKey } from "../../../packages/core/src/auth.mjs";
+import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
+import { exchangeGoogleCode, getGoogleAuthUrl, verifyGoogleIdToken } from "../../../packages/core/src/googleOAuth.mjs";
 import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { normalizeSpanishPhone } from "../../../packages/core/src/phone.mjs";
 import {
+  DEFAULT_TENANT_ID,
   createExtractionJob,
   createManualBusiness,
+  createUserSession,
   findBusinessById,
   findBusinessDetail,
   findExtractionJobDetail,
+  findSessionByTokenHash,
   findVoiceCallDetail,
   getDashboardMetrics,
   listBusinesses,
   listExtractionJobs,
   listVoiceCalls,
   persistNebrijaWebhookEvent,
+  revokeSession,
   updateBusinessFromCallReport,
+  updateBusinessScoringNotes,
+  upsertGoogleUser,
   upsertVoiceCallReport
 } from "../../../packages/core/src/repositories.mjs";
 import { parseEndOfCallReport } from "../../../packages/core/src/vapiReport.mjs";
@@ -52,6 +60,8 @@ const queues = {
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
+await ensureRuntimeSchema();
+
 const server = http.createServer(async (req, res) => {
   const requestId = crypto.randomUUID();
   const log = logger.child({ requestId, method: req.method, url: req.url });
@@ -62,19 +72,77 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ok: true, service: "api" });
     }
 
+    if (req.method === "GET" && url.pathname === "/auth/google/status") {
+      return sendJson(res, 200, {
+        configured: Boolean(config.auth.googleClientId && config.auth.googleClientSecret),
+        allowedDomains: config.auth.allowedGoogleDomains
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/google/start") {
+      requireGoogleOAuthConfig();
+      const state = crypto.randomBytes(24).toString("base64url");
+      setCookie(req, res, "oauth_state", state, { maxAge: 600, httpOnly: true, sameSite: "Lax" });
+      return redirect(res, getGoogleAuthUrl({ state, redirectUri: googleRedirectUri(req) }));
+    }
+
+    if (req.method === "GET" && url.pathname === "/auth/google/callback") {
+      requireGoogleOAuthConfig();
+      const state = url.searchParams.get("state");
+      const code = url.searchParams.get("code");
+      const expectedState = readCookies(req).oauth_state;
+      clearCookie(req, res, "oauth_state");
+      if (!state || !expectedState || !safeEqual(state, expectedState) || !code) {
+        return redirect(res, "/?auth=failed");
+      }
+      const tokenResponse = await exchangeGoogleCode({ code, redirectUri: googleRedirectUri(req) });
+      const profile = await verifyGoogleIdToken(tokenResponse.id_token);
+      const { tenant, user } = await upsertGoogleUser({ profile });
+      const token = crypto.randomBytes(32).toString("base64url");
+      await createUserSession({
+        tenantId: tenant.id,
+        userId: user.id,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + config.auth.sessionTtlDays * 86400_000),
+        userAgent: req.headers["user-agent"],
+        ipAddress: clientIp(req)
+      });
+      setCookie(req, res, config.auth.sessionCookieName, token, {
+        maxAge: config.auth.sessionTtlDays * 86400,
+        httpOnly: true,
+        sameSite: "Lax"
+      });
+      return redirect(res, "/");
+    }
+
+    if (req.method === "POST" && url.pathname === "/auth/logout") {
+      const token = readCookies(req)[config.auth.sessionCookieName];
+      if (token) await revokeSession(hashToken(token));
+      clearCookie(req, res, config.auth.sessionCookieName);
+      return sendJson(res, 200, { ok: true });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/session") {
+      const auth = await getSession(req);
+      if (!auth) return sendJson(res, 401, { error: "unauthorized" });
+      return sendJson(res, 200, { user: auth.user, tenant: auth.tenant });
+    }
+
+    const auth = await getRouteAuth(req, url);
+
     if (req.method === "GET" && url.pathname === "/api/metrics") {
-      const metrics = await getDashboardMetrics();
+      const metrics = await getDashboardMetrics({ tenantId: auth.tenantId });
       return sendJson(res, 200, { metrics });
     }
 
     if (req.method === "GET" && url.pathname === "/api/campaigns") {
-      const result = await listExtractionJobs(parsePaging(url));
+      const result = await listExtractionJobs({ ...parsePaging(url), tenantId: auth.tenantId });
       return sendJson(res, 200, result);
     }
 
     const campaignDetailMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)$/);
     if (req.method === "GET" && campaignDetailMatch) {
-      const job = await findExtractionJobDetail(campaignDetailMatch[1]);
+      const job = await findExtractionJobDetail(campaignDetailMatch[1], { tenantId: auth.tenantId });
       if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
       return sendJson(res, 200, { job });
     }
@@ -82,6 +150,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/businesses") {
       const result = await listBusinesses({
         ...parsePaging(url),
+        tenantId: auth.tenantId,
         status: url.searchParams.get("status") || undefined,
         niche: url.searchParams.get("niche") || undefined,
         city: url.searchParams.get("city") || undefined,
@@ -92,7 +161,7 @@ const server = http.createServer(async (req, res) => {
 
     const businessDetailMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)$/);
     if (req.method === "GET" && businessDetailMatch) {
-      const detail = await findBusinessDetail(businessDetailMatch[1]);
+      const detail = await findBusinessDetail(businessDetailMatch[1], { tenantId: auth.tenantId });
       if (!detail) return sendJson(res, 404, { error: "business_not_found" });
       return sendJson(res, 200, detail);
     }
@@ -100,6 +169,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/calls") {
       const result = await listVoiceCalls({
         ...parsePaging(url),
+        tenantId: auth.tenantId,
         outcome: url.searchParams.get("outcome") || undefined,
         qualified: url.searchParams.get("qualified") || undefined
       });
@@ -108,7 +178,7 @@ const server = http.createServer(async (req, res) => {
 
     const callDetailMatch = matchPath(url.pathname, /^\/api\/calls\/([^/]+)$/);
     if (req.method === "GET" && callDetailMatch) {
-      const call = await findVoiceCallDetail(callDetailMatch[1]);
+      const call = await findVoiceCallDetail(callDetailMatch[1], { tenantId: auth.tenantId });
       if (!call) return sendJson(res, 404, { error: "call_not_found" });
       return sendJson(res, 200, { call });
     }
@@ -146,6 +216,7 @@ const server = http.createServer(async (req, res) => {
         if (type === "business_crawl") {
           const website = json.website || "https://example.com";
           const business = await createManualBusiness({
+            tenantId: auth.tenantId,
             name: json.name || `Codex Firecrawl Smoke ${new Date().toISOString()}`,
             website,
             phone: json.phone,
@@ -157,6 +228,7 @@ const server = http.createServer(async (req, res) => {
             rawPayload: { testJob: true, testId, type }
           });
           const queueJob = await queues.businessCrawl.add("crawl", {
+            tenantId: auth.tenantId,
             businessId: business.id,
             rootUrl: website,
             testId
@@ -176,6 +248,7 @@ const server = http.createServer(async (req, res) => {
         if (type === "web_discovery") {
           validateRequired(json, ["name"]);
           const business = await createManualBusiness({
+            tenantId: auth.tenantId,
             name: json.name,
             city: json.city || "Madrid",
             niche: json.niche || "web discovery smoke test",
@@ -183,6 +256,7 @@ const server = http.createServer(async (req, res) => {
             rawPayload: { testJob: true, testId, type }
           });
           const queueJob = await queues.webDiscovery.add("discover", {
+            tenantId: auth.tenantId,
             businessId: business.id,
             testId
           });
@@ -201,6 +275,7 @@ const server = http.createServer(async (req, res) => {
         if (type === "campaign") {
           validateRequired(json, ["niche", "city"]);
           const job = await createExtractionJob({
+            tenantId: auth.tenantId,
             niche: json.niche,
             city: json.city,
             sourceType: json.sourceType || json.source_type || "google_places_api",
@@ -209,6 +284,7 @@ const server = http.createServer(async (req, res) => {
             requestedLimit: json.requestedLimit || json.requested_limit || 5
           });
           const queueJob = await queues.googleDiscovery.add("run", {
+            tenantId: auth.tenantId,
             extractionJobId: job.id,
             testId
           });
@@ -232,7 +308,7 @@ const server = http.createServer(async (req, res) => {
 
       const testBusinessMatch = matchPath(url.pathname, /^\/api\/test-jobs\/businesses\/([^/]+)$/);
       if (req.method === "GET" && testBusinessMatch) {
-        const detail = await findBusinessDetail(testBusinessMatch[1]);
+        const detail = await findBusinessDetail(testBusinessMatch[1], { tenantId: auth.tenantId });
         if (!detail) return sendJson(res, 404, { error: "business_not_found" });
         return sendJson(res, 200, {
           type: "business_crawl",
@@ -243,7 +319,7 @@ const server = http.createServer(async (req, res) => {
 
       const testCampaignMatch = matchPath(url.pathname, /^\/api\/test-jobs\/campaigns\/([^/]+)$/);
       if (req.method === "GET" && testCampaignMatch) {
-        const job = await findExtractionJobDetail(testCampaignMatch[1]);
+        const job = await findExtractionJobDetail(testCampaignMatch[1], { tenantId: auth.tenantId });
         if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
         return sendJson(res, 200, {
           type: "campaign",
@@ -280,6 +356,7 @@ const server = http.createServer(async (req, res) => {
 
       const sourceType = json.sourceType || json.source_type || "google_places_api";
       const job = await createExtractionJob({
+        tenantId: auth.tenantId,
         niche: json.niche,
         city: json.city,
         sourceType,
@@ -290,6 +367,7 @@ const server = http.createServer(async (req, res) => {
 
       if (sourceType === "google_places_api") {
         await queues.googleDiscovery.add("run", {
+          tenantId: auth.tenantId,
           extractionJobId: job.id
         });
       }
@@ -301,11 +379,13 @@ const server = http.createServer(async (req, res) => {
       const { json } = await readJson(req);
       validateRequired(json, ["name"]);
       const business = await createManualBusiness({
+        tenantId: auth.tenantId,
         ...json,
         phoneE164: json.phoneE164 || json.phone_e164 || normalizeSpanishPhone(json.phone)
       });
       if (business.website) {
         await queues.businessCrawl.add("crawl", {
+          tenantId: auth.tenantId,
           businessId: business.id,
           rootUrl: business.website
         });
@@ -317,24 +397,41 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && crawlMatch) {
       const businessId = crawlMatch[1];
       const { json } = await readJson(req);
-      const business = await findBusinessById(businessId);
+      const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
       if (!business) return sendJson(res, 404, { error: "business_not_found" });
       const rootUrl = json.rootUrl || json.root_url || business.website;
       if (!rootUrl) return sendJson(res, 400, { error: "business_has_no_website" });
-      const job = await queues.businessCrawl.add("crawl", { businessId, rootUrl });
+      const job = await queues.businessCrawl.add("crawl", { tenantId: auth.tenantId, businessId, rootUrl });
       return sendJson(res, 202, { jobId: job.id });
     }
 
     const scoreMatch = matchPath(url.pathname, /^\/businesses\/([^/]+)\/score$/);
     if (req.method === "POST" && scoreMatch) {
-      const job = await queues.scoring.add("score", { businessId: scoreMatch[1] });
+      const business = await findBusinessById(scoreMatch[1], { tenantId: auth.tenantId });
+      if (!business) return sendJson(res, 404, { error: "business_not_found" });
+      const job = await queues.scoring.add("score", { tenantId: auth.tenantId, businessId: scoreMatch[1] });
       return sendJson(res, 202, { jobId: job.id });
+    }
+
+    const scoringNotesMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)\/scoring-notes$/);
+    if (req.method === "PATCH" && scoringNotesMatch) {
+      const { json } = await readJson(req);
+      const business = await updateBusinessScoringNotes({
+        tenantId: auth.tenantId,
+        businessId: scoringNotesMatch[1],
+        scoringNotes: json.scoringNotes ?? json.scoring_notes ?? ""
+      });
+      if (!business) return sendJson(res, 404, { error: "business_not_found" });
+      return sendJson(res, 200, { business });
     }
 
     const callMatch = matchPath(url.pathname, /^\/businesses\/([^/]+)\/call$/);
     if (req.method === "POST" && callMatch) {
       const { json } = await readJson(req);
+      const business = await findBusinessById(callMatch[1], { tenantId: auth.tenantId });
+      if (!business) return sendJson(res, 404, { error: "business_not_found" });
       const job = await queues.voiceCall.add("call", {
+        tenantId: auth.tenantId,
         businessId: callMatch[1],
         testId: json.testId || json.test_id
       });
@@ -398,6 +495,128 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+function redirect(res, location) {
+  res.writeHead(302, { location });
+  res.end();
+}
+
+async function getRouteAuth(req, url) {
+  if (url.pathname.startsWith("/api/test-jobs")) {
+    requireTestJobAuth(req);
+    return { tenantId: DEFAULT_TENANT_ID, user: null, tenant: { id: DEFAULT_TENANT_ID, slug: "default" } };
+  }
+  if (url.pathname === "/webhooks/nebrija/calls") {
+    return { tenantId: DEFAULT_TENANT_ID, user: null, tenant: { id: DEFAULT_TENANT_ID, slug: "default" } };
+  }
+  if ((req.method === "GET" || req.method === "HEAD") && isStaticRequest(url.pathname)) {
+    return { tenantId: DEFAULT_TENANT_ID, user: null, tenant: null, public: true };
+  }
+
+  const auth = await getSession(req);
+  if (!auth) {
+    const error = new Error("unauthorized");
+    error.statusCode = 401;
+    throw error;
+  }
+  return auth;
+}
+
+function isStaticRequest(pathname) {
+  return !pathname.startsWith("/api/") && !pathname.startsWith("/auth/");
+}
+
+async function getSession(req) {
+  const token = readCookies(req)[config.auth.sessionCookieName];
+  if (!token) return null;
+  const session = await findSessionByTokenHash(hashToken(token));
+  if (!session) return null;
+  return {
+    tenantId: session.tenant_id,
+    userId: session.user_id,
+    sessionId: session.id,
+    user: {
+      id: session.user_id,
+      email: session.email,
+      name: session.name,
+      avatarUrl: session.avatar_url,
+      role: session.role
+    },
+    tenant: {
+      id: session.tenant_id,
+      name: session.tenant_name,
+      slug: session.tenant_slug,
+      googleDomain: session.tenant_google_domain
+    }
+  };
+}
+
+function requireGoogleOAuthConfig() {
+  if (!config.auth.googleClientId || !config.auth.googleClientSecret) {
+    const error = new Error("google_oauth_not_configured");
+    error.statusCode = 503;
+    throw error;
+  }
+}
+
+function googleRedirectUri(req) {
+  return `${requestBaseUrl(req)}/auth/google/callback`;
+}
+
+function requestBaseUrl(req) {
+  const configured = config.server.publicBaseUrl;
+  if (configured && !/^https?:\/\/localhost(?::|$)/.test(configured)) return configured;
+  const proto = String(req.headers["x-forwarded-proto"] || "http").split(",")[0].trim();
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "localhost").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+
+function readCookies(req) {
+  return Object.fromEntries(
+    String(req.headers.cookie || "")
+      .split(";")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const index = part.indexOf("=");
+        return index === -1
+          ? [part, ""]
+          : [part.slice(0, index), decodeURIComponent(part.slice(index + 1))];
+      })
+  );
+}
+
+function setCookie(req, res, name, value, { maxAge, httpOnly = true, sameSite = "Lax" } = {}) {
+  const secure = requestIsSecure(req);
+  const parts = [`${name}=${encodeURIComponent(value)}`, "Path=/", `SameSite=${sameSite}`];
+  if (httpOnly) parts.push("HttpOnly");
+  if (secure) parts.push("Secure");
+  if (maxAge != null) parts.push(`Max-Age=${Math.max(0, Number(maxAge) || 0)}`);
+  appendSetCookie(res, parts.join("; "));
+}
+
+function clearCookie(req, res, name) {
+  appendSetCookie(res, `${name}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${requestIsSecure(req) ? "; Secure" : ""}`);
+}
+
+function appendSetCookie(res, cookie) {
+  const current = res.getHeader("set-cookie");
+  const values = Array.isArray(current) ? current : current ? [current] : [];
+  res.setHeader("set-cookie", [...values, cookie]);
+}
+
+function requestIsSecure(req) {
+  const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").split(",")[0].trim();
+  return String(config.server.publicBaseUrl || "").startsWith("https://") || forwardedProto === "https" || Boolean(req?.socket?.encrypted);
+}
+
+function hashToken(token) {
+  return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+function clientIp(req) {
+  return String(req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
 }
 
 async function readJson(req) {
