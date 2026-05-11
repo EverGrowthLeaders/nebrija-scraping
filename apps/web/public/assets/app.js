@@ -553,7 +553,17 @@ async function renderCampaignDetail({ params }) {
         <h1 class="headline">${escape(job.niche)} <span class="muted" style="font-weight:500">en ${escape(job.city)}</span></h1>
         <p class="subhead mono">${escape(job.id)}</p>
       </div>
-      <div>${renderStatus(job.status)}</div>
+      <div class="row" style="gap:6px">
+        <a class="btn" href="/api/campaigns/${escape(job.id)}/export.xlsx">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 3h9l5 5v13H5V3Zm8 1.8V9h4.2L13 4.8ZM8 12v6h8v-1.5h-6.5v-1h5.6V14H9.5v-1H16v-1.5H8V12Z"/></svg>
+          Excel
+        </a>
+        <a class="btn" href="/api/campaigns/${escape(job.id)}/export.csv">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 4h16v16H4V4Zm2 2v12h12V6H6Zm1 2h10v2H7V8Zm0 3h10v2H7v-2Zm0 3h6v2H7v-2Z"/></svg>
+          CSV
+        </a>
+        ${renderStatus(job.status)}
+      </div>
     </div>
 
     <div class="kpi-grid" style="margin-top:8px">
@@ -604,7 +614,7 @@ async function renderCampaignDetail({ params }) {
     </div>
 
     <div style="margin-top:16px">
-      <a class="btn" href="#/leads?niche=${encodeURIComponent(job.niche)}&city=${encodeURIComponent(job.city)}">
+      <a class="btn" href="#/leads?campaignId=${encodeURIComponent(job.id)}">
         Ver leads de esta campaña →
       </a>
     </div>
@@ -625,6 +635,7 @@ async function renderLeadsList({ search }) {
   const status = search.get("status") || "";
   const niche = search.get("niche") || "";
   const city = search.get("city") || "";
+  const campaignId = search.get("campaignId") || "";
   const term = search.get("search") || "";
 
   view.innerHTML = `
@@ -689,6 +700,7 @@ async function renderLeadsList({ search }) {
   if (status) params.set("status", status);
   if (niche) params.set("niche", niche);
   if (city) params.set("city", city);
+  if (campaignId) params.set("campaignId", campaignId);
   if (term) params.set("search", term);
   params.set("limit", "100");
 

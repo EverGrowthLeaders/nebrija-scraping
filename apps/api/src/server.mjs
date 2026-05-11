@@ -12,6 +12,12 @@ import { exchangeGoogleCode, getGoogleAuthUrl, verifyGoogleIdToken } from "../..
 import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { normalizeSpanishPhone } from "../../../packages/core/src/phone.mjs";
 import { LEAD_VARIABLES, defaultVariableMap } from "../../../packages/core/src/leadVariables.mjs";
+import {
+  XLSX_CONTENT_TYPE,
+  buildCampaignCsv,
+  buildCampaignXlsx,
+  campaignExportFilename
+} from "../../../packages/core/src/exporters.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import {
   DEFAULT_TENANT_ID,
@@ -27,6 +33,7 @@ import {
   getDashboardMetrics,
   getTenantNebrijaSettings,
   listBusinesses,
+  listCampaignLeadsForExport,
   listExtractionJobs,
   listVoiceCalls,
   persistNebrijaWebhookEvent,
@@ -199,6 +206,27 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    const campaignExportMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)\/export\.(csv|xlsx)$/);
+    if (req.method === "GET" && campaignExportMatch) {
+      const job = await findExtractionJobDetail(campaignExportMatch[1], { tenantId: auth.tenantId });
+      if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+      const leads = await listCampaignLeadsForExport({ tenantId: auth.tenantId, campaignId: job.id });
+      const format = campaignExportMatch[2];
+      const filename = campaignExportFilename(job, format);
+      if (format === "csv") {
+        return sendAttachment(res, {
+          filename,
+          contentType: "text/csv; charset=utf-8",
+          body: buildCampaignCsv(leads)
+        });
+      }
+      return sendAttachment(res, {
+        filename,
+        contentType: XLSX_CONTENT_TYPE,
+        body: buildCampaignXlsx(leads)
+      });
+    }
+
     const campaignDetailMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)$/);
     if (req.method === "GET" && campaignDetailMatch) {
       const job = await findExtractionJobDetail(campaignDetailMatch[1], { tenantId: auth.tenantId });
@@ -223,7 +251,8 @@ const server = http.createServer(async (req, res) => {
         status: url.searchParams.get("status") || undefined,
         niche: url.searchParams.get("niche") || undefined,
         city: url.searchParams.get("city") || undefined,
-        search: url.searchParams.get("search") || undefined
+        search: url.searchParams.get("search") || undefined,
+        extractionJobId: url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined
       });
       return sendJson(res, 200, result);
     }
@@ -566,6 +595,18 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
 function sendJson(res, statusCode, body) {
   res.writeHead(statusCode, { "content-type": "application/json" });
   res.end(JSON.stringify(body));
+}
+
+function sendAttachment(res, { filename, contentType, body }) {
+  const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const asciiFilename = filename.replace(/[^\w.-]+/g, "-");
+  res.writeHead(200, {
+    "content-type": contentType,
+    "content-length": buffer.length,
+    "cache-control": "no-store",
+    "content-disposition": `attachment; filename="${asciiFilename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+  });
+  res.end(buffer);
 }
 
 function redirect(res, location) {

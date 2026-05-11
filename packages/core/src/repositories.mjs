@@ -672,7 +672,7 @@ export async function listExtractionJobs({ tenantId = DEFAULT_TENANT_ID, limit =
     `SELECT j.*,
             (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
             (SELECT COUNT(*)::int FROM businesses b
-              WHERE b.tenant_id = j.tenant_id AND b.niche = j.niche AND b.city = j.city AND b.updated_at >= j.created_at) AS leads_count
+              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count
        FROM extraction_jobs j
       WHERE j.tenant_id = $1
       ORDER BY j.created_at DESC
@@ -690,13 +690,53 @@ export async function findExtractionJobDetail(id, { tenantId = DEFAULT_TENANT_ID
     `SELECT
         (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = $1) AS candidates_count,
         (SELECT COUNT(*)::int FROM businesses b
-          WHERE b.tenant_id = $2 AND b.niche = $3 AND b.city = $4 AND b.updated_at >= $5) AS leads_count`,
-    [id, tenantId, job.rows[0].niche, job.rows[0].city, job.rows[0].created_at]
+          WHERE b.tenant_id = $2 AND b.extraction_job_id = $1) AS leads_count`,
+    [id, tenantId]
   );
   return { ...job.rows[0], ...stats.rows[0] };
 }
 
-export async function listBusinesses({ tenantId = DEFAULT_TENANT_ID, limit = 50, offset = 0, status, niche, city, search } = {}) {
+export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID, campaignId }) {
+  const result = await query(
+    `SELECT b.id,
+            b.place_id,
+            b.external_source,
+            b.name,
+            b.category,
+            b.phone,
+            b.phone_e164,
+            b.website,
+            b.address,
+            b.city,
+            b.postal_code,
+            b.latitude,
+            b.longitude,
+            b.rating,
+            b.review_count,
+            b.instagram,
+            b.facebook,
+            b.has_online_booking,
+            b.has_chatbot,
+            b.score,
+            b.scoring_notes,
+            b.niche,
+            b.status,
+            b.source_url,
+            b.created_at,
+            b.updated_at,
+            COALESCE(array_agg(DISTINCT c.value) FILTER (WHERE c.kind = 'email'), ARRAY[]::text[]) AS emails
+       FROM businesses b
+       LEFT JOIN business_contacts c ON c.business_id = b.id
+      WHERE b.tenant_id = $1
+        AND b.extraction_job_id = $2
+      GROUP BY b.id
+      ORDER BY b.score DESC, b.updated_at DESC`,
+    [tenantId, campaignId]
+  );
+  return result.rows;
+}
+
+export async function listBusinesses({ tenantId = DEFAULT_TENANT_ID, limit = 50, offset = 0, status, niche, city, search, extractionJobId } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
   const where = ["tenant_id = $1"];
@@ -716,6 +756,10 @@ export async function listBusinesses({ tenantId = DEFAULT_TENANT_ID, limit = 50,
   if (search) {
     params.push(`%${search}%`);
     where.push(`(name ILIKE $${params.length} OR website ILIKE $${params.length} OR address ILIKE $${params.length})`);
+  }
+  if (extractionJobId) {
+    params.push(extractionJobId);
+    where.push(`extraction_job_id = $${params.length}`);
   }
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(safeLimit);

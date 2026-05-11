@@ -14,6 +14,7 @@ import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/goog
 import { isAuthorizedApiKey, parseApiKeys } from "../packages/core/src/auth.mjs";
 import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
+import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -196,4 +197,34 @@ test("builds assistant variable values from lead fields", () => {
     telefono: "+34600111222",
     ciudad: "Logroño"
   });
+});
+
+test("exports campaign leads as CSV and XLSX", () => {
+  const rows = [
+    {
+      id: "lead-1",
+      name: "Bufete, Demo",
+      city: "Logroño",
+      niche: "Abogados",
+      score: 82,
+      phone_e164: "+34600111222",
+      emails: ["info@example.es", "ventas@example.es"],
+      website: "https://example.es",
+      has_online_booking: false,
+      has_chatbot: true
+    }
+  ];
+
+  const csv = buildCampaignCsv(rows).toString("utf8");
+  assert.ok(csv.startsWith("\uFEFFLead ID,Nombre"));
+  assert.match(csv, /"Bufete, Demo"/);
+  assert.match(csv, /'\+34600111222/);
+  assert.match(csv, /info@example\.es; ventas@example\.es/);
+
+  const xlsx = buildCampaignXlsx(rows);
+  assert.equal(xlsx.readUInt32LE(0), 0x04034b50);
+  assert.ok(xlsx.includes(Buffer.from("xl/worksheets/sheet1.xml")));
+  assert.ok(xlsx.includes(Buffer.from("[Content_Types].xml")));
+
+  assert.match(campaignExportFilename({ niche: "Abogados", city: "Logroño" }, "xlsx"), /^leads-abogados-logrono-\d{4}-\d{2}-\d{2}\.xlsx$/);
 });
