@@ -11,6 +11,8 @@ import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { exchangeGoogleCode, getGoogleAuthUrl, verifyGoogleIdToken } from "../../../packages/core/src/googleOAuth.mjs";
 import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { normalizeSpanishPhone } from "../../../packages/core/src/phone.mjs";
+import { LEAD_VARIABLES, defaultVariableMap } from "../../../packages/core/src/leadVariables.mjs";
+import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import {
   DEFAULT_TENANT_ID,
   createExtractionJob,
@@ -21,7 +23,9 @@ import {
   findExtractionJobDetail,
   findSessionByTokenHash,
   findVoiceCallDetail,
+  getEffectiveNebrijaSettings,
   getDashboardMetrics,
+  getTenantNebrijaSettings,
   listBusinesses,
   listExtractionJobs,
   listVoiceCalls,
@@ -29,6 +33,7 @@ import {
   revokeSession,
   updateBusinessFromCallReport,
   updateBusinessScoringNotes,
+  upsertTenantNebrijaSettings,
   upsertGoogleUser,
   upsertVoiceCallReport
 } from "../../../packages/core/src/repositories.mjs";
@@ -129,6 +134,55 @@ const server = http.createServer(async (req, res) => {
     }
 
     const auth = await getRouteAuth(req, url);
+
+    if (req.method === "GET" && url.pathname === "/api/settings/nebrija") {
+      const stored = await getTenantNebrijaSettings({ tenantId: auth.tenantId });
+      const effective = await getEffectiveNebrijaSettings({ tenantId: auth.tenantId });
+      return sendJson(res, 200, {
+        settings: {
+          apiBaseUrl: effective.apiBaseUrl,
+          configured: effective.configured,
+          apiKeyLast4: effective.apiKeyLast4 || null,
+          defaultPhoneNumberId: effective.defaultPhoneNumberId || "",
+          stored: Boolean(stored),
+          usingEnvFallback: !stored?.api_key_last4 && Boolean(config.nebrija.apiKey)
+        },
+        leadVariables: LEAD_VARIABLES
+      });
+    }
+
+    if (req.method === "PATCH" && url.pathname === "/api/settings/nebrija") {
+      const { json } = await readJson(req);
+      const settings = await upsertTenantNebrijaSettings({
+        tenantId: auth.tenantId,
+        apiBaseUrl: json.apiBaseUrl || json.api_base_url || config.nebrija.apiBaseUrl,
+        apiKey: json.apiKey === "" ? undefined : json.apiKey ?? json.api_key,
+        defaultPhoneNumberId: json.defaultPhoneNumberId || json.default_phone_number_id || ""
+      });
+      return sendJson(res, 200, {
+        settings: {
+          apiBaseUrl: settings.api_base_url,
+          configured: Boolean(settings.api_key_last4),
+          apiKeyLast4: settings.api_key_last4,
+          defaultPhoneNumberId: settings.default_phone_number_id || ""
+        }
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/settings/nebrija/assistants") {
+      const settings = await getEffectiveNebrijaSettings({ tenantId: auth.tenantId });
+      if (!settings.configured) return sendJson(res, 400, { error: "nebrija_api_key_not_configured" });
+      const client = new NebrijaClient({
+        baseUrl: settings.apiBaseUrl,
+        apiKey: settings.apiKey,
+        phoneNumberId: settings.defaultPhoneNumberId
+      });
+      const assistants = await client.listAssistants();
+      return sendJson(res, 200, {
+        assistants: assistants.map(({ raw, ...assistant }) => assistant),
+        leadVariables: LEAD_VARIABLES
+      });
+    }
 
     if (req.method === "GET" && url.pathname === "/api/metrics") {
       const metrics = await getDashboardMetrics({ tenantId: auth.tenantId });
@@ -281,7 +335,8 @@ const server = http.createServer(async (req, res) => {
             sourceType: json.sourceType || json.source_type || "google_places_api",
             bbox: json.bbox,
             gridStep: json.gridStep || json.grid_step,
-            requestedLimit: json.requestedLimit || json.requested_limit || 5
+            requestedLimit: json.requestedLimit || json.requested_limit || 5,
+            ...parseCampaignVoiceSettings(json)
           });
           const queueJob = await queues.googleDiscovery.add("run", {
             tenantId: auth.tenantId,
@@ -362,7 +417,8 @@ const server = http.createServer(async (req, res) => {
         sourceType,
         bbox: json.bbox,
         gridStep: json.gridStep || json.grid_step,
-        requestedLimit: json.requestedLimit || json.requested_limit
+        requestedLimit: json.requestedLimit || json.requested_limit,
+        ...parseCampaignVoiceSettings(json)
       });
 
       if (sourceType === "google_places_api") {
@@ -641,6 +697,34 @@ function validateRequired(body, fields) {
       throw error;
     }
   }
+}
+
+function parseCampaignVoiceSettings(json) {
+  const assistantVariables = parseStringArray(
+    json.voiceAssistantVariables ?? json.voice_assistant_variables ?? json.assistantVariables ?? json.assistant_variables
+  );
+  const suppliedMap = json.voiceVariableMap ?? json.voice_variable_map ?? json.variableMap ?? json.variable_map;
+  return {
+    voiceAssistantId: json.voiceAssistantId || json.voice_assistant_id || "",
+    voiceAssistantName: json.voiceAssistantName || json.voice_assistant_name || "",
+    voicePhoneNumberId: json.voicePhoneNumberId || json.voice_phone_number_id || "",
+    voiceAssistantVariables: assistantVariables,
+    voiceVariableMap:
+      suppliedMap && typeof suppliedMap === "object" && !Array.isArray(suppliedMap)
+        ? suppliedMap
+        : defaultVariableMap(assistantVariables)
+  };
+}
+
+function parseStringArray(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof value === "string") {
+    return value
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  return [];
 }
 
 function matchPath(pathname, regex) {

@@ -298,7 +298,8 @@ const routes = [
   { match: /^\/leads$/, render: renderLeadsList, key: "leads", title: "Leads" },
   { match: /^\/leads\/([^/]+)$/, render: renderLeadDetail, key: "leads", title: "Lead" },
   { match: /^\/calls$/, render: renderCallsList, key: "calls", title: "Llamadas" },
-  { match: /^\/calls\/([^/]+)$/, render: renderCallDetail, key: "calls", title: "Llamada" }
+  { match: /^\/calls\/([^/]+)$/, render: renderCallDetail, key: "calls", title: "Llamada" },
+  { match: /^\/settings$/, render: renderSettings, key: "settings", title: "Settings" }
 ];
 
 let currentRoute = null;
@@ -999,8 +1000,153 @@ async function renderCallDetail({ params }) {
   `;
 }
 
+// ── Settings ──────────────────────────────────────────────
+async function renderSettings() {
+  setCurrentCrumb("NebrijaAI");
+  view.innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      <div class="grow">
+        <h1 class="headline">Settings</h1>
+        <p class="subhead">Credenciales e integración de voz para este workspace.</p>
+      </div>
+    </div>
+
+    <div class="detail-grid">
+      <form class="card settings-card" id="nebrija-settings">
+        <div class="card__head">
+          <h3>NebrijaAI</h3>
+          <span class="badge badge--zinc" data-bind="nebrija-status">Cargando</span>
+        </div>
+        <div class="field">
+          <label>API base URL</label>
+          <input class="input" name="apiBaseUrl" placeholder="https://nebrijaai.com/api/v1" />
+        </div>
+        <div class="field">
+          <label>API Key</label>
+          <input class="input" name="apiKey" type="password" autocomplete="new-password" placeholder="Mantener clave actual" />
+          <div class="form-hint" data-bind="api-key-hint">Sin clave guardada.</div>
+        </div>
+        <div class="field">
+          <label>Phone number ID por defecto</label>
+          <input class="input" name="defaultPhoneNumberId" placeholder="ID del numero emisor" />
+        </div>
+        <div class="row" style="justify-content:flex-end">
+          <button class="btn" type="button" data-action="refresh-assistants">Probar asistentes</button>
+          <button class="btn btn--primary" type="submit">Guardar</button>
+        </div>
+      </form>
+
+      <div class="card settings-card">
+        <div class="card__head">
+          <h3>Asistentes disponibles</h3>
+          <button class="btn btn--sm" type="button" data-action="refresh-assistants">Actualizar</button>
+        </div>
+        <div data-bind="assistants-list">${rowSkeleton(3)}</div>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <div class="card__head"><h3>Variables de lead</h3></div>
+      <div class="variable-grid" data-bind="lead-variables"></div>
+    </div>
+  `;
+
+  const settingsData = await api("/api/settings/nebrija");
+  hydrateSettingsForm(settingsData);
+  await loadAssistants();
+
+  $("#nebrija-settings", view).addEventListener("submit", saveNebrijaSettings);
+  $$("[data-action='refresh-assistants']", view).forEach((button) =>
+    button.addEventListener("click", loadAssistants)
+  );
+}
+
+function hydrateSettingsForm(data) {
+  const form = $("#nebrija-settings", view);
+  const settings = data.settings || {};
+  form.elements.apiBaseUrl.value = settings.apiBaseUrl || "";
+  form.elements.defaultPhoneNumberId.value = settings.defaultPhoneNumberId || "";
+  const status = $("[data-bind='nebrija-status']", view);
+  status.className = `badge ${settings.configured ? "badge--green" : "badge--burgundy"}`;
+  status.textContent = settings.configured ? "Conectado" : "Sin configurar";
+  $("[data-bind='api-key-hint']", view).textContent = settings.apiKeyLast4
+    ? `Clave activa terminada en ${settings.apiKeyLast4}${settings.usingEnvFallback ? " (env)" : ""}.`
+    : "Introduce una API Key para listar asistentes y lanzar llamadas.";
+  renderLeadVariables(data.leadVariables || []);
+}
+
+async function saveNebrijaSettings(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const submit = $("button[type='submit']", form);
+  const body = {
+    apiBaseUrl: form.elements.apiBaseUrl.value.trim(),
+    defaultPhoneNumberId: form.elements.defaultPhoneNumberId.value.trim()
+  };
+  if (form.elements.apiKey.value.trim()) body.apiKey = form.elements.apiKey.value.trim();
+  submit.disabled = true;
+  try {
+    const data = await api("/api/settings/nebrija", { method: "PATCH", body: JSON.stringify(body) });
+    form.elements.apiKey.value = "";
+    hydrateSettingsForm({ settings: data.settings, leadVariables: getRenderedLeadVariables() });
+    toast("Settings guardados", "ok");
+    await loadAssistants();
+  } catch (err) {
+    toast(`No se pudo guardar (${err.message})`, "error");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function loadAssistants() {
+  const host = $("[data-bind='assistants-list']", view);
+  if (!host) return;
+  host.innerHTML = `<div class="row" style="padding:18px;justify-content:center"><span class="spinner"></span></div>`;
+  try {
+    const data = await api("/api/settings/nebrija/assistants");
+    window.__nebrijaAssistants = data.assistants || [];
+    renderLeadVariables(data.leadVariables || getRenderedLeadVariables());
+    host.innerHTML = window.__nebrijaAssistants.length
+      ? `<div class="list">${window.__nebrijaAssistants.map(renderAssistantListItem).join("")}</div>`
+      : emptyState("Sin asistentes", "La API Key funciona, pero NebrijaAI no devolvió asistentes.");
+  } catch (err) {
+    window.__nebrijaAssistants = [];
+    host.innerHTML = emptyState("No se pudieron cargar", err.message === "nebrija_api_key_not_configured" ? "Guarda una API Key antes de listar asistentes." : err.message);
+  }
+}
+
+function renderAssistantListItem(assistant) {
+  const variables = assistant.variableNames || [];
+  return `
+    <div class="list__item" style="cursor:default">
+      <div class="list__main">
+        <div class="list__title">${escape(assistant.name)}</div>
+        <div class="list__meta mono">${escape(assistant.id)}</div>
+        ${
+          variables.length
+            ? `<div class="variable-row">${variables.map((name) => `<span class="badge badge--zinc">${escape(name)}</span>`).join("")}</div>`
+            : `<div class="list__meta">Sin variables detectadas</div>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+function renderLeadVariables(items) {
+  window.__leadVariables = items;
+  const host = $("[data-bind='lead-variables']", view);
+  if (!host) return;
+  host.innerHTML = items
+    .map((item) => `<div class="variable-pill"><span>${escape(item.key)}</span><small>${escape(item.label)}</small></div>`)
+    .join("");
+}
+
+function getRenderedLeadVariables() {
+  return window.__leadVariables || [];
+}
+
 // ── Modals: new campaign / new lead ───────────────────────
-function openCampaignModal() {
+async function openCampaignModal() {
   const form = document.createElement("form");
   form.innerHTML = `
     <div class="row">
@@ -1015,13 +1161,31 @@ function openCampaignModal() {
       </div>
       <div class="field"><label>Límite solicitado</label><input class="input" name="requestedLimit" type="number" min="1" placeholder="1000" /></div>
     </div>
+    <div class="divider"></div>
+    <div class="field">
+      <label>Asistente NebrijaAI</label>
+      <select class="select" name="voiceAssistantId" data-bind="campaign-assistant">
+        <option value="">Sin asistente vinculado</option>
+      </select>
+      <div class="form-hint" data-bind="campaign-assistant-hint">Puedes vincular un asistente ahora o lanzar llamadas manualmente despues.</div>
+    </div>
+    <div data-bind="campaign-variable-map"></div>
   `;
+  await hydrateCampaignAssistants(form);
   const footer = document.createDocumentFragment();
   const cancel = btn("Cancelar", "ghost");
   const submit = btn("Lanzar campaña", "primary");
   cancel.addEventListener("click", closeModal);
   submit.addEventListener("click", async () => {
     const data = Object.fromEntries(new FormData(form).entries());
+    const assistant = getSelectedCampaignAssistant(form);
+    if (assistant) {
+      data.voiceAssistantName = assistant.name;
+      data.voiceAssistantVariables = assistant.variableNames || [];
+      data.voiceVariableMap = Object.fromEntries(
+        $$("[data-variable-name]", form).map((select) => [select.dataset.variableName, select.value])
+      );
+    }
     if (!data.niche || !data.city) {
       toast("Faltan campos obligatorios", "error");
       return;
@@ -1044,6 +1208,79 @@ function openCampaignModal() {
   });
   footer.append(cancel, submit);
   openModal({ title: "Nueva campaña", body: form, footer });
+}
+
+async function hydrateCampaignAssistants(form) {
+  const select = $("[data-bind='campaign-assistant']", form);
+  const hint = $("[data-bind='campaign-assistant-hint']", form);
+  try {
+    if (!window.__nebrijaAssistants?.length) {
+      const data = await api("/api/settings/nebrija/assistants");
+      window.__nebrijaAssistants = data.assistants || [];
+      window.__leadVariables = data.leadVariables || window.__leadVariables || [];
+    }
+    select.innerHTML = `<option value="">Sin asistente vinculado</option>${(window.__nebrijaAssistants || [])
+      .map((assistant) => `<option value="${escape(assistant.id)}">${escape(assistant.name)}</option>`)
+      .join("")}`;
+    hint.textContent = window.__nebrijaAssistants?.length
+      ? "Las variables se rellenan automaticamente con datos del lead."
+      : "No hay asistentes disponibles en NebrijaAI.";
+  } catch (err) {
+    hint.innerHTML = `Configura NebrijaAI en <a href="#/settings">Settings</a> para listar asistentes.`;
+  }
+  select.addEventListener("change", () => renderCampaignVariableMap(form));
+  renderCampaignVariableMap(form);
+}
+
+function getSelectedCampaignAssistant(form) {
+  const id = form.elements.voiceAssistantId?.value;
+  return (window.__nebrijaAssistants || []).find((assistant) => assistant.id === id) || null;
+}
+
+function renderCampaignVariableMap(form) {
+  const host = $("[data-bind='campaign-variable-map']", form);
+  const assistant = getSelectedCampaignAssistant(form);
+  if (!assistant) {
+    host.innerHTML = "";
+    return;
+  }
+  const variables = assistant.variableNames || [];
+  if (!variables.length) {
+    host.innerHTML = `<div class="form-hint">No se han detectado variables en este asistente; se enviara el payload completo del lead.</div>`;
+    return;
+  }
+  const leadVariables = window.__leadVariables || [];
+  host.innerHTML = `
+    <div class="variable-map">
+      ${variables
+        .map((name) => {
+          const selected = guessLeadVariable(name);
+          return `
+            <label class="variable-map__row">
+              <span class="mono">${escape(name)}</span>
+              <select class="select" data-variable-name="${escape(name)}">
+                ${leadVariables
+                  .map((item) => `<option value="${escape(item.key)}" ${item.key === selected ? "selected" : ""}>${escape(item.key)} · ${escape(item.label)}</option>`)
+                  .join("")}
+              </select>
+            </label>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function guessLeadVariable(name) {
+  const lower = String(name || "").toLowerCase();
+  const exact = (window.__leadVariables || []).find((item) => item.key === lower);
+  if (exact) return exact.key;
+  if (lower.includes("phone") || lower.includes("telefono")) return "phone_e164";
+  if (lower.includes("city") || lower.includes("ciudad")) return "city";
+  if (lower.includes("review")) return "review_count";
+  if (lower.includes("rating")) return "rating";
+  if (lower.includes("web")) return "website";
+  return "business_name";
 }
 
 function openLeadModal() {

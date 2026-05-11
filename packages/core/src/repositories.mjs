@@ -1,4 +1,5 @@
 import { query, withTransaction } from "./db.mjs";
+import { config } from "./config.mjs";
 
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
 
@@ -109,12 +110,100 @@ export async function revokeSession(tokenHash) {
   await query(`UPDATE user_sessions SET revoked_at = NOW() WHERE token_hash = $1`, [tokenHash]);
 }
 
-export async function createExtractionJob({ tenantId = DEFAULT_TENANT_ID, niche, city, sourceType, bbox, gridStep, requestedLimit }) {
+export async function getTenantNebrijaSettings({ tenantId = DEFAULT_TENANT_ID } = {}) {
   const result = await query(
-    `INSERT INTO extraction_jobs (tenant_id, niche, city, source_type, bbox, grid_step, requested_limit)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `SELECT tenant_id, provider, api_base_url, api_key_last4, default_phone_number_id, settings, created_at, updated_at
+       FROM tenant_integrations
+      WHERE tenant_id = $1 AND provider = 'nebrijaai'`,
+    [tenantId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function getEffectiveNebrijaSettings({ tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT api_base_url, api_key, api_key_last4, default_phone_number_id, settings
+       FROM tenant_integrations
+      WHERE tenant_id = $1 AND provider = 'nebrijaai'`,
+    [tenantId]
+  );
+  const row = result.rows[0] || {};
+  const apiKey = row.api_key || config.nebrija.apiKey || "";
+  return {
+    apiBaseUrl: row.api_base_url || config.nebrija.apiBaseUrl,
+    apiKey,
+    apiKeyLast4: row.api_key_last4 || (apiKey ? apiKey.slice(-4) : ""),
+    defaultPhoneNumberId: row.default_phone_number_id || config.nebrija.phoneNumberId,
+    settings: row.settings || {},
+    configured: Boolean(apiKey)
+  };
+}
+
+export async function upsertTenantNebrijaSettings({
+  tenantId = DEFAULT_TENANT_ID,
+  apiBaseUrl,
+  apiKey,
+  defaultPhoneNumberId,
+  settings
+}) {
+  const existing = await query(
+    `SELECT api_key, api_key_last4 FROM tenant_integrations WHERE tenant_id = $1 AND provider = 'nebrijaai'`,
+    [tenantId]
+  );
+  const nextApiKey = apiKey === undefined ? existing.rows[0]?.api_key || null : apiKey || null;
+  const nextLast4 = nextApiKey ? nextApiKey.slice(-4) : existing.rows[0]?.api_key_last4 || null;
+  const result = await query(
+    `INSERT INTO tenant_integrations
+       (tenant_id, provider, api_base_url, api_key, api_key_last4, default_phone_number_id, settings)
+     VALUES ($1, 'nebrijaai', $2, $3, $4, $5, $6)
+     ON CONFLICT (tenant_id, provider)
+     DO UPDATE SET
+       api_base_url = EXCLUDED.api_base_url,
+       api_key = COALESCE(EXCLUDED.api_key, tenant_integrations.api_key),
+       api_key_last4 = COALESCE(EXCLUDED.api_key_last4, tenant_integrations.api_key_last4),
+       default_phone_number_id = EXCLUDED.default_phone_number_id,
+       settings = tenant_integrations.settings || EXCLUDED.settings,
+       updated_at = NOW()
+     RETURNING tenant_id, provider, api_base_url, api_key_last4, default_phone_number_id, settings, created_at, updated_at`,
+    [tenantId, apiBaseUrl || null, nextApiKey, nextLast4, defaultPhoneNumberId || null, settings || {}]
+  );
+  return result.rows[0];
+}
+
+export async function createExtractionJob({
+  tenantId = DEFAULT_TENANT_ID,
+  niche,
+  city,
+  sourceType,
+  bbox,
+  gridStep,
+  requestedLimit,
+  voiceAssistantId,
+  voiceAssistantName,
+  voicePhoneNumberId,
+  voiceVariableMap,
+  voiceAssistantVariables
+}) {
+  const result = await query(
+    `INSERT INTO extraction_jobs
+       (tenant_id, niche, city, source_type, bbox, grid_step, requested_limit,
+        voice_assistant_id, voice_assistant_name, voice_phone_number_id, voice_variable_map, voice_assistant_variables)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
-    [tenantId, niche, city, sourceType || "google_places_api", bbox || null, gridStep || null, requestedLimit || null]
+    [
+      tenantId,
+      niche,
+      city,
+      sourceType || "google_places_api",
+      bbox || null,
+      gridStep || null,
+      requestedLimit || null,
+      voiceAssistantId || null,
+      voiceAssistantName || null,
+      voicePhoneNumberId || null,
+      voiceVariableMap || {},
+      voiceAssistantVariables || []
+    ]
   );
   return result.rows[0];
 }
@@ -163,16 +252,17 @@ export async function upsertGoogleCandidate({ tenantId = DEFAULT_TENANT_ID, extr
   return result.rows[0];
 }
 
-export async function upsertBusinessFromGoogleCandidate({ tenantId = DEFAULT_TENANT_ID, place, city, niche, sourceUrl }) {
+export async function upsertBusinessFromGoogleCandidate({ tenantId = DEFAULT_TENANT_ID, extractionJobId, place, city, niche, sourceUrl }) {
   const syntheticKey = place.placeId || stableBusinessKey(place);
   const status = place.website || place.phoneE164 ? "enriched" : "enrichment_pending";
   const result = await query(
     `INSERT INTO businesses
-       (tenant_id, place_id, external_source, name, phone, phone_e164, website, address, city, niche,
+       (tenant_id, extraction_job_id, place_id, external_source, name, phone, phone_e164, website, address, city, niche,
         latitude, longitude, rating, review_count, source_url, raw_payload, status)
-     VALUES ($1, $2, 'google_places_candidate', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::lead_status)
+     VALUES ($1, $2, $3, 'google_places_candidate', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::lead_status)
      ON CONFLICT (tenant_id, place_id) WHERE place_id IS NOT NULL
      DO UPDATE SET
+       extraction_job_id = COALESCE(businesses.extraction_job_id, EXCLUDED.extraction_job_id),
        name = COALESCE(EXCLUDED.name, businesses.name),
        phone = COALESCE(EXCLUDED.phone, businesses.phone),
        phone_e164 = COALESCE(EXCLUDED.phone_e164, businesses.phone_e164),
@@ -198,6 +288,7 @@ export async function upsertBusinessFromGoogleCandidate({ tenantId = DEFAULT_TEN
      RETURNING *`,
     [
       tenantId,
+      extractionJobId || null,
       syntheticKey,
       place.name || "Unknown business",
       place.phone || null,
@@ -223,6 +314,22 @@ export async function findBusinessById(id, { tenantId } = {}) {
   const tenantClause = tenantId ? `AND tenant_id = $2` : "";
   if (tenantId) params.push(tenantId);
   const result = await query(`SELECT * FROM businesses WHERE id = $1 ${tenantClause}`, params);
+  return result.rows[0] || null;
+}
+
+export async function findBusinessVoiceContext(id, { tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT b.*,
+            j.voice_assistant_id,
+            j.voice_assistant_name,
+            j.voice_phone_number_id,
+            j.voice_variable_map,
+            j.voice_assistant_variables
+       FROM businesses b
+       LEFT JOIN extraction_jobs j ON j.id = b.extraction_job_id AND j.tenant_id = b.tenant_id
+      WHERE b.id = $1 AND b.tenant_id = $2`,
+    [id, tenantId]
+  );
   return result.rows[0] || null;
 }
 

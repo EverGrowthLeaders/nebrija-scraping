@@ -70,9 +70,23 @@ CREATE TABLE IF NOT EXISTS user_sessions (
   last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE IF NOT EXISTS tenant_integrations (
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  api_base_url TEXT,
+  api_key TEXT,
+  api_key_last4 TEXT,
+  default_phone_number_id TEXT,
+  settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (tenant_id, provider)
+);
+
 CREATE TABLE IF NOT EXISTS businesses (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  extraction_job_id UUID,
   place_id TEXT,
   external_source TEXT NOT NULL DEFAULT 'open_web_or_licensed_source',
   name TEXT NOT NULL,
@@ -128,8 +142,17 @@ CREATE TABLE IF NOT EXISTS extraction_jobs (
   finished_at TIMESTAMPTZ,
   error TEXT,
   metrics JSONB NOT NULL DEFAULT '{}'::jsonb,
+  voice_assistant_id TEXT,
+  voice_assistant_name TEXT,
+  voice_phone_number_id TEXT,
+  voice_variable_map JSONB NOT NULL DEFAULT '{}'::jsonb,
+  voice_assistant_variables JSONB NOT NULL DEFAULT '[]'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE businesses
+  ADD CONSTRAINT businesses_extraction_job_id_fkey
+  FOREIGN KEY (extraction_job_id) REFERENCES extraction_jobs(id) ON DELETE SET NULL;
 
 CREATE TABLE IF NOT EXISTS google_place_candidates (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -208,8 +231,8 @@ CREATE TABLE IF NOT EXISTS voice_calls (
   business_id UUID REFERENCES businesses(id) ON DELETE SET NULL,
   provider TEXT NOT NULL DEFAULT 'nebrijaai',
   provider_call_id TEXT UNIQUE,
-  assistant_id UUID,
-  phone_number_id UUID,
+  assistant_id TEXT,
+  phone_number_id TEXT,
   customer_number TEXT,
   status TEXT,
   started_at TIMESTAMPTZ,
@@ -264,6 +287,12 @@ CREATE INDEX IF NOT EXISTS idx_users_tenant_email
 
 CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash
   ON user_sessions(token_hash);
+
+CREATE INDEX IF NOT EXISTS idx_tenant_integrations_provider
+  ON tenant_integrations(provider);
+
+CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job
+  ON businesses(tenant_id, extraction_job_id);
 
 CREATE INDEX IF NOT EXISTS idx_business_contacts_lookup
   ON business_contacts(kind, value);

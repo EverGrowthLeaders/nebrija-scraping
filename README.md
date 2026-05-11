@@ -60,8 +60,15 @@ Si tu despliegue expone Firecrawl sin `/v2`, cambia `FIRECRAWL_BASE_URL` al path
 3. `web-discovery` usa Firecrawl Search para encontrar la web oficial.
 4. `business-crawl` usa Firecrawl Map/Scrape sobre la web del negocio.
 5. `scoring` calcula prioridad.
-6. `voice-call` lanza llamada Nebrija AI.
+6. `voice-call` lanza llamada Nebrija AI con el asistente elegido en la campana.
 7. `POST /webhooks/nebrija/calls` ingiere `end-of-call-report` estilo Vapi.
+
+La API key de NebrijaAI puede configurarse por tenant desde `Settings`. Si no hay
+configuracion guardada en base de datos, el sistema usa las variables de entorno
+como fallback. Cada campana puede vincular un asistente listado desde
+`GET /assistants` usando esa API key. Las variables detectadas en el asistente se
+rellenan con campos del lead (`business_name`, `city`, `phone_e164`, `score`,
+etc.) al lanzar la llamada.
 
 ## Endpoints utiles
 

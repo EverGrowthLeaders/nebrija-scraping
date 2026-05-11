@@ -12,6 +12,8 @@ import {
 } from "../packages/core/src/firecrawl.mjs";
 import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
 import { isAuthorizedApiKey, parseApiKeys } from "../packages/core/src/auth.mjs";
+import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
+import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -151,4 +153,47 @@ test("authorizes test job API keys from bearer or x-api-key headers", () => {
   assert.equal(isAuthorizedApiKey({ "x-api-key": "alpha" }, keys), true);
   assert.equal(isAuthorizedApiKey({ authorization: "Bearer bravo" }, keys), true);
   assert.equal(isAuthorizedApiKey({ authorization: "Bearer charlie" }, keys), false);
+});
+
+test("normalizes Nebrija assistants and extracts template variables", () => {
+  const [assistant] = normalizeAssistantsResponse({
+    data: [
+      {
+        id: "asst_123",
+        name: "Ventas",
+        model: {
+          messages: [{ content: "Llama a {{business_name}} en {{city}}. Fecha {{now}}" }]
+        }
+      }
+    ]
+  });
+
+  assert.equal(assistant.id, "asst_123");
+  assert.deepEqual(assistant.variableNames, ["business_name", "city"]);
+});
+
+test("builds assistant variable values from lead fields", () => {
+  const variableMap = defaultVariableMap(["business_name", "telefono", "ciudad"]);
+  assert.deepEqual(variableMap, {
+    business_name: "business_name",
+    telefono: "phone_e164",
+    ciudad: "city"
+  });
+  const values = buildVariableValues(
+    {
+      id: "lead-1",
+      name: "Abogados Demo",
+      city: "Logroño",
+      phone_e164: "+34600111222",
+      score: 82
+    },
+    variableMap,
+    Object.keys(variableMap)
+  );
+
+  assert.deepEqual(values, {
+    business_name: "Abogados Demo",
+    telefono: "+34600111222",
+    ciudad: "Logroño"
+  });
 });

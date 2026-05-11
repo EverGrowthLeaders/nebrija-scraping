@@ -6,6 +6,7 @@ import { createQueue, createWorker, QUEUE_NAMES, closeQueues } from "../../../pa
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
 import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
+import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
 import { calculateLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
 import {
@@ -13,7 +14,9 @@ import {
   createVoiceCallFromDispatch,
   findBusinessById,
   findCallableBusinessById,
+  findBusinessVoiceContext,
   findExtractionJob,
+  getEffectiveNebrijaSettings,
   persistCrawledPage,
   recordProvenance,
   updateBusinessEnrichment,
@@ -27,8 +30,6 @@ import {
 
 const firecrawl = new FirecrawlClient();
 const googlePlaces = new GooglePlacesClient();
-const nebrija = new NebrijaClient();
-
 await ensureRuntimeSchema();
 
 const queues = {
@@ -93,6 +94,7 @@ async function runGoogleDiscovery(job) {
         });
         const business = await upsertBusinessFromGoogleCandidate({
           tenantId,
+          extractionJobId,
           place,
           city: extractionJob.city,
           niche: extractionJob.niche,
@@ -348,22 +350,27 @@ async function runScoring(job) {
 }
 
 async function runVoiceCall(job) {
-  const business = await findCallableBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
+  const business = await findBusinessVoiceContext(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
   if (!business.phone_e164) throw new Error(`business has no phone_e164: ${business.id}`);
 
+  const settings = await getEffectiveNebrijaSettings({ tenantId: business.tenant_id });
+  const nebrija = new NebrijaClient({
+    baseUrl: settings.apiBaseUrl,
+    apiKey: settings.apiKey,
+    phoneNumberId: settings.defaultPhoneNumberId
+  });
+  const variableValues = buildVariableValues(
+    business,
+    business.voice_variable_map || {},
+    business.voice_assistant_variables || []
+  );
   const response = await nebrija.createOutboundCall({
     customerNumber: business.phone_e164,
+    assistantId: business.voice_assistant_id,
+    phoneNumberId: business.voice_phone_number_id || settings.defaultPhoneNumberId,
     testId: job.data.testId,
-    variables: {
-      business_id: business.id,
-      business_name: business.name,
-      city: business.city,
-      category: business.category || business.niche,
-      rating: business.rating,
-      review_count: business.review_count,
-      score: business.score
-    }
+    variableValues
   });
   if (!response?.id && !response?.callId) {
     throw new Error("Nebrija response did not include a call id");

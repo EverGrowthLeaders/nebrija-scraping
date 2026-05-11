@@ -55,6 +55,21 @@ export async function ensureRuntimeSchema() {
     )
   `);
 
+    await run(`
+    CREATE TABLE IF NOT EXISTS tenant_integrations (
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      provider TEXT NOT NULL,
+      api_base_url TEXT,
+      api_key TEXT,
+      api_key_last4 TEXT,
+      default_phone_number_id TEXT,
+      settings JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (tenant_id, provider)
+    )
+  `);
+
     const tenantTables = [
       "businesses",
       "extraction_jobs",
@@ -74,7 +89,15 @@ export async function ensureRuntimeSchema() {
     }
 
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS scoring_notes TEXT`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS extraction_job_id UUID REFERENCES extraction_jobs(id) ON DELETE SET NULL`);
     await run(`ALTER TABLE extraction_jobs ALTER COLUMN source_type SET DEFAULT 'google_places_api'`);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_name TEXT`);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_phone_number_id TEXT`);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_variable_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_variables JSONB NOT NULL DEFAULT '[]'::jsonb`);
+    await run(`ALTER TABLE voice_calls ALTER COLUMN assistant_id TYPE TEXT USING assistant_id::TEXT`);
+    await run(`ALTER TABLE voice_calls ALTER COLUMN phone_number_id TYPE TEXT USING phone_number_id::TEXT`);
 
     await run(`ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_place_id_key`);
     await run(`ALTER TABLE google_place_candidates DROP CONSTRAINT IF EXISTS google_place_candidates_place_id_query_key`);
@@ -96,6 +119,8 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_tenants_google_domain ON tenants(google_domain) WHERE google_domain IS NOT NULL`);
     await run(`CREATE INDEX IF NOT EXISTS idx_users_tenant_email ON users(tenant_id, email)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_tenant_integrations_provider ON tenant_integrations(provider)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job ON businesses(tenant_id, extraction_job_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_status_city_niche ON businesses(tenant_id, status, city, niche)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_score ON businesses(tenant_id, score DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_created ON extraction_jobs(tenant_id, created_at DESC)`);
