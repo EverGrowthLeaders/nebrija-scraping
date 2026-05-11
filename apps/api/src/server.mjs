@@ -79,8 +79,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/auth/google/status") {
       return sendJson(res, 200, {
-        configured: Boolean(config.auth.googleClientId && config.auth.googleClientSecret),
-        allowedDomains: config.auth.allowedGoogleDomains
+        configured: Boolean(config.auth.googleClientId && config.auth.googleClientSecret)
       });
     }
 
@@ -100,24 +99,29 @@ const server = http.createServer(async (req, res) => {
       if (!state || !expectedState || !safeEqual(state, expectedState) || !code) {
         return redirect(res, "/?auth=failed");
       }
-      const tokenResponse = await exchangeGoogleCode({ code, redirectUri: googleRedirectUri(req) });
-      const profile = await verifyGoogleIdToken(tokenResponse.id_token);
-      const { tenant, user } = await upsertGoogleUser({ profile });
-      const token = crypto.randomBytes(32).toString("base64url");
-      await createUserSession({
-        tenantId: tenant.id,
-        userId: user.id,
-        tokenHash: hashToken(token),
-        expiresAt: new Date(Date.now() + config.auth.sessionTtlDays * 86400_000),
-        userAgent: req.headers["user-agent"],
-        ipAddress: clientIp(req)
-      });
-      setCookie(req, res, config.auth.sessionCookieName, token, {
-        maxAge: config.auth.sessionTtlDays * 86400,
-        httpOnly: true,
-        sameSite: "Lax"
-      });
-      return redirect(res, "/");
+      try {
+        const tokenResponse = await exchangeGoogleCode({ code, redirectUri: googleRedirectUri(req) });
+        const profile = await verifyGoogleIdToken(tokenResponse.id_token);
+        const { tenant, user } = await upsertGoogleUser({ profile });
+        const token = crypto.randomBytes(32).toString("base64url");
+        await createUserSession({
+          tenantId: tenant.id,
+          userId: user.id,
+          tokenHash: hashToken(token),
+          expiresAt: new Date(Date.now() + config.auth.sessionTtlDays * 86400_000),
+          userAgent: req.headers["user-agent"],
+          ipAddress: clientIp(req)
+        });
+        setCookie(req, res, config.auth.sessionCookieName, token, {
+          maxAge: config.auth.sessionTtlDays * 86400,
+          httpOnly: true,
+          sameSite: "Lax"
+        });
+        return redirect(res, "/");
+      } catch (error) {
+        log.warn({ error }, "google oauth callback failed");
+        return redirect(res, `/?auth=failed&reason=${encodeURIComponent(error.message || "oauth_failed")}`);
+      }
     }
 
     if (req.method === "POST" && url.pathname === "/auth/logout") {

@@ -57,10 +57,6 @@ export const config = {
   auth: {
     googleClientId: process.env.GOOGLE_OAUTH_CLIENT_ID || "",
     googleClientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET || "",
-    allowedGoogleDomains: (process.env.GOOGLE_ALLOWED_DOMAINS || "")
-      .split(",")
-      .map((item) => item.trim().toLowerCase())
-      .filter(Boolean),
     sessionCookieName: process.env.SESSION_COOKIE_NAME || "lex_session",
     sessionTtlDays: intFromEnv("SESSION_TTL_DAYS", 14)
   },

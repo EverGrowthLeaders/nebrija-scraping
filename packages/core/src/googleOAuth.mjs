@@ -95,18 +95,6 @@ function validateGoogleClaims(payload) {
     error.statusCode = 403;
     throw error;
   }
-
-  const emailDomain = String(payload.email).split("@").pop()?.toLowerCase();
-  const hostedDomain = String(payload.hd || "").toLowerCase();
-  if (
-    config.auth.allowedGoogleDomains.length &&
-    !config.auth.allowedGoogleDomains.includes(emailDomain) &&
-    !config.auth.allowedGoogleDomains.includes(hostedDomain)
-  ) {
-    const error = new Error("google_domain_not_allowed");
-    error.statusCode = 403;
-    throw error;
-  }
 }
 
 async function getGoogleJwks() {

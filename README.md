@@ -31,13 +31,12 @@ Variables:
 ```env
 GOOGLE_OAUTH_CLIENT_ID=...
 GOOGLE_OAUTH_CLIENT_SECRET=...
-GOOGLE_ALLOWED_DOMAINS=evergrowthleaders.com
 SESSION_COOKIE_NAME=lex_session
 SESSION_TTL_DAYS=14
 ```
 
-`GOOGLE_ALLOWED_DOMAINS` es opcional, pero recomendado para evitar que cualquier
-cuenta Google pueda crear su propio workspace y consumir cuota.
+El acceso se limita a cuentas Google con email verificado. Las restricciones de
+tenant deben resolverse con invitaciones o roles, no bloqueando el callback OAuth.
 
 ## Firecrawl self-hosted
 
@@ -114,7 +113,6 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `TEST_JOBS_API_KEYS`
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
-- `GOOGLE_ALLOWED_DOMAINS`
 - `FIRECRAWL_BASE_URL`
 - `FIRECRAWL_API_KEY`
 - `GOOGLE_MAPS_API_KEY`

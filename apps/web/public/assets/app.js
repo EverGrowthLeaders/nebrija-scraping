@@ -124,7 +124,12 @@ async function bootstrap() {
     await router();
   } catch (err) {
     if (err.status === 401) {
-      await showLogin(new URLSearchParams(location.search).get("auth") === "failed" ? "No se pudo completar el acceso con Google." : "");
+      const params = new URLSearchParams(location.search);
+      const reason = params.get("reason");
+      const message = params.get("auth") === "failed"
+        ? `No se pudo completar el acceso con Google${reason ? ` (${reason})` : ""}.`
+        : "";
+      await showLogin(message);
     } else {
       await showLogin("No se pudo comprobar la sesión.");
     }
@@ -161,9 +166,7 @@ async function showLogin(message = "") {
   } catch {
     status = { configured: false, allowedDomains: [] };
   }
-  const domainCopy = status.allowedDomains?.length
-    ? `Dominios permitidos: ${status.allowedDomains.join(", ")}`
-    : "Acceso por cuenta Google verificada.";
+  const domainCopy = "Acceso por cuenta Google verificada.";
   renderLoginShell(`
     <div class="login-card__mark" aria-hidden="true">
       <svg viewBox="0 0 32 32" width="24" height="24">
