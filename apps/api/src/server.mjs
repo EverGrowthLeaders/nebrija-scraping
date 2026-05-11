@@ -33,6 +33,7 @@ import {
   revokeSession,
   updateBusinessFromCallReport,
   updateBusinessScoringNotes,
+  updateExtractionJobVoiceSettings,
   upsertTenantNebrijaSettings,
   upsertGoogleUser,
   upsertVoiceCallReport
@@ -201,6 +202,16 @@ const server = http.createServer(async (req, res) => {
     const campaignDetailMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)$/);
     if (req.method === "GET" && campaignDetailMatch) {
       const job = await findExtractionJobDetail(campaignDetailMatch[1], { tenantId: auth.tenantId });
+      if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+      return sendJson(res, 200, { job });
+    }
+
+    if (req.method === "PATCH" && campaignDetailMatch) {
+      const { json } = await readJson(req);
+      const job = await updateExtractionJobVoiceSettings(campaignDetailMatch[1], {
+        tenantId: auth.tenantId,
+        ...parseCampaignVoiceSettings(json)
+      });
       if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
       return sendJson(res, 200, { job });
     }

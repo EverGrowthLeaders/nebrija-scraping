@@ -234,6 +234,39 @@ export async function updateExtractionJob(id, fields) {
   return result.rows[0] || null;
 }
 
+export async function updateExtractionJobVoiceSettings(
+  id,
+  {
+    tenantId = DEFAULT_TENANT_ID,
+    voiceAssistantId,
+    voiceAssistantName,
+    voicePhoneNumberId,
+    voiceVariableMap,
+    voiceAssistantVariables
+  } = {}
+) {
+  const result = await query(
+    `UPDATE extraction_jobs
+        SET voice_assistant_id = $1,
+            voice_assistant_name = $2,
+            voice_phone_number_id = $3,
+            voice_variable_map = $4,
+            voice_assistant_variables = $5
+      WHERE id = $6 AND tenant_id = $7
+      RETURNING *`,
+    [
+      voiceAssistantId || null,
+      voiceAssistantName || null,
+      voicePhoneNumberId || null,
+      voiceVariableMap || {},
+      voiceAssistantVariables || [],
+      id,
+      tenantId
+    ]
+  );
+  return result.rows[0] || null;
+}
+
 export async function upsertGoogleCandidate({ tenantId = DEFAULT_TENANT_ID, extractionJobId, place, queryText, city, niche }) {
   const result = await query(
     `INSERT INTO google_place_candidates

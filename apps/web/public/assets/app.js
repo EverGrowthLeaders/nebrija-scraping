@@ -563,6 +563,27 @@ async function renderCampaignDetail({ params }) {
     </div>
 
     <div class="card" style="margin-top:18px">
+      <div class="card__head">
+        <h3>Asistente NebrijaAI</h3>
+        ${job.voice_assistant_id ? `<span class="badge badge--green">Asignado</span>` : `<span class="badge badge--zinc">Sin asignar</span>`}
+      </div>
+      <form class="settings-card" id="campaign-voice-settings">
+        <div class="field">
+          <label>Asistente para llamadas</label>
+          <select class="select" name="voiceAssistantId" data-bind="campaign-assistant">
+            <option value="">Cargando asistentes...</option>
+          </select>
+          <div class="form-hint" data-bind="campaign-assistant-hint">
+            ${job.voice_assistant_name ? `Actual: ${escape(job.voice_assistant_name)}` : "Selecciona el asistente que usará esta campaña al lanzar llamadas."}
+          </div>
+        </div>
+        <div class="row" style="justify-content:flex-end">
+          <button class="btn btn--primary" type="submit">Guardar asistente</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card" style="margin-top:18px">
       <h3>Detalle</h3>
       <dl class="kv">
         <dt>Nicho</dt><dd>${escape(job.niche)}</dd>
@@ -588,6 +609,14 @@ async function renderCampaignDetail({ params }) {
       </a>
     </div>
   `;
+
+  const voiceForm = $("#campaign-voice-settings", view);
+  await hydrateCampaignAssistants(voiceForm, {
+    selectedAssistantId: job.voice_assistant_id,
+    selectedAssistantName: job.voice_assistant_name,
+    selectedAssistantVariables: job.voice_assistant_variables || []
+  });
+  voiceForm.addEventListener("submit", (event) => saveCampaignVoiceSettings(event, job.id));
 }
 
 // ── Leads list ────────────────────────────────────────────
@@ -1047,11 +1076,6 @@ async function renderSettings() {
         <div data-bind="assistants-list">${rowSkeleton(3)}</div>
       </div>
     </div>
-
-    <div class="card" style="margin-top:18px">
-      <div class="card__head"><h3>Variables de lead</h3></div>
-      <div class="variable-grid" data-bind="lead-variables"></div>
-    </div>
   `;
 
   const settingsData = await api("/api/settings/nebrija");
@@ -1075,7 +1099,6 @@ function hydrateSettingsForm(data) {
   $("[data-bind='api-key-hint']", view).textContent = settings.apiKeyLast4
     ? `Clave activa terminada en ${settings.apiKeyLast4}${settings.usingEnvFallback ? " (env)" : ""}.`
     : "Introduce una API Key para listar asistentes y lanzar llamadas.";
-  renderLeadVariables(data.leadVariables || []);
 }
 
 async function saveNebrijaSettings(e) {
@@ -1091,7 +1114,7 @@ async function saveNebrijaSettings(e) {
   try {
     const data = await api("/api/settings/nebrija", { method: "PATCH", body: JSON.stringify(body) });
     form.elements.apiKey.value = "";
-    hydrateSettingsForm({ settings: data.settings, leadVariables: getRenderedLeadVariables() });
+    hydrateSettingsForm({ settings: data.settings });
     toast("Settings guardados", "ok");
     await loadAssistants();
   } catch (err) {
@@ -1108,7 +1131,6 @@ async function loadAssistants() {
   try {
     const data = await api("/api/settings/nebrija/assistants");
     window.__nebrijaAssistants = data.assistants || [];
-    renderLeadVariables(data.leadVariables || getRenderedLeadVariables());
     host.innerHTML = window.__nebrijaAssistants.length
       ? `<div class="list">${window.__nebrijaAssistants.map(renderAssistantListItem).join("")}</div>`
       : emptyState("Sin asistentes", "La API Key funciona, pero NebrijaAI no devolvió asistentes.");
@@ -1135,19 +1157,6 @@ function renderAssistantListItem(assistant) {
   `;
 }
 
-function renderLeadVariables(items) {
-  window.__leadVariables = items;
-  const host = $("[data-bind='lead-variables']", view);
-  if (!host) return;
-  host.innerHTML = items
-    .map((item) => `<div class="variable-pill"><span>${escape(item.key)}</span><small>${escape(item.label)}</small></div>`)
-    .join("");
-}
-
-function getRenderedLeadVariables() {
-  return window.__leadVariables || [];
-}
-
 // ── Modals: new campaign / new lead ───────────────────────
 async function openCampaignModal() {
   const form = document.createElement("form");
@@ -1172,7 +1181,6 @@ async function openCampaignModal() {
       </select>
       <div class="form-hint" data-bind="campaign-assistant-hint">Puedes vincular un asistente ahora o lanzar llamadas manualmente despues.</div>
     </div>
-    <div data-bind="campaign-variable-map"></div>
   `;
   await hydrateCampaignAssistants(form);
   const footer = document.createDocumentFragment();
@@ -1181,14 +1189,7 @@ async function openCampaignModal() {
   cancel.addEventListener("click", closeModal);
   submit.addEventListener("click", async () => {
     const data = Object.fromEntries(new FormData(form).entries());
-    const assistant = getSelectedCampaignAssistant(form);
-    if (assistant) {
-      data.voiceAssistantName = assistant.name;
-      data.voiceAssistantVariables = assistant.variableNames || [];
-      data.voiceVariableMap = Object.fromEntries(
-        $$("[data-variable-name]", form).map((select) => [select.dataset.variableName, select.value])
-      );
-    }
+    Object.assign(data, buildCampaignVoicePayload(form));
     if (!data.niche || !data.city) {
       toast("Faltan campos obligatorios", "error");
       return;
@@ -1213,77 +1214,88 @@ async function openCampaignModal() {
   openModal({ title: "Nueva campaña", body: form, footer });
 }
 
-async function hydrateCampaignAssistants(form) {
+async function hydrateCampaignAssistants(form, options = {}) {
   const select = $("[data-bind='campaign-assistant']", form);
   const hint = $("[data-bind='campaign-assistant-hint']", form);
+  form.dataset.fallbackAssistantId = options.selectedAssistantId || "";
+  form.dataset.fallbackAssistantName = options.selectedAssistantName || "";
+  form.dataset.fallbackAssistantVariables = JSON.stringify(options.selectedAssistantVariables || []);
   try {
     if (!window.__nebrijaAssistants?.length) {
       const data = await api("/api/settings/nebrija/assistants");
       window.__nebrijaAssistants = data.assistants || [];
-      window.__leadVariables = data.leadVariables || window.__leadVariables || [];
     }
+    const assistants = window.__nebrijaAssistants || [];
+    const selectedMissing = options.selectedAssistantId && !assistants.some((assistant) => assistant.id === options.selectedAssistantId);
     select.innerHTML = `<option value="">Sin asistente vinculado</option>${(window.__nebrijaAssistants || [])
       .map((assistant) => `<option value="${escape(assistant.id)}">${escape(assistant.name)}</option>`)
-      .join("")}`;
+      .join("")}${
+      selectedMissing
+        ? `<option value="${escape(options.selectedAssistantId)}">${escape(options.selectedAssistantName || options.selectedAssistantId)}</option>`
+        : ""
+    }`;
+    select.value = options.selectedAssistantId || "";
     hint.textContent = window.__nebrijaAssistants?.length
       ? "Las variables se rellenan automaticamente con datos del lead."
       : "No hay asistentes disponibles en NebrijaAI.";
   } catch (err) {
     hint.innerHTML = `Configura NebrijaAI en <a href="#/settings">Settings</a> para listar asistentes.`;
+    if (options.selectedAssistantId) {
+      select.innerHTML = `<option value="${escape(options.selectedAssistantId)}">${escape(options.selectedAssistantName || options.selectedAssistantId)}</option>`;
+    }
   }
-  select.addEventListener("change", () => renderCampaignVariableMap(form));
-  renderCampaignVariableMap(form);
 }
 
 function getSelectedCampaignAssistant(form) {
   const id = form.elements.voiceAssistantId?.value;
-  return (window.__nebrijaAssistants || []).find((assistant) => assistant.id === id) || null;
+  if (!id) return null;
+  return (
+    (window.__nebrijaAssistants || []).find((assistant) => assistant.id === id) || {
+      id,
+      name: form.dataset.fallbackAssistantId === id
+        ? form.dataset.fallbackAssistantName || id
+        : form.elements.voiceAssistantId.selectedOptions?.[0]?.textContent || id,
+      variableNames: form.dataset.fallbackAssistantId === id
+        ? JSON.parse(form.dataset.fallbackAssistantVariables || "[]")
+        : []
+    }
+  );
 }
 
-function renderCampaignVariableMap(form) {
-  const host = $("[data-bind='campaign-variable-map']", form);
+function buildCampaignVoicePayload(form) {
   const assistant = getSelectedCampaignAssistant(form);
   if (!assistant) {
-    host.innerHTML = "";
-    return;
+    return {
+      voiceAssistantId: "",
+      voiceAssistantName: "",
+      voiceAssistantVariables: [],
+      voiceVariableMap: {}
+    };
   }
-  const variables = assistant.variableNames || [];
-  if (!variables.length) {
-    host.innerHTML = `<div class="form-hint">No se han detectado variables en este asistente; se enviara el payload completo del lead.</div>`;
-    return;
-  }
-  const leadVariables = window.__leadVariables || [];
-  host.innerHTML = `
-    <div class="variable-map">
-      ${variables
-        .map((name) => {
-          const selected = guessLeadVariable(name);
-          return `
-            <label class="variable-map__row">
-              <span class="mono">${escape(name)}</span>
-              <select class="select" data-variable-name="${escape(name)}">
-                ${leadVariables
-                  .map((item) => `<option value="${escape(item.key)}" ${item.key === selected ? "selected" : ""}>${escape(item.key)} · ${escape(item.label)}</option>`)
-                  .join("")}
-              </select>
-            </label>
-          `;
-        })
-        .join("")}
-    </div>
-  `;
+  return {
+    voiceAssistantId: assistant.id,
+    voiceAssistantName: assistant.name,
+    voiceAssistantVariables: assistant.variableNames || []
+  };
 }
 
-function guessLeadVariable(name) {
-  const lower = String(name || "").toLowerCase();
-  const exact = (window.__leadVariables || []).find((item) => item.key === lower);
-  if (exact) return exact.key;
-  if (lower.includes("phone") || lower.includes("telefono")) return "phone_e164";
-  if (lower.includes("city") || lower.includes("ciudad")) return "city";
-  if (lower.includes("review")) return "review_count";
-  if (lower.includes("rating")) return "rating";
-  if (lower.includes("web")) return "website";
-  return "business_name";
+async function saveCampaignVoiceSettings(event, campaignId) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = $("button[type='submit']", form);
+  submit.disabled = true;
+  try {
+    await api(`/api/campaigns/${campaignId}`, {
+      method: "PATCH",
+      body: JSON.stringify(buildCampaignVoicePayload(form))
+    });
+    toast("Asistente actualizado", "ok");
+    await router();
+  } catch (err) {
+    toast(`No se pudo guardar el asistente (${err.message})`, "error");
+  } finally {
+    submit.disabled = false;
+  }
 }
 
 function openLeadModal() {
