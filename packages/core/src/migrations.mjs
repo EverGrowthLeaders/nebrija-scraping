@@ -170,5 +170,21 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_funnel ON businesses(tenant_id, ads_funnel_type, ads_funnel_last_checked_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_created ON extraction_jobs(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_voice_calls_tenant_created ON voice_calls(tenant_id, created_at DESC)`);
+
+    await run(`
+      DELETE FROM business_contacts c
+      USING (
+        SELECT business_id, source_url
+          FROM business_contacts
+         WHERE kind = 'phone'
+           AND source_url IS NOT NULL
+           AND source_url NOT ILIKE '%google.%'
+         GROUP BY business_id, source_url
+        HAVING COUNT(*) > 20
+      ) noisy
+      WHERE c.business_id = noisy.business_id
+        AND c.kind = 'phone'
+        AND c.source_url IS NOT DISTINCT FROM noisy.source_url
+    `);
   });
 }
