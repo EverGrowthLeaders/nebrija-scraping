@@ -425,6 +425,36 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        if (type === "lead_import") {
+          const filename = json.filename || "codex-import.csv";
+          const contentBase64 = json.contentBase64 || json.content_base64 || Buffer.from(
+            json.csv || "Nombre,Web,Email,Ciudad,Nicho\nCodex Import Demo,https://example.com,import@example.com,Madrid,test\n",
+            "utf8"
+          ).toString("base64");
+          const preview = previewLeadImport({ filename, contentBase64 });
+          const result = await commitLeadImport({
+            tenantId: auth.tenantId,
+            filename,
+            contentBase64,
+            mapping: json.mapping || preview.suggestedMapping,
+            enrichAds: json.enrichAds ?? json.enrich_ads ?? false
+          });
+          return sendJson(res, 201, {
+            testJob: {
+              type,
+              testId,
+              imported: result.imported,
+              enrichAdsQueued: result.enrichAdsQueued
+            },
+            preview: {
+              headers: preview.headers,
+              totalRows: preview.totalRows,
+              suggestedMapping: preview.suggestedMapping
+            },
+            import: result
+          });
+        }
+
         if (type === "web_discovery") {
           validateRequired(json, ["name"]);
           const business = await createManualBusiness({
@@ -483,7 +513,7 @@ const server = http.createServer(async (req, res) => {
 
         return sendJson(res, 400, {
           error: "unsupported_test_job_type",
-          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "campaign"]
+          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "lead_import", "campaign"]
         });
       }
 
