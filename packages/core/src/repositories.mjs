@@ -1060,7 +1060,9 @@ export async function listBusinesses({
   extractionJobId,
   listId,
   adsActive,
-  adsFunnelType
+  adsFunnelType,
+  adsInvestmentMin,
+  adsInvestmentMax
 } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
@@ -1111,6 +1113,22 @@ export async function listBusinesses({
   if (adsFunnelType) {
     params.push(adsFunnelType);
     where.push(`b.ads_funnel_type = $${params.length}`);
+  }
+  const adsInvestmentExpr = `(b.custom_fields->>'ads_investment')`;
+  const adsInvestmentNumber = `(CASE WHEN ${adsInvestmentExpr} ~ '^[0-9]+(\\.[0-9]+)?$' THEN ${adsInvestmentExpr}::numeric ELSE NULL END)`;
+  if (adsInvestmentMin !== undefined && adsInvestmentMin !== null && adsInvestmentMin !== "") {
+    const value = Number(adsInvestmentMin);
+    if (Number.isFinite(value)) {
+      params.push(value);
+      where.push(`${adsInvestmentNumber} >= $${params.length}`);
+    }
+  }
+  if (adsInvestmentMax !== undefined && adsInvestmentMax !== null && adsInvestmentMax !== "") {
+    const value = Number(adsInvestmentMax);
+    if (Number.isFinite(value)) {
+      params.push(value);
+      where.push(`${adsInvestmentNumber} <= $${params.length}`);
+    }
   }
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(safeLimit);

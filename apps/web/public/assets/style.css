@@ -1805,6 +1805,11 @@ a {
   overflow: hidden;
 }
 
+.import-crm-list {
+  margin-top: 2px;
+  padding-top: 4px;
+}
+
 .import-preview__head {
   display: flex;
   justify-content: space-between;

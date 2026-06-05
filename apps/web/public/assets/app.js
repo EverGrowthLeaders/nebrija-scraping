@@ -696,6 +696,8 @@ async function renderLeadsList({ search }) {
   const listId = search.get("listId") || "";
   const adsActive = search.get("adsActive") || "";
   const adsFunnelType = search.get("adsFunnelType") || "";
+  const adsInvestmentMin = search.get("adsInvestmentMin") || "";
+  const adsInvestmentMax = search.get("adsInvestmentMax") || "";
   const term = search.get("search") || "";
   const [leadLists, campaigns] = await Promise.all([
     api("/api/lead-lists"),
@@ -758,6 +760,8 @@ async function renderLeadsList({ search }) {
           <option value="other" ${adsFunnelType === "other" ? "selected" : ""}>Otro</option>
           <option value="unknown" ${adsFunnelType === "unknown" ? "selected" : ""}>Sin clasificar</option>
         </select>
+        <input class="input" name="adsInvestmentMin" type="number" min="0" step="1" placeholder="Ads min €" value="${escape(adsInvestmentMin)}" style="max-width:130px" />
+        <input class="input" name="adsInvestmentMax" type="number" min="0" step="1" placeholder="Ads max €" value="${escape(adsInvestmentMax)}" style="max-width:130px" />
         <button class="btn" type="submit">Filtrar</button>
         <a class="btn btn--ghost" href="#/leads">Reset</a>
       </div>
@@ -820,6 +824,8 @@ async function renderLeadsList({ search }) {
   if (listId) params.set("listId", listId);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
+  if (adsInvestmentMin) params.set("adsInvestmentMin", adsInvestmentMin);
+  if (adsInvestmentMax) params.set("adsInvestmentMax", adsInvestmentMax);
   if (term) params.set("search", term);
   params.set("limit", "100");
 
@@ -2815,6 +2821,14 @@ function openLeadImportModal() {
         <input type="checkbox" data-bind="lead-import-enrich" checked />
         <span>Lanzar enriquecimiento de Ads al importar</span>
       </label>
+      <label class="check-row">
+        <input type="checkbox" data-bind="lead-import-crm" checked />
+        <span>Crear/actualizar lista CRM con estos contactos</span>
+      </label>
+      <div class="field import-crm-list">
+        <label>Nombre de la lista CRM</label>
+        <input class="input" data-bind="lead-import-list-name" placeholder="Cold Calling - Junio" />
+      </div>
     </div>
     <div data-bind="lead-import-preview"></div>
   `;
@@ -2838,13 +2852,19 @@ function openLeadImportModal() {
           filename: state.file.name,
           contentBase64: state.contentBase64,
           mapping,
-          enrichAds: $("[data-bind='lead-import-enrich']", body).checked
+          enrichAds: $("[data-bind='lead-import-enrich']", body).checked,
+          crmListName: $("[data-bind='lead-import-crm']", body).checked
+            ? $("[data-bind='lead-import-list-name']", body).value.trim()
+            : ""
         })
       });
       const errors = result.errors?.length ? ` · ${result.errors.length} filas omitidas` : "";
-      toast(`${fmtNumber(result.imported)} leads importados${errors}`, result.imported ? "ok" : "error");
+      const crmCopy = result.crmRowsImported ? ` · ${fmtNumber(result.crmRowsImported)} en CRM` : "";
+      toast(`${fmtNumber(result.imported)} leads importados${crmCopy}${errors}`, result.imported ? "ok" : "error");
       closeModal();
-      if (result.leads?.length === 1) {
+      if (result.crmList?.id) {
+        location.hash = `#/lists/${result.crmList.id}`;
+      } else if (result.leads?.length === 1) {
         location.hash = `#/leads/${result.leads[0].id}`;
       } else {
         location.hash = "#/leads";
@@ -2864,6 +2884,8 @@ function openLeadImportModal() {
     if (!file) return;
     state.file = file;
     $("[data-bind='lead-import-filename']", body).textContent = file.name;
+    const listNameInput = $("[data-bind='lead-import-list-name']", body);
+    if (listNameInput && !listNameInput.value.trim()) listNameInput.value = importListNameFromFilename(file.name);
     const previewHost = $("[data-bind='lead-import-preview']", body);
     previewHost.innerHTML = `<div class="row" style="padding:16px;justify-content:center"><span class="spinner"></span></div>`;
     submit.disabled = true;
@@ -2885,7 +2907,7 @@ function renderLeadImportPreview(preview) {
   const fields = preview.crmFields || [];
   const options = (selected, header) => `
     <option value="ignore" ${selected === "ignore" ? "selected" : ""}>Ignorar</option>
-    ${fields.map((field) => `<option value="${escape(field.key)}" ${selected === field.key ? "selected" : ""}>${escape(field.label)}${field.required ? " *" : ""}</option>`).join("")}
+    ${renderImportFieldOptions(fields, selected)}
     <option value="custom:${escape(customKeyFromHeader(header))}" ${String(selected || "").startsWith("custom:") ? "selected" : ""}>Campo personalizado</option>
   `;
   return `
@@ -2915,6 +2937,32 @@ function renderLeadImportPreview(preview) {
       </div>
     </div>
   `;
+}
+
+function renderImportFieldOptions(fields, selected) {
+  const groups = ["Contacto", "CRM", "Empresa"];
+  return groups
+    .map((group) => {
+      const groupFields = fields.filter((field) => (field.group || "Empresa") === group);
+      if (!groupFields.length) return "";
+      return `
+        <optgroup label="${escape(group)}">
+          ${groupFields
+            .map((field) => `<option value="${escape(field.key)}" ${selected === field.key ? "selected" : ""}>${escape(field.label)}${field.required ? " *" : ""}</option>`)
+            .join("")}
+        </optgroup>
+      `;
+    })
+    .join("");
+}
+
+function importListNameFromFilename(filename) {
+  return String(filename || "Import CRM")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80) || "Import CRM";
 }
 
 function fileToBase64(file) {

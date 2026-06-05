@@ -391,7 +391,9 @@ const server = http.createServer(async (req, res) => {
         filename: json.filename || json.name || "leads.csv",
         contentBase64: json.contentBase64 || json.content_base64,
         mapping: json.mapping || json.columns || json.fieldMapping || json.field_mapping,
-        enrichAds: json.enrichAds ?? json.enrich_ads ?? false
+        enrichAds: json.enrichAds ?? json.enrich_ads ?? false,
+        crmListId: json.crmListId || json.crm_list_id || json.listId || json.list_id,
+        crmListName: json.crmListName || json.crm_list_name || json.listName || json.list_name
       });
       return sendJson(res, 201, result);
     }
@@ -476,7 +478,9 @@ const server = http.createServer(async (req, res) => {
         extractionJobId: url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined,
         listId: url.searchParams.get("listId") || undefined,
         adsActive: url.searchParams.get("adsActive") || undefined,
-        adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined
+        adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined,
+        adsInvestmentMin: url.searchParams.get("adsInvestmentMin") || undefined,
+        adsInvestmentMax: url.searchParams.get("adsInvestmentMax") || undefined
       });
       return sendJson(res, 200, result);
     }
@@ -618,7 +622,8 @@ const server = http.createServer(async (req, res) => {
             filename,
             contentBase64,
             mapping: json.mapping || preview.suggestedMapping,
-            enrichAds: json.enrichAds ?? json.enrich_ads ?? false
+            enrichAds: json.enrichAds ?? json.enrich_ads ?? false,
+            crmListName: json.crmListName || json.crm_list_name || "Codex Import"
           });
           return sendJson(res, 201, {
             testJob: {
@@ -1087,13 +1092,15 @@ function parseStringArray(value) {
   return [];
 }
 
-async function commitLeadImport({ tenantId, filename, contentBase64, mapping, enrichAds = false }) {
+async function commitLeadImport({ tenantId, filename, contentBase64, mapping, enrichAds = false, crmListId, crmListName }) {
   const parsed = parseLeadFile({ filename, contentBase64 });
   const mapped = buildImportedLeadRows(parsed.rows, mapping || parsed.headers.reduce((acc, header) => {
     acc[header] = "ignore";
     return acc;
   }, {}));
   const created = [];
+  const crmList = await resolveImportCrmList({ tenantId, crmListId, crmListName, filename });
+  let crmRowsImported = 0;
 
   for (const row of mapped.rows) {
     const business = await createManualBusiness({
@@ -1104,7 +1111,8 @@ async function commitLeadImport({ tenantId, filename, contentBase64, mapping, en
         import: {
           filename,
           rowNumber: row.rowNumber,
-          originalRow: row.originalRow
+          originalRow: row.originalRow,
+          contact: row.contact || {}
         }
       }
     });
@@ -1116,6 +1124,18 @@ async function commitLeadImport({ tenantId, filename, contentBase64, mapping, en
         confidence: contact.confidence,
         sourceUrl: business.source_url
       });
+    }
+    if (crmList) {
+      const member = await addBusinessToLeadList({ tenantId, listId: crmList.id, businessId: business.id });
+      if (member) {
+        await updateLeadListCrmEntry({
+          tenantId,
+          listId: crmList.id,
+          businessId: business.id,
+          patch: buildImportCrmPatch(row)
+        });
+        crmRowsImported += 1;
+      }
     }
     if (enrichAds) {
       await queues.adsEnrichment.add("enrich", {
@@ -1130,6 +1150,8 @@ async function commitLeadImport({ tenantId, filename, contentBase64, mapping, en
   return {
     imported: created.length,
     errors: mapped.errors,
+    crmList: crmList ? { id: crmList.id, name: crmList.name } : null,
+    crmRowsImported,
     enrichAdsQueued: enrichAds ? created.length : 0,
     leads: created.slice(0, 20).map((business) => ({
       id: business.id,
@@ -1138,6 +1160,26 @@ async function commitLeadImport({ tenantId, filename, contentBase64, mapping, en
       city: business.city,
       niche: business.niche
     }))
+  };
+}
+
+async function resolveImportCrmList({ tenantId, crmListId, crmListName, filename }) {
+  if (crmListId) return findLeadList(crmListId, { tenantId });
+  const name = String(crmListName || "").trim();
+  if (!name) return null;
+  return createLeadList({
+    tenantId,
+    name,
+    description: `Importada desde ${filename || "archivo"}`,
+    color: "cyan"
+  });
+}
+
+function buildImportCrmPatch(row) {
+  return {
+    ...(row.crm || {}),
+    decisionMakerName: row.crm?.decisionMakerName || row.contact?.fullName || undefined,
+    decisionMakerEmail: row.crm?.decisionMakerEmail || row.contacts?.find((contact) => contact.kind === "email")?.value || undefined
   };
 }
 

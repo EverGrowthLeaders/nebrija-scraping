@@ -2,23 +2,62 @@ import zlib from "node:zlib";
 import { normalizeSpanishPhone } from "./phone.mjs";
 
 export const LEAD_IMPORT_FIELDS = [
-  { key: "name", label: "Nombre", required: true, aliases: ["nombre", "empresa", "negocio", "lead", "company", "business", "razon social", "razón social"] },
-  { key: "website", label: "Web", aliases: ["web", "website", "url", "sitio web", "pagina web", "página web", "dominio"] },
-  { key: "phone", label: "Telefono", aliases: ["telefono", "teléfono", "phone", "movil", "móvil", "tel"] },
-  { key: "phone_e164", label: "Telefono E.164", aliases: ["phone_e164", "telefono e164", "teléfono e164", "e164"] },
-  { key: "email", label: "Email", aliases: ["email", "correo", "correo electronico", "correo electrónico", "mail", "e-mail"] },
-  { key: "address", label: "Direccion", aliases: ["direccion", "dirección", "address", "calle"] },
-  { key: "city", label: "Ciudad", aliases: ["ciudad", "city", "localidad", "municipio"] },
-  { key: "postal_code", label: "Codigo postal", aliases: ["codigo postal", "código postal", "cp", "postal code", "zip"] },
-  { key: "niche", label: "Nicho", aliases: ["nicho", "sector", "industria", "actividad"] },
-  { key: "category", label: "Categoria", aliases: ["categoria", "categoría", "category", "tipo"] },
-  { key: "instagram", label: "Instagram", aliases: ["instagram", "ig"] },
-  { key: "facebook", label: "Facebook", aliases: ["facebook", "fb", "meta"] },
-  { key: "source_url", label: "URL fuente", aliases: ["source", "fuente", "source_url", "url fuente"] },
-  { key: "scoring_notes", label: "Notas scoring", aliases: ["notas", "notas scoring", "observaciones", "comentarios"] }
+  { key: "first_name", label: "Nombre", group: "Contacto", aliases: ["nombre", "first name", "first_name", "firstname", "nombre contacto"] },
+  { key: "last_name", label: "Apellidos", group: "Contacto", aliases: ["apellidos", "apellido", "last name", "last_name", "lastname", "surname"] },
+  { key: "full_name", label: "Nombre Completo", group: "Contacto", aliases: ["nombre completo", "full name", "full_name", "fullname", "contacto", "persona"] },
+  { key: "name", label: "Negocio", group: "Empresa", required: true, aliases: ["negocio", "empresa", "company", "business", "razon social", "razón social", "account", "cuenta"] },
+  { key: "website", label: "Web", group: "Empresa", aliases: ["web", "website", "url", "sitio web", "pagina web", "página web", "dominio"] },
+  { key: "phone", label: "Telefono", group: "Contacto", aliases: ["telefono", "teléfono", "phone", "movil", "móvil", "tel"] },
+  { key: "phone_e164", label: "Telefono E.164", group: "Contacto", aliases: ["phone_e164", "telefono e164", "teléfono e164", "e164"] },
+  { key: "email", label: "Email", group: "Contacto", aliases: ["email", "correo", "correo electronico", "correo electrónico", "mail", "e-mail"] },
+  { key: "first_contact_at", label: "Primer contacto", group: "CRM", aliases: ["primer contacto", "fecha primer contacto", "first contact", "hecha", "fecha hecha"] },
+  { key: "crm_status", label: "Estado", group: "CRM", aliases: ["estado", "status", "resultado", "result"] },
+  { key: "follow_up_date", label: "Día (Seguimiento)", group: "CRM", aliases: ["día seguimiento", "dia seguimiento", "fecha seguimiento", "fecha reintento", "reintento"] },
+  { key: "follow_up_time", label: "Hora (Seguimiento)", group: "CRM", aliases: ["hora seguimiento", "hora reintento", "hora"] },
+  { key: "next_action", label: "Próxima acción", group: "CRM", aliases: ["próxima acción", "proxima accion", "siguiente accion", "siguiente acción", "next action"] },
+  { key: "observations", label: "Observaciones", group: "CRM", aliases: ["observaciones", "comentarios", "notas llamada", "notes"] },
+  { key: "checkpoint", label: "Checkpoint", group: "CRM", aliases: ["checkpoint", "etapa", "fase", "paso"] },
+  { key: "objection", label: "Objeción inicial", group: "CRM", aliases: ["objeción inicial", "objecion inicial", "objecion", "objeción", "objection"] },
+  { key: "address", label: "Direccion", group: "Empresa", aliases: ["direccion", "dirección", "address", "calle"] },
+  { key: "city", label: "Ciudad", group: "Empresa", aliases: ["ciudad", "city", "localidad", "municipio"] },
+  { key: "postal_code", label: "Codigo postal", group: "Empresa", aliases: ["codigo postal", "código postal", "cp", "postal code", "zip"] },
+  { key: "niche", label: "Nicho", group: "Empresa", aliases: ["nicho", "sector", "industria", "actividad"] },
+  { key: "category", label: "Categoria", group: "Empresa", aliases: ["categoria", "categoría", "category", "tipo"] },
+  { key: "ads_investment", label: "Inversión en Ads", group: "Empresa", aliases: ["inversion en ads", "inversión en ads", "gasto ads", "ad spend", "ads spend", "budget ads", "presupuesto ads"] },
+  { key: "instagram", label: "Instagram", group: "Empresa", aliases: ["instagram", "ig"] },
+  { key: "facebook", label: "Facebook", group: "Empresa", aliases: ["facebook", "fb", "meta"] },
+  { key: "source_url", label: "URL fuente", group: "Empresa", aliases: ["source", "fuente", "source_url", "url fuente"] },
+  { key: "scoring_notes", label: "Notas scoring", group: "Empresa", aliases: ["notas scoring"] }
 ];
 
 const FIELD_BY_KEY = Object.fromEntries(LEAD_IMPORT_FIELDS.map((field) => [field.key, field]));
+const BUSINESS_FIELD_KEYS = new Set([
+  "name",
+  "website",
+  "phone",
+  "phone_e164",
+  "address",
+  "city",
+  "postal_code",
+  "niche",
+  "category",
+  "instagram",
+  "facebook",
+  "source_url",
+  "scoring_notes"
+]);
+const CONTACT_FIELD_KEYS = new Set(["first_name", "last_name", "full_name"]);
+const CRM_FIELD_KEYS = new Set([
+  "first_contact_at",
+  "crm_status",
+  "follow_up_date",
+  "follow_up_time",
+  "next_action",
+  "observations",
+  "checkpoint",
+  "objection"
+]);
+const COMPANY_CUSTOM_FIELD_KEYS = new Set(["ads_investment"]);
 const MAX_IMPORT_ROWS = 5000;
 
 export function previewLeadImport({ filename, contentBase64, buffer, maxSampleRows = 5 }) {
@@ -85,6 +124,8 @@ export function buildImportedLeadRows(rows, mapping) {
     const business = {};
     const customFields = {};
     const contacts = [];
+    const contact = {};
+    const crm = {};
 
     for (const [header, rawMapping] of Object.entries(normalizedMapping)) {
       const value = cleanCell(row[header]);
@@ -97,13 +138,31 @@ export function buildImportedLeadRows(rows, mapping) {
       }
       if (rawMapping === "email") {
         contacts.push({ kind: "email", value, confidence: 0.75 });
+        crm.decisionMakerEmail = crm.decisionMakerEmail || value;
         continue;
       }
       if (!FIELD_BY_KEY[rawMapping]) continue;
-      business[toBusinessInputKey(rawMapping)] = value;
+      if (CONTACT_FIELD_KEYS.has(rawMapping)) {
+        contact[toContactInputKey(rawMapping)] = value;
+      } else if (CRM_FIELD_KEYS.has(rawMapping)) {
+        crm[toCrmInputKey(rawMapping)] = normalizeCrmImportValue(rawMapping, value);
+      } else if (COMPANY_CUSTOM_FIELD_KEYS.has(rawMapping)) {
+        customFields[rawMapping] = normalizeCompanyCustomValue(rawMapping, value);
+      } else if (BUSINESS_FIELD_KEYS.has(rawMapping)) {
+        business[toBusinessInputKey(rawMapping)] = value;
+      }
     }
 
     if (business.phone && !business.phoneE164) business.phoneE164 = normalizeSpanishPhone(business.phone);
+    const fullName = buildContactFullName(contact);
+    if (fullName) {
+      contact.fullName = fullName;
+      crm.decisionMakerName = crm.decisionMakerName || fullName;
+      customFields.contact_full_name = fullName;
+    }
+    if (contact.firstName) customFields.contact_first_name = contact.firstName;
+    if (contact.lastName) customFields.contact_last_name = contact.lastName;
+    if (!business.name && fullName) business.name = fullName;
     if (!business.name) {
       errors.push({ row: index + 2, error: "missing_name" });
       return;
@@ -111,6 +170,8 @@ export function buildImportedLeadRows(rows, mapping) {
     importRows.push({
       business,
       contacts,
+      contact,
+      crm,
       customFields,
       originalRow: row,
       rowNumber: index + 2
@@ -337,6 +398,99 @@ function toBusinessInputKey(field) {
     postal_code: "postalCode"
   };
   return map[field] || field;
+}
+
+function toContactInputKey(field) {
+  const map = {
+    first_name: "firstName",
+    last_name: "lastName",
+    full_name: "fullName"
+  };
+  return map[field] || field;
+}
+
+function toCrmInputKey(field) {
+  const map = {
+    first_contact_at: "firstContactAt",
+    crm_status: "crmStatus",
+    follow_up_date: "followUpDate",
+    follow_up_time: "followUpTime",
+    next_action: "nextAction"
+  };
+  return map[field] || field;
+}
+
+function buildContactFullName(contact = {}) {
+  if (contact.fullName) return contact.fullName;
+  return [contact.firstName, contact.lastName].filter(Boolean).join(" ").trim();
+}
+
+function normalizeCrmImportValue(field, value) {
+  if (field === "first_contact_at" || field === "follow_up_date") return normalizeImportDate(value);
+  if (field === "follow_up_time") return normalizeImportTime(value);
+  if (field === "checkpoint" && value === "Objeción") return "Objeción inicial";
+  return value;
+}
+
+function normalizeCompanyCustomValue(field, value) {
+  if (field === "ads_investment") return normalizeMoneyValue(value);
+  return value;
+}
+
+function normalizeImportDate(value) {
+  const text = cleanCell(value);
+  if (!text || text === "0") return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
+  const slash = text.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{2,4})$/);
+  if (slash) {
+    const day = Number(slash[1]);
+    const month = Number(slash[2]);
+    const year = Number(slash[3].length === 2 ? `20${slash[3]}` : slash[3]);
+    if (day >= 1 && day <= 31 && month >= 1 && month <= 12 && year >= 1900) {
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    }
+  }
+  const serial = Number(text);
+  if (Number.isFinite(serial) && serial > 1) {
+    const excelEpoch = Date.UTC(1899, 11, 30);
+    const date = new Date(excelEpoch + Math.round(serial) * 86400000);
+    return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+function normalizeImportTime(value) {
+  const text = cleanCell(value);
+  if (!text || text === "0") return "";
+  const colon = text.match(/^(\d{1,2}):(\d{2})/);
+  if (colon) {
+    const hour = Number(colon[1]);
+    const minute = Number(colon[2]);
+    if (hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59) {
+      return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+    }
+  }
+  const decimal = Number(text.replace(",", "."));
+  if (Number.isFinite(decimal) && decimal > 0 && decimal < 1) {
+    const minutes = Math.round(decimal * 24 * 60);
+    const hour = Math.floor(minutes / 60) % 24;
+    const minute = minutes % 60;
+    return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  }
+  return "";
+}
+
+function normalizeMoneyValue(value) {
+  const text = cleanCell(value);
+  if (!text) return "";
+  const cleaned = text.replace(/[^0-9,.-]/g, "");
+  if (!cleaned) return "";
+  const decimalComma = cleaned.includes(",") && (!cleaned.includes(".") || cleaned.lastIndexOf(",") > cleaned.lastIndexOf("."));
+  const normalized = decimalComma
+    ? cleaned.replace(/\./g, "").replace(",", ".")
+    : cleaned.replace(/,/g, "");
+  const number = Number(normalized);
+  return Number.isFinite(number) ? String(number) : text;
 }
 
 function columnIndexFromCellRef(ref) {
