@@ -769,9 +769,10 @@ async function renderLeadsList({ search }) {
             <th>Funnel Ads</th>
             <th>Estado</th>
             <th>Actualizado</th>
+            <th class="col-actions">Acciones</th>
           </tr>
         </thead>
-        <tbody data-bind="rows"><tr><td colspan="10" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
+        <tbody data-bind="rows"><tr><td colspan="11" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
       </table>
     </div>
   `;
@@ -800,7 +801,7 @@ async function renderLeadsList({ search }) {
   const data = await api(`/api/businesses?${params.toString()}`);
   const tbody = $("[data-bind='rows']");
   if (!data.rows.length) {
-    tbody.innerHTML = `<tr><td colspan="10">${emptyState(
+    tbody.innerHTML = `<tr><td colspan="11">${emptyState(
       "Sin resultados",
       "Ajusta los filtros o lanza una campaña."
     )}</td></tr>`;
@@ -820,10 +821,22 @@ async function renderLeadsList({ search }) {
         <td>${renderAdsFunnelBadge(b.ads_funnel_type || "unknown", b.ads_funnel_confidence)}</td>
         <td>${renderStatus(b.status)}</td>
         <td>${fmtRel(b.updated_at)}</td>
+        <td class="col-actions">
+          <button class="btn btn--icon btn--ghost btn--danger-soft" data-action="delete-lead" data-lead-id="${escape(b.id)}" data-lead-name="${escape(b.name)}" type="button" title="Eliminar lead" aria-label="Eliminar lead">
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
+          </button>
+        </td>
       </tr>`
     )
     .join("");
   bindRowNav(tbody);
+  $$("[data-action='delete-lead']", tbody).forEach((button) =>
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      confirmDeleteLead({ id: button.dataset.leadId, name: button.dataset.leadName }, { afterDelete: router });
+    })
+  );
 }
 
 function stripScheme(url) {
@@ -863,6 +876,10 @@ async function renderLeadDetail({ params }) {
         <button class="btn btn--gold" data-action="lead-call" type="button" ${!b.phone_e164 ? "disabled" : ""}>
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.3a11 11 0 0 0 3.4.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.4 1 1 0 0 1-.3 1l-2.2 2.4Z"/></svg>
           Llamar ahora
+        </button>
+        <button class="btn btn--danger" data-action="lead-delete" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
+          Eliminar
         </button>
       </div>
     </div>
@@ -1009,6 +1026,9 @@ async function renderLeadDetail({ params }) {
   $("[data-action='lead-score']", view).addEventListener("click", () => leadAction(b, "score"));
   $("[data-action='lead-ads']", view).addEventListener("click", () => leadAction(b, "ads"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
+  $("[data-action='lead-delete']", view).addEventListener("click", () =>
+    confirmDeleteLead(b, { afterDelete: () => { location.hash = "#/leads"; } })
+  );
   $("[data-action='save-scoring-notes']", view).addEventListener("click", () => saveScoringNotes(b.id));
   $("[data-action='add-to-list']", view).addEventListener("click", () => addLeadToSelectedList(b.id));
   $$("[data-action='remove-from-list']", view).forEach((button) =>
@@ -1068,6 +1088,40 @@ async function removeLeadFromList(listId, businessId) {
   } catch (err) {
     toast(`No se pudo quitar (${err.message})`, "error");
   }
+}
+
+function confirmDeleteLead(business, { afterDelete } = {}) {
+  const body = document.createElement("div");
+  body.innerHTML = `
+    <div class="delete-confirm">
+      <div class="delete-confirm__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
+      </div>
+      <div>
+        <p class="delete-confirm__title">Eliminar ${escape(business.name || "este lead")}</p>
+        <p class="delete-confirm__copy">Se eliminará el lead del workspace junto con sus contactos, listas, scoring y datos de prospección asociados. Esta acción no se puede deshacer.</p>
+      </div>
+    </div>
+  `;
+  const footer = document.createDocumentFragment();
+  const cancel = btn("Cancelar", "ghost");
+  const submit = btn("Eliminar lead", "danger");
+  cancel.addEventListener("click", closeModal);
+  submit.addEventListener("click", async () => {
+    submit.disabled = true;
+    try {
+      await api(`/api/businesses/${business.id}`, { method: "DELETE" });
+      toast("Lead eliminado", "ok");
+      closeModal();
+      if (afterDelete) await afterDelete();
+    } catch (err) {
+      toast(`No se pudo eliminar (${err.message})`, "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  footer.append(cancel, submit);
+  openModal({ title: "Eliminar lead", body, footer });
 }
 
 async function leadAction(business, kind) {
@@ -2196,7 +2250,13 @@ function customKeyFromHeader(value) {
 function btn(label, variant) {
   const b = document.createElement("button");
   b.type = "button";
-  b.className = cx("btn", variant === "primary" && "btn--primary", variant === "ghost" && "btn--ghost", variant === "gold" && "btn--gold");
+  b.className = cx(
+    "btn",
+    variant === "primary" && "btn--primary",
+    variant === "ghost" && "btn--ghost",
+    variant === "gold" && "btn--gold",
+    variant === "danger" && "btn--danger"
+  );
   b.textContent = label;
   return b;
 }
@@ -2204,7 +2264,8 @@ function btn(label, variant) {
 // ── Helpers ───────────────────────────────────────────────
 function bindRowNav(scope) {
   $$("tr[data-href]", scope).forEach((tr) => {
-    tr.addEventListener("click", () => {
+    tr.addEventListener("click", (event) => {
+      if (event.target.closest("a,button,input,select,textarea,[data-action]")) return;
       location.hash = tr.dataset.href;
     });
   });

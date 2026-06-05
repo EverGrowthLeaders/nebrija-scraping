@@ -385,6 +385,16 @@ export async function findBusinessById(id, { tenantId } = {}) {
   return result.rows[0] || null;
 }
 
+export async function deleteBusinessForTenant(id, { tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `DELETE FROM businesses
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING id, name`,
+    [id, tenantId]
+  );
+  return result.rows[0] || null;
+}
+
 export async function findBusinessVoiceContext(id, { tenantId = DEFAULT_TENANT_ID } = {}) {
   const result = await query(
     `SELECT b.*,

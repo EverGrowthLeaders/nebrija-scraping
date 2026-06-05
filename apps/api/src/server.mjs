@@ -27,6 +27,7 @@ import {
   createExtractionJob,
   createManualBusiness,
   createUserSession,
+  deleteBusinessForTenant,
   findLeadList,
   findBusinessById,
   findBusinessDetail,
@@ -417,6 +418,12 @@ const server = http.createServer(async (req, res) => {
       const detail = await findBusinessDetail(businessDetailMatch[1], { tenantId: auth.tenantId });
       if (!detail) return sendJson(res, 404, { error: "business_not_found" });
       return sendJson(res, 200, detail);
+    }
+
+    if (req.method === "DELETE" && businessDetailMatch) {
+      const deleted = await deleteBusinessForTenant(businessDetailMatch[1], { tenantId: auth.tenantId });
+      if (!deleted) return sendJson(res, 404, { error: "business_not_found" });
+      return sendJson(res, 200, { ok: true, business: deleted });
     }
 
     if (req.method === "GET" && url.pathname === "/api/calls") {

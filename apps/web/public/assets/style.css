@@ -350,6 +350,22 @@ a {
 .btn--gold:hover {
   filter: brightness(1.05);
 }
+.btn--danger {
+  background: rgba(165, 0, 33, 0.16);
+  border-color: rgba(255, 91, 122, 0.36);
+  color: #ff8fa3;
+}
+.btn--danger:hover {
+  background: rgba(165, 0, 33, 0.26);
+  border-color: rgba(255, 91, 122, 0.58);
+}
+.btn--danger-soft {
+  color: #ff8fa3;
+}
+.btn--danger-soft:hover {
+  background: rgba(165, 0, 33, 0.14);
+  border-color: rgba(255, 91, 122, 0.3);
+}
 .btn--google {
   justify-content: center;
   width: 100%;
@@ -371,6 +387,34 @@ a {
   width: 28px;
   height: 28px;
   justify-content: center;
+}
+
+.delete-confirm {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+.delete-confirm__icon {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(255, 91, 122, 0.32);
+  border-radius: 8px;
+  background: rgba(165, 0, 33, 0.14);
+  color: #ff8fa3;
+}
+.delete-confirm__title {
+  margin: 0 0 6px;
+  color: var(--text);
+  font-weight: 650;
+}
+.delete-confirm__copy {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 /* ── Views & containers ────────────────────────────── */
