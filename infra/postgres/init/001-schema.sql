@@ -350,6 +350,9 @@ CREATE INDEX IF NOT EXISTS idx_lead_lists_tenant_created
 CREATE INDEX IF NOT EXISTS idx_lead_list_members_business
   ON lead_list_members(business_id);
 
+CREATE INDEX IF NOT EXISTS idx_lead_list_members_first_contact
+  ON lead_list_members(first_contact_at);
+
 CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job
   ON businesses(tenant_id, extraction_job_id);
 

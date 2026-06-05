@@ -37,6 +37,8 @@ import {
   findExtractionJobDetail,
   findSessionByTokenHash,
   findVoiceCallDetail,
+  getColdCallingAnalytics,
+  getTenantAnalyticsSettings,
   getEffectiveNebrijaSettings,
   getDashboardMetrics,
   getTenantNebrijaSettings,
@@ -57,6 +59,7 @@ import {
   updateExtractionJobVoiceSettings,
   updateLeadList,
   updateLeadListCrmEntry,
+  upsertTenantAnalyticsSettings,
   upsertTenantScoringRules,
   upsertTenantNebrijaSettings,
   upsertContact,
@@ -218,6 +221,34 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/metrics") {
       const metrics = await getDashboardMetrics({ tenantId: auth.tenantId });
       return sendJson(res, 200, { metrics });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/analytics/cold-calling") {
+      const scopeType = ["all", "list", "campaign"].includes(url.searchParams.get("scopeType"))
+        ? url.searchParams.get("scopeType")
+        : "all";
+      const analytics = await getColdCallingAnalytics({
+        tenantId: auth.tenantId,
+        scopeType,
+        scopeId: url.searchParams.get("scopeId") || null,
+        from: url.searchParams.get("from") || null,
+        to: url.searchParams.get("to") || null
+      });
+      return sendJson(res, 200, { analytics });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/analytics/settings") {
+      const settings = await getTenantAnalyticsSettings({ tenantId: auth.tenantId });
+      return sendJson(res, 200, settings);
+    }
+
+    if (req.method === "PATCH" && url.pathname === "/api/analytics/settings") {
+      const { json } = await readJson(req);
+      const settings = await upsertTenantAnalyticsSettings({
+        tenantId: auth.tenantId,
+        settings: json.settings || json
+      });
+      return sendJson(res, 200, settings);
     }
 
     if (req.method === "GET" && url.pathname === "/api/scoring/rules") {

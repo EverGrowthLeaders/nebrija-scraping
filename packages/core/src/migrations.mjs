@@ -152,6 +152,7 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS checkpoint TEXT`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS objection TEXT`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS crm_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+    await run(`UPDATE lead_list_members SET checkpoint = 'Objeción inicial' WHERE checkpoint = 'Objeción'`);
 
     await run(`ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_place_id_key`);
     await run(`ALTER TABLE google_place_candidates DROP CONSTRAINT IF EXISTS google_place_candidates_place_id_query_key`);
@@ -176,6 +177,7 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_tenant_integrations_provider ON tenant_integrations(provider)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_lists_tenant_created ON lead_lists(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_business ON lead_list_members(business_id)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_first_contact ON lead_list_members(first_contact_at)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job ON businesses(tenant_id, extraction_job_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_status_city_niche ON businesses(tenant_id, status, city, niche)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_score ON businesses(tenant_id, score DESC)`);

@@ -343,6 +343,7 @@ const routes = [
   { match: /^\/leads\/([^/]+)$/, render: renderLeadDetail, key: "leads", title: "Lead" },
   { match: /^\/lists$/, render: renderLists, key: "lists", title: "Listas" },
   { match: /^\/lists\/([^/]+)$/, render: renderListDetail, key: "lists", title: "Lista" },
+  { match: /^\/analytics$/, render: renderAnalytics, key: "analytics", title: "Analítica" },
   { match: /^\/scoring$/, render: renderScoring, key: "scoring", title: "Scoring" },
   { match: /^\/calls$/, render: renderCallsList, key: "calls", title: "Llamadas" },
   { match: /^\/calls\/([^/]+)$/, render: renderCallDetail, key: "calls", title: "Llamada" },
@@ -508,6 +509,13 @@ function pct(part, total) {
 }
 function emptyState(title, body, action) {
   return `<div class="empty"><h4>${escape(title)}</h4><p>${escape(body)}</p>${action || ""}</div>`;
+}
+
+function fmtPercentRatio(value, digits = 0) {
+  return `${((Number(value) || 0) * 100).toLocaleString("es-ES", {
+    maximumFractionDigits: digits,
+    minimumFractionDigits: digits
+  })}%`;
 }
 function callBadge(c) {
   if (c.qualified) return `<span class="badge badge--gold">Cualificado</span>`;
@@ -755,10 +763,27 @@ async function renderLeadsList({ search }) {
       </div>
     </form>
 
-    <div class="table-wrap">
-      <table class="table">
+    <div class="bulk-actions" data-bind="lead-bulk-actions" hidden>
+      <div class="bulk-actions__copy">
+        <strong data-bind="lead-selected-count">0</strong>
+        <span>leads seleccionados</span>
+      </div>
+      <div class="bulk-actions__controls">
+        <button class="btn btn--ghost btn--sm" data-action="clear-lead-selection" type="button">Limpiar</button>
+        <button class="btn btn--danger btn--sm" data-action="delete-selected-leads" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
+          Eliminar
+        </button>
+      </div>
+    </div>
+
+    <div class="table-wrap table-wrap--scroll">
+      <table class="table leads-table">
         <thead>
           <tr>
+            <th class="col-select">
+              <input class="row-check" data-action="toggle-all-leads" type="checkbox" aria-label="Seleccionar todos los leads visibles" />
+            </th>
             <th>Lead</th>
             <th>Ciudad / Nicho</th>
             <th>Web</th>
@@ -772,7 +797,7 @@ async function renderLeadsList({ search }) {
             <th class="col-actions">Acciones</th>
           </tr>
         </thead>
-        <tbody data-bind="rows"><tr><td colspan="11" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
+        <tbody data-bind="rows"><tr><td colspan="12" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
       </table>
     </div>
   `;
@@ -801,7 +826,7 @@ async function renderLeadsList({ search }) {
   const data = await api(`/api/businesses?${params.toString()}`);
   const tbody = $("[data-bind='rows']");
   if (!data.rows.length) {
-    tbody.innerHTML = `<tr><td colspan="11">${emptyState(
+    tbody.innerHTML = `<tr><td colspan="12">${emptyState(
       "Sin resultados",
       "Ajusta los filtros o lanza una campaña."
     )}</td></tr>`;
@@ -811,6 +836,9 @@ async function renderLeadsList({ search }) {
     .map(
       (b) => `
       <tr data-href="#/leads/${escape(b.id)}">
+        <td class="col-select">
+          <input class="row-check" data-action="toggle-lead" data-lead-id="${escape(b.id)}" type="checkbox" aria-label="Seleccionar ${escape(b.name)}" />
+        </td>
         <td class="cell-primary">${escape(b.name)}</td>
         <td>${escape(b.city || "—")} <span class="muted">·</span> ${escape(b.niche || "—")}</td>
         <td>${b.website ? `<span class="mono ellipsis" style="display:inline-block;max-width:220px">${escape(stripScheme(b.website))}</span>` : "<span class='faint'>—</span>"}</td>
@@ -830,6 +858,7 @@ async function renderLeadsList({ search }) {
     )
     .join("");
   bindRowNav(tbody);
+  bindLeadSelection(data.rows || []);
   $$("[data-action='delete-lead']", tbody).forEach((button) =>
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -837,6 +866,56 @@ async function renderLeadsList({ search }) {
       confirmDeleteLead({ id: button.dataset.leadId, name: button.dataset.leadName }, { afterDelete: router });
     })
   );
+}
+
+function bindLeadSelection(rows) {
+  const selected = new Set();
+  const byId = new Map(rows.map((row) => [String(row.id), row]));
+  const bulkBar = $("[data-bind='lead-bulk-actions']", view);
+  const selectedCount = $("[data-bind='lead-selected-count']", view);
+  const selectAll = $("[data-action='toggle-all-leads']", view);
+  const clearButton = $("[data-action='clear-lead-selection']", view);
+  const deleteButton = $("[data-action='delete-selected-leads']", view);
+  const checks = $$("[data-action='toggle-lead']", view);
+
+  const sync = () => {
+    const count = selected.size;
+    bulkBar.hidden = count === 0;
+    selectedCount.textContent = fmtNumber(count);
+    checks.forEach((check) => {
+      const isSelected = selected.has(check.dataset.leadId);
+      check.checked = isSelected;
+      check.closest("tr")?.classList.toggle("is-selected", isSelected);
+    });
+    selectAll.checked = checks.length > 0 && count === checks.length;
+    selectAll.indeterminate = count > 0 && count < checks.length;
+  };
+
+  checks.forEach((check) => {
+    check.addEventListener("change", () => {
+      if (check.checked) selected.add(check.dataset.leadId);
+      else selected.delete(check.dataset.leadId);
+      sync();
+    });
+  });
+
+  selectAll.addEventListener("change", () => {
+    selected.clear();
+    if (selectAll.checked) checks.forEach((check) => selected.add(check.dataset.leadId));
+    sync();
+  });
+
+  clearButton.addEventListener("click", () => {
+    selected.clear();
+    sync();
+  });
+
+  deleteButton.addEventListener("click", () => {
+    const leads = Array.from(selected)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+    if (leads.length) confirmDeleteLeads(leads, { afterDelete: router });
+  });
 }
 
 function stripScheme(url) {
@@ -1122,6 +1201,51 @@ function confirmDeleteLead(business, { afterDelete } = {}) {
   });
   footer.append(cancel, submit);
   openModal({ title: "Eliminar lead", body, footer });
+}
+
+function confirmDeleteLeads(leads, { afterDelete } = {}) {
+  const count = leads.length;
+  const previewNames = leads.slice(0, 4).map((lead) => lead.name).filter(Boolean);
+  const body = document.createElement("div");
+  body.innerHTML = `
+    <div class="delete-confirm">
+      <div class="delete-confirm__icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
+      </div>
+      <div>
+        <p class="delete-confirm__title">Eliminar ${fmtNumber(count)} leads seleccionados</p>
+        <p class="delete-confirm__copy">Se eliminarán del workspace junto con sus contactos, listas, scoring y datos de prospección asociados. Esta acción no se puede deshacer.</p>
+        ${
+          previewNames.length
+            ? `<p class="delete-confirm__copy delete-confirm__preview">${escape(previewNames.join(", "))}${count > previewNames.length ? ` y ${fmtNumber(count - previewNames.length)} más` : ""}</p>`
+            : ""
+        }
+      </div>
+    </div>
+  `;
+  const footer = document.createDocumentFragment();
+  const cancel = btn("Cancelar", "ghost");
+  const submit = btn(`Eliminar ${fmtNumber(count)}`, "danger");
+  cancel.addEventListener("click", closeModal);
+  submit.addEventListener("click", async () => {
+    submit.disabled = true;
+    try {
+      let deleted = 0;
+      for (const lead of leads) {
+        await api(`/api/businesses/${encodeURIComponent(lead.id)}`, { method: "DELETE" });
+        deleted += 1;
+      }
+      toast(`${fmtNumber(deleted)} leads eliminados`, "ok");
+      closeModal();
+      if (afterDelete) await afterDelete();
+    } catch (err) {
+      toast(`No se pudo completar el borrado (${err.message})`, "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  footer.append(cancel, submit);
+  openModal({ title: "Eliminar leads", body, footer });
 }
 
 async function leadAction(business, kind) {
@@ -1748,6 +1872,372 @@ function openListModal() {
   });
   footer.append(cancel, submit);
   openModal({ title: "Nueva lista", body: form, footer });
+}
+
+// ── Analytics ────────────────────────────────────────────
+async function renderAnalytics({ search }) {
+  setCurrentCrumb("Cold Calling");
+  const dates = defaultAnalyticsDates();
+  const scopeType = search.get("scopeType") || "all";
+  const scopeId = search.get("scopeId") || "";
+  const from = search.get("from") || dates.from;
+  const to = search.get("to") || dates.to;
+
+  const [lists, campaigns, settingsData, analyticsData] = await Promise.all([
+    api("/api/lead-lists"),
+    api("/api/campaigns?limit=200"),
+    api("/api/analytics/settings"),
+    api(`/api/analytics/cold-calling?${analyticsQuery({ scopeType, scopeId, from, to })}`)
+  ]);
+  const analytics = analyticsData.analytics || {};
+  const settings = settingsData.settings || {};
+  const suggestedAppointmentRate = Math.round((analytics.rates?.scheduledRate || 0) * 1000) / 10;
+  const appointmentRate = settings.appointmentRate ?? suggestedAppointmentRate;
+
+  view.innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      <div class="grow">
+        <h1 class="headline">Analítica</h1>
+        <p class="subhead">Embudo de llamadas y previsión mensual.</p>
+      </div>
+    </div>
+
+    <form class="analytics-filters" id="analytics-filters">
+      <select class="select" name="scopeType" data-bind="analytics-scope-type">
+        <option value="all" ${scopeType === "all" ? "selected" : ""}>Todo</option>
+        <option value="list" ${scopeType === "list" ? "selected" : ""}>Lista</option>
+        <option value="campaign" ${scopeType === "campaign" ? "selected" : ""}>Campaña</option>
+      </select>
+      <select class="select" name="scopeId" data-bind="analytics-scope-id"></select>
+      <input class="input" type="date" name="from" value="${escape(from)}" />
+      <input class="input" type="date" name="to" value="${escape(to)}" />
+      <button class="btn" type="submit">Filtrar</button>
+      <a class="btn btn--ghost" href="#/analytics">Reset</a>
+    </form>
+
+    <section class="analytics-hero">
+      <article class="metric-hero metric-hero--calls">
+        <span>Total llamadas</span>
+        <strong>${fmtNumber(analytics.counts?.totalCalls || 0)}</strong>
+      </article>
+      <article class="metric-hero metric-hero--rate">
+        <span>Tasa de agendamiento</span>
+        <strong>${fmtPercentRatio(analytics.rates?.scheduledRate || 0, 1)}</strong>
+      </article>
+      <article class="metric-hero">
+        <span>Agendadas</span>
+        <strong>${fmtNumber(analytics.counts?.scheduledCalls || 0)}</strong>
+      </article>
+    </section>
+
+    <section class="analytics-grid">
+      <article class="analytics-panel funnel-panel">
+        <div class="analytics-panel__head">
+          <div>
+            <h2>Embudo</h2>
+            <p>${escape(formatAnalyticsPeriod(analytics.meta, from, to))}</p>
+          </div>
+          <div class="funnel-toggle" data-bind="funnel-mode">
+            <button class="is-active" type="button" data-mode="total">Sobre total</button>
+            <button type="button" data-mode="drop">Caída</button>
+          </div>
+        </div>
+        <div data-bind="funnel-steps">${renderFunnelSteps(analytics, "total")}</div>
+      </article>
+
+      <article class="analytics-panel analytics-panel--compact">
+        <h2>Señales</h2>
+        <div class="analytics-signal-grid">
+          ${analyticsSignal("No lo coge", analytics.counts?.noAnswerCalls || 0)}
+          ${analyticsSignal("Secretaria", analytics.counts?.secretaryCalls || 0)}
+          ${analyticsSignal("Objeción inicial", analytics.counts?.initialObjectionCalls || 0)}
+          ${analyticsSignal("Decisor", analytics.counts?.decisionMakerCalls || 0)}
+        </div>
+      </article>
+    </section>
+
+    <section class="analytics-panel forecast-panel">
+      <div class="analytics-panel__head">
+        <div>
+          <h2>Previsión</h2>
+          <p>Proyección del próximo mes (30 días)</p>
+        </div>
+        <button class="btn btn--primary" type="button" data-action="save-forecast">Guardar previsión</button>
+      </div>
+
+      <form class="forecast-controls" data-bind="forecast-form">
+        ${forecastInput("appointmentRate", "Tasa agendamiento", appointmentRate, "%")}
+        ${forecastInput("qualificationRate", "Tasa cualificación", settings.qualificationRate ?? 70, "%")}
+        ${forecastInput("closeRate", "Tasa cierre", settings.closeRate ?? 30, "%")}
+        ${forecastInput("showUpRate", "Show-Up", settings.showUpRate ?? 80, "%")}
+        ${forecastInput("offerPrice", "Precio oferta", settings.offerPrice ?? 3000, "€")}
+        ${forecastInput("firstMonthPrice", "Precio oferta primer mes", settings.firstMonthPrice ?? 1000, "€")}
+        ${forecastInput("revenueTarget", "Objetivo facturación", settings.revenueTarget ?? 10000, "€")}
+        <button class="btn btn--ghost" type="button" data-action="use-period-appointment">Usar periodo</button>
+      </form>
+
+      <div data-bind="forecast-table"></div>
+    </section>
+  `;
+
+  const scopeTypeSelect = $("[data-bind='analytics-scope-type']", view);
+  const scopeIdSelect = $("[data-bind='analytics-scope-id']", view);
+  const populateScopeId = () => {
+    scopeIdSelect.innerHTML = renderAnalyticsScopeOptions(scopeTypeSelect.value, scopeIdSelect.value || scopeId, lists.rows || [], campaigns.rows || []);
+    scopeIdSelect.disabled = scopeTypeSelect.value === "all";
+  };
+  populateScopeId();
+  scopeTypeSelect.addEventListener("change", () => {
+    scopeIdSelect.value = "";
+    populateScopeId();
+  });
+
+  $("#analytics-filters", view).addEventListener("submit", (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const params = new URLSearchParams();
+    for (const [key, value] of data.entries()) {
+      if (key === "scopeId" && form.elements.scopeType.value === "all") continue;
+      if (value) params.set(key, value);
+    }
+    location.hash = `#/analytics${params.toString() ? "?" + params.toString() : ""}`;
+  });
+
+  bindFunnelToggle(analytics);
+  bindForecastControls(settings, suggestedAppointmentRate);
+}
+
+function analyticsQuery({ scopeType, scopeId, from, to }) {
+  const params = new URLSearchParams();
+  if (scopeType) params.set("scopeType", scopeType);
+  if (scopeId) params.set("scopeId", scopeId);
+  if (from) params.set("from", from);
+  if (to) params.set("to", to);
+  return params.toString();
+}
+
+function defaultAnalyticsDates() {
+  const to = new Date();
+  const from = new Date();
+  from.setDate(to.getDate() - 29);
+  return { from: dateToInput(from), to: dateToInput(to) };
+}
+
+function dateToInput(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function renderAnalyticsScopeOptions(type, selected, lists, campaigns) {
+  if (type === "list") {
+    return `<option value="">Todas las listas</option>${lists
+      .map((list) => `<option value="${escape(list.id)}" ${selected === list.id ? "selected" : ""}>${escape(list.name)}</option>`)
+      .join("")}`;
+  }
+  if (type === "campaign") {
+    return `<option value="">Todas las campañas</option>${campaigns
+      .map(
+        (campaign) =>
+          `<option value="${escape(campaign.id)}" ${selected === campaign.id ? "selected" : ""}>${escape(campaign.niche)} · ${escape(campaign.city)}</option>`
+      )
+      .join("")}`;
+  }
+  return `<option value="">Todo el workspace</option>`;
+}
+
+function formatAnalyticsPeriod(meta = {}, from, to) {
+  const actualFrom = meta.firstContactFrom ? String(meta.firstContactFrom).slice(0, 10) : from;
+  const actualTo = meta.firstContactTo ? String(meta.firstContactTo).slice(0, 10) : to;
+  return `${actualFrom || "—"} a ${actualTo || "—"}`;
+}
+
+function renderFunnelSteps(analytics, mode) {
+  const steps = analytics.steps || [];
+  const total = steps[0]?.count || 0;
+  return `
+    <div class="funnel-steps">
+      ${steps
+        .map((step, index) => {
+          const previous = index === 0 ? total : steps[index - 1]?.count || 0;
+          const ratio = mode === "drop"
+            ? index === 0
+              ? 0
+              : safeRatio(Math.max(0, previous - step.count), previous)
+            : safeRatio(step.count, total);
+          const width = mode === "drop" && index === 0 ? 0 : Math.max(3, Math.round(ratio * 100));
+          const suffix = mode === "drop" && index > 0 ? " caída" : "";
+          return `
+            <div class="funnel-step">
+              <div class="funnel-step__top">
+                <strong>${escape(step.label)}</strong>
+                <span>${fmtNumber(step.count)} · ${fmtPercentRatio(ratio, 1)}${suffix}</span>
+              </div>
+              <div class="funnel-step__bar"><i style="width:${width}%"></i></div>
+            </div>
+          `;
+        })
+        .join("")}
+    </div>
+  `;
+}
+
+function safeRatio(part, total) {
+  return Number(total) > 0 ? (Number(part) || 0) / Number(total) : 0;
+}
+
+function analyticsSignal(label, value) {
+  return `
+    <div class="analytics-signal">
+      <span>${escape(label)}</span>
+      <strong>${fmtNumber(value)}</strong>
+    </div>
+  `;
+}
+
+function bindFunnelToggle(analytics) {
+  const host = $("[data-bind='funnel-mode']", view);
+  const steps = $("[data-bind='funnel-steps']", view);
+  if (!host || !steps) return;
+  host.addEventListener("click", (event) => {
+    const button = event.target.closest("button[data-mode]");
+    if (!button) return;
+    $$("button[data-mode]", host).forEach((candidate) => candidate.classList.toggle("is-active", candidate === button));
+    steps.innerHTML = renderFunnelSteps(analytics, button.dataset.mode);
+  });
+}
+
+function forecastInput(name, label, value, suffix) {
+  return `
+    <label class="forecast-control">
+      <span>${escape(label)}</span>
+      <b>${escape(suffix)}</b>
+      <input class="input" name="${escape(name)}" type="number" min="0" step="0.01" value="${escape(value ?? "")}" />
+    </label>
+  `;
+}
+
+function bindForecastControls(settings, suggestedAppointmentRate) {
+  const form = $("[data-bind='forecast-form']", view);
+  const table = $("[data-bind='forecast-table']", view);
+  if (!form || !table) return;
+  const render = () => {
+    table.innerHTML = renderForecastTable(readForecastForm(form));
+  };
+  render();
+  form.addEventListener("input", render);
+  $("[data-action='use-period-appointment']", form).addEventListener("click", () => {
+    form.elements.appointmentRate.value = suggestedAppointmentRate;
+    render();
+  });
+  $("[data-action='save-forecast']", view).addEventListener("click", async () => {
+    const button = $("[data-action='save-forecast']", view);
+    button.disabled = true;
+    try {
+      await api("/api/analytics/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ settings: readForecastForm(form) })
+      });
+      toast("Previsión guardada", "ok");
+    } catch (err) {
+      toast(`No se pudo guardar (${err.message})`, "error");
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+function readForecastForm(form) {
+  return {
+    appointmentRate: readNumber(form.elements.appointmentRate.value, 0),
+    qualificationRate: readNumber(form.elements.qualificationRate.value, 0),
+    closeRate: readNumber(form.elements.closeRate.value, 0),
+    showUpRate: readNumber(form.elements.showUpRate.value, 0),
+    offerPrice: readNumber(form.elements.offerPrice.value, 0),
+    firstMonthPrice: readNumber(form.elements.firstMonthPrice.value, 0),
+    revenueTarget: readNumber(form.elements.revenueTarget.value, 0)
+  };
+}
+
+function readNumber(value, fallback) {
+  const number = Number(String(value || "").replace(",", "."));
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function renderForecastTable(input) {
+  const projections = buildForecastProjections(input);
+  const rows = [
+    ["Clientes requeridos", "clientsRequired"],
+    ["Llamadas calificadas agendadas", "qualifiedSalesCalls"],
+    ["Llamadas atendidas", "attendedSalesCalls"],
+    ["Llamadas agendadas (total)", "scheduledSalesCalls"],
+    ["Llamadas requeridas por mes", "monthlyColdCalls"],
+    ["Llamadas requeridas por día", "dailyColdCalls"]
+  ];
+  return `
+    <div class="forecast-table-wrap">
+      <table class="forecast-table">
+        <thead>
+          <tr>
+            <th></th>
+            ${projections.map((projection) => `<th>${escape(projection.label)}</th>`).join("")}
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map(
+              ([label, key]) => `
+              <tr>
+                <td>${escape(label)}</td>
+                ${projections.map((projection) => `<td>${fmtNumber(projection[key])}</td>`).join("")}
+              </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function buildForecastProjections(input) {
+  const totalClients = input.offerPrice > 0 ? input.revenueTarget / input.offerPrice : 0;
+  const cashClients = input.firstMonthPrice > 0 ? input.revenueTarget / input.firstMonthPrice : 0;
+  const realClients = (totalClients + cashClients) / 2;
+  return [
+    buildForecastProjection("Total ventas", totalClients, input),
+    buildForecastProjection("Cash en cuenta", cashClients, input, true),
+    buildForecastProjection("Pronóstico real", realClients, input)
+  ];
+}
+
+function buildForecastProjection(label, rawClients, input, highlight = false) {
+  const closeRate = percentToDecimal(input.closeRate);
+  const qualificationRate = percentToDecimal(input.qualificationRate);
+  const showUpRate = percentToDecimal(input.showUpRate);
+  const appointmentRate = percentToDecimal(input.appointmentRate);
+  const clientsRequired = Math.ceil(rawClients || 0);
+  const qualifiedSalesCalls = ceilByRate(clientsRequired, closeRate);
+  const attendedSalesCalls = ceilByRate(qualifiedSalesCalls, qualificationRate);
+  const scheduledSalesCalls = ceilByRate(attendedSalesCalls, showUpRate);
+  const monthlyColdCalls = ceilByRate(scheduledSalesCalls, appointmentRate);
+  return {
+    label,
+    highlight,
+    clientsRequired,
+    qualifiedSalesCalls,
+    attendedSalesCalls,
+    scheduledSalesCalls,
+    monthlyColdCalls,
+    dailyColdCalls: Math.ceil(monthlyColdCalls / 30)
+  };
+}
+
+function percentToDecimal(value) {
+  const number = Number(value) || 0;
+  return Math.min(Math.max(number / 100, 0.001), 1);
+}
+
+function ceilByRate(value, rate) {
+  return Math.ceil((Number(value) || 0) / Math.max(rate, 0.001));
 }
 
 // ── Scoring ──────────────────────────────────────────────

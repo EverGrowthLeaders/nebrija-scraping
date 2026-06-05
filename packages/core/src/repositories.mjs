@@ -12,7 +12,7 @@ export const CRM_STATUS_OPTIONS = [
   "No contesta",
   "Descartado"
 ];
-export const CRM_CHECKPOINT_OPTIONS = ["Secretaria", "Inicio", "Pitch", "Agendado", "No lo coge", "Objeción"];
+export const CRM_CHECKPOINT_OPTIONS = ["Secretaria", "Inicio", "Pitch", "Agendado", "No lo coge", "Objeción inicial"];
 export const CRM_OBJECTION_OPTIONS = [
   "No puedo ahora",
   "Estamos bien",
@@ -20,6 +20,15 @@ export const CRM_OBJECTION_OPTIONS = [
   "Quién eres",
   "Puedes enviar esto por email"
 ];
+export const DEFAULT_ANALYTICS_SETTINGS = {
+  offerPrice: 3000,
+  firstMonthPrice: 1000,
+  revenueTarget: 10000,
+  appointmentRate: null,
+  qualificationRate: 70,
+  closeRate: 30,
+  showUpRate: 80
+};
 
 export async function findSessionByTokenHash(tokenHash) {
   const result = await query(
@@ -186,6 +195,78 @@ export async function upsertTenantNebrijaSettings({
     [tenantId, apiBaseUrl || null, nextApiKey, nextLast4, defaultPhoneNumberId || null, settings || {}]
   );
   return result.rows[0];
+}
+
+export async function getTenantAnalyticsSettings({ tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT settings, updated_at
+       FROM tenant_integrations
+      WHERE tenant_id = $1 AND provider = 'analytics_forecast'`,
+    [tenantId]
+  );
+  const row = result.rows[0];
+  return {
+    settings: normalizeAnalyticsSettings(row?.settings || {}),
+    updatedAt: row?.updated_at || null,
+    stored: Boolean(row)
+  };
+}
+
+export async function upsertTenantAnalyticsSettings({ tenantId = DEFAULT_TENANT_ID, settings }) {
+  const current = await getTenantAnalyticsSettings({ tenantId });
+  const next = normalizeAnalyticsSettings({ ...current.settings, ...(settings || {}) });
+  const result = await query(
+    `INSERT INTO tenant_integrations (tenant_id, provider, settings)
+     VALUES ($1, 'analytics_forecast', $2)
+     ON CONFLICT (tenant_id, provider)
+     DO UPDATE SET settings = EXCLUDED.settings, updated_at = NOW()
+     RETURNING settings, updated_at`,
+    [tenantId, next]
+  );
+  return {
+    settings: normalizeAnalyticsSettings(result.rows[0]?.settings || {}),
+    updatedAt: result.rows[0]?.updated_at || null,
+    stored: true
+  };
+}
+
+function normalizeAnalyticsSettings(settings = {}) {
+  return {
+    offerPrice: positiveNumber(settings.offerPrice ?? settings.offer_price, DEFAULT_ANALYTICS_SETTINGS.offerPrice),
+    firstMonthPrice: positiveNumber(
+      settings.firstMonthPrice ?? settings.first_month_price,
+      DEFAULT_ANALYTICS_SETTINGS.firstMonthPrice
+    ),
+    revenueTarget: positiveNumber(
+      settings.revenueTarget ?? settings.revenue_target,
+      DEFAULT_ANALYTICS_SETTINGS.revenueTarget
+    ),
+    appointmentRate: nullablePercent(settings.appointmentRate ?? settings.appointment_rate),
+    qualificationRate: percentNumber(
+      settings.qualificationRate ?? settings.qualification_rate,
+      DEFAULT_ANALYTICS_SETTINGS.qualificationRate
+    ),
+    closeRate: percentNumber(settings.closeRate ?? settings.close_rate, DEFAULT_ANALYTICS_SETTINGS.closeRate),
+    showUpRate: percentNumber(settings.showUpRate ?? settings.show_up_rate, DEFAULT_ANALYTICS_SETTINGS.showUpRate)
+  };
+}
+
+function positiveNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function percentNumber(value, fallback) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.min(Math.max(number, 0.1), 100);
+}
+
+function nullablePercent(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.min(Math.max(number, 0.1), 100);
 }
 
 export async function getTenantScoringRules({ tenantId = DEFAULT_TENANT_ID } = {}) {
@@ -814,6 +895,98 @@ export async function listExtractionJobs({ tenantId = DEFAULT_TENANT_ID, limit =
   return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
 }
 
+export async function getColdCallingAnalytics({
+  tenantId = DEFAULT_TENANT_ID,
+  scopeType = "all",
+  scopeId,
+  from,
+  to
+} = {}) {
+  const where = ["ll.tenant_id = $1", "lm.first_contact_at IS NOT NULL"];
+  const params = [tenantId];
+  if (scopeType === "list" && scopeId) {
+    params.push(scopeId);
+    where.push(`lm.lead_list_id = $${params.length}`);
+  } else if (scopeType === "campaign" && scopeId) {
+    params.push(scopeId);
+    where.push(`b.extraction_job_id = $${params.length}`);
+  }
+  if (from && /^\d{4}-\d{2}-\d{2}$/.test(String(from))) {
+    params.push(from);
+    where.push(`lm.first_contact_at >= $${params.length}::date`);
+  }
+  if (to && /^\d{4}-\d{2}-\d{2}$/.test(String(to))) {
+    params.push(to);
+    where.push(`lm.first_contact_at <= $${params.length}::date`);
+  }
+  const checkpoint = `NULLIF(CASE WHEN lm.checkpoint = 'Objeción' THEN 'Objeción inicial' ELSE lm.checkpoint END, '')`;
+  const result = await query(
+    `SELECT
+        COUNT(*)::int AS total_calls,
+        COUNT(*) FILTER (WHERE ${checkpoint} IS NOT NULL AND ${checkpoint} <> 'No lo coge')::int AS answered_calls,
+        COUNT(*) FILTER (
+          WHERE ${checkpoint} IS NOT NULL
+            AND ${checkpoint} NOT IN ('No lo coge', 'Secretaria')
+        )::int AS decision_maker_calls,
+        COUNT(*) FILTER (WHERE ${checkpoint} IN ('Pitch', 'Agendado'))::int AS pitch_calls,
+        COUNT(*) FILTER (
+          WHERE ${checkpoint} = 'Agendado'
+             OR lm.crm_status = 'Cita Concertada'
+        )::int AS scheduled_calls,
+        COUNT(*) FILTER (WHERE ${checkpoint} = 'Secretaria')::int AS secretary_calls,
+        COUNT(*) FILTER (WHERE ${checkpoint} = 'No lo coge')::int AS no_answer_calls,
+        COUNT(*) FILTER (WHERE ${checkpoint} = 'Objeción inicial')::int AS initial_objection_calls,
+        COUNT(DISTINCT lm.lead_list_id)::int AS lists_count,
+        COUNT(DISTINCT b.extraction_job_id) FILTER (WHERE b.extraction_job_id IS NOT NULL)::int AS campaigns_count,
+        MIN(lm.first_contact_at) AS first_contact_from,
+        MAX(lm.first_contact_at) AS first_contact_to
+       FROM lead_list_members lm
+       JOIN lead_lists ll ON ll.id = lm.lead_list_id
+       JOIN businesses b ON b.id = lm.business_id AND b.tenant_id = ll.tenant_id
+      WHERE ${where.join(" AND ")}`,
+    params
+  );
+  const row = result.rows[0] || {};
+  const total = Number(row.total_calls) || 0;
+  const counts = {
+    totalCalls: total,
+    answeredCalls: Number(row.answered_calls) || 0,
+    decisionMakerCalls: Number(row.decision_maker_calls) || 0,
+    pitchCalls: Number(row.pitch_calls) || 0,
+    scheduledCalls: Number(row.scheduled_calls) || 0,
+    secretaryCalls: Number(row.secretary_calls) || 0,
+    noAnswerCalls: Number(row.no_answer_calls) || 0,
+    initialObjectionCalls: Number(row.initial_objection_calls) || 0
+  };
+  return {
+    scope: { type: scopeType, id: scopeId || null },
+    period: { from: from || null, to: to || null },
+    counts,
+    rates: {
+      answeredRate: ratio(counts.answeredCalls, total),
+      decisionMakerRate: ratio(counts.decisionMakerCalls, total),
+      pitchRate: ratio(counts.pitchCalls, total),
+      scheduledRate: ratio(counts.scheduledCalls, total)
+    },
+    meta: {
+      listsCount: Number(row.lists_count) || 0,
+      campaignsCount: Number(row.campaigns_count) || 0,
+      firstContactFrom: row.first_contact_from || null,
+      firstContactTo: row.first_contact_to || null
+    },
+    steps: [
+      { key: "totalCalls", label: "Total llamadas", count: counts.totalCalls },
+      { key: "answeredCalls", label: "Llamadas atendidas", count: counts.answeredCalls },
+      { key: "decisionMakerCalls", label: "Atendidas por decisor", count: counts.decisionMakerCalls },
+      { key: "pitchCalls", label: "Pitchs", count: counts.pitchCalls }
+    ]
+  };
+}
+
+function ratio(part, total) {
+  return total > 0 ? Number(part || 0) / total : 0;
+}
+
 export async function findExtractionJobDetail(id, { tenantId = DEFAULT_TENANT_ID } = {}) {
   const job = await query(`SELECT * FROM extraction_jobs WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
   if (!job.rows[0]) return null;
@@ -1098,7 +1271,7 @@ const CRM_ROW_SELECT = `
     to_char(lm.follow_up_time, 'HH24:MI') AS follow_up_time,
     lm.next_action,
     lm.observations,
-    lm.checkpoint,
+    CASE WHEN lm.checkpoint = 'Objeción' THEN 'Objeción inicial' ELSE lm.checkpoint END AS checkpoint,
     lm.objection,
     lm.crm_updated_at,
     b.id,
@@ -1171,7 +1344,7 @@ export async function updateLeadListCrmEntry({ tenantId = DEFAULT_TENANT_ID, lis
     nextAction: ["next_action", normalizeCrmText],
     next_action: ["next_action", normalizeCrmText],
     observations: ["observations", normalizeCrmText],
-    checkpoint: ["checkpoint", normalizeCrmText],
+    checkpoint: ["checkpoint", normalizeCrmCheckpoint],
     objection: ["objection", normalizeCrmText]
   };
   const sets = [];
@@ -1211,6 +1384,11 @@ function normalizeCrmText(value) {
 
 function normalizeCrmStatus(value) {
   return normalizeCrmText(value) || "Nuevo";
+}
+
+function normalizeCrmCheckpoint(value) {
+  const text = normalizeCrmText(value);
+  return text === "Objeción" ? "Objeción inicial" : text;
 }
 
 function normalizeCrmDate(value) {
