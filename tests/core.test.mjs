@@ -16,7 +16,7 @@ import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
 import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../packages/core/src/leadImport.mjs";
-import { buildMetaAdProbes, buildMetaAdsLibraryUrl, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
+import { buildMetaAdProbes, buildMetaAdsLibraryUrl, discoverSocialsForAds, enrichBusinessAds, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -318,4 +318,70 @@ test("Meta active inference stores matching strategy and query evidence", () => 
   assert.equal(result.strategy, "facebook_handle");
   assert.equal(result.query, "bufetedemo");
   assert.equal(result.confidence, 0.88);
+});
+
+test("discovers social profiles from business website for Meta ad probes", async () => {
+  const firecrawl = {
+    async scrape(url) {
+      assert.equal(url, "https://disownedfactory.com");
+      return {
+        markdown: "[Instagram](http://www.instagram.com/disowned_factory)",
+        html: '<a href="https://www.facebook.com/disownedfactory">Facebook</a>',
+        links: [{ url: "http://www.instagram.com/disowned_factory" }]
+      };
+    }
+  };
+
+  const discovery = await discoverSocialsForAds({
+    business: { website: "https://disownedfactory.com" },
+    firecrawl
+  });
+
+  assert.equal(discovery.status, "found");
+  assert.equal(discovery.instagram, "http://www.instagram.com/disowned_factory");
+  assert.equal(discovery.facebook, "https://www.facebook.com/disownedfactory");
+});
+
+test("enriches Meta ads from discovered Instagram and retries all-country library", async () => {
+  const calls = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      calls.push(url);
+      if (url === "https://disownedfactory.com") {
+        return {
+          markdown: "[Instagram](http://www.instagram.com/disowned_factory)",
+          html: "",
+          links: [{ url: "http://www.instagram.com/disowned_factory" }]
+        };
+      }
+      if (url.includes("facebook.com/ads/library") && url.includes("country=ALL") && url.includes("%40disowned_factory")) {
+        return {
+          markdown: "Library ID: 123456789 This Page is currently running ads.",
+          html: ""
+        };
+      }
+      if (url.includes("adstransparency.google.com")) {
+        return { markdown: "No ads found", html: "" };
+      }
+      return { markdown: "No results", html: "" };
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Disowned Factory", website: "https://disownedfactory.com", city: "Madrid" },
+    firecrawl,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.strategy, "instagram_handle");
+  assert.equal(enrichment.meta.query, "@disowned_factory");
+  assert.equal(enrichment.meta.country, "ALL");
+  assert.equal(enrichment.meta.socialDiscovery.instagram, "http://www.instagram.com/disowned_factory");
+  assert.ok(calls.some((url) => url.includes("country=ES")));
+  assert.ok(calls.some((url) => url.includes("country=ALL")));
 });

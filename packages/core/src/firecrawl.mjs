@@ -31,12 +31,16 @@ export class FirecrawlClient {
   }
 
   async scrape(url, options = {}) {
-    const response = await this.request("/scrape", {
+    const body = {
       url,
       formats: options.formats || ["markdown", "html", "links"],
       onlyMainContent: options.onlyMainContent ?? false,
       waitFor: options.waitFor
-    });
+    };
+    if (options.proxy) body.proxy = options.proxy;
+    if (options.location) body.location = options.location;
+    if (options.actions) body.actions = options.actions;
+    const response = await this.request("/scrape", body);
     return normalizeScrapeResponse(response);
   }
 

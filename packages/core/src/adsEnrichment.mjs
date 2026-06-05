@@ -2,7 +2,9 @@ const DEFAULT_COUNTRY = "ES";
 
 export async function enrichBusinessAds({ business, firecrawl, country = DEFAULT_COUNTRY, now = new Date() }) {
   if (!firecrawl) throw new Error("firecrawl_client_required");
-  const meta = await inspectMetaAds({ business, firecrawl, country, now });
+  const socialDiscovery = await discoverSocialsForAds({ business, firecrawl });
+  const enrichedBusiness = mergeDiscoveredSocials(business, socialDiscovery);
+  const meta = await inspectMetaAds({ business: enrichedBusiness, firecrawl, country, now, socialDiscovery });
   const google = await inspectGoogleAds({ business, firecrawl, country, now });
   return {
     checkedAt: now.toISOString(),
@@ -100,47 +102,77 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
   return evidence({ provider, status: "unknown", active: null, confidence: 0.2, sourceUrl, reason: "no_strong_signal" });
 }
 
-async function inspectMetaAds({ business, firecrawl, country, now }) {
+export async function discoverSocialsForAds({ business = {}, firecrawl }) {
+  if (!firecrawl || !business.website) return null;
+  try {
+    const page = await firecrawl.scrape(business.website, {
+      formats: ["markdown", "html", "links"],
+      onlyMainContent: false,
+      waitFor: 2500
+    });
+    const links = extractSocialLinks(page);
+    if (!links.instagram && !links.facebook) return { status: "not_found", sourceUrl: business.website };
+    return {
+      status: "found",
+      sourceUrl: business.website,
+      instagram: links.instagram || null,
+      facebook: links.facebook || null
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      sourceUrl: business.website,
+      error: error.message
+    };
+  }
+}
+
+async function inspectMetaAds({ business, firecrawl, country, now, socialDiscovery }) {
   const probes = buildMetaAdProbes(business);
+  const countries = unique([country, "ALL"]);
   const attempts = [];
   let fallback = null;
 
-  for (const probe of probes) {
-    const url = buildMetaAdsLibraryUrl({ query: probe.query, country, searchType: probe.searchType });
-    try {
-      const page = await firecrawl.scrape(url, {
-        formats: ["markdown", "html"],
-        onlyMainContent: false,
-        waitFor: 5000
-      });
-      const result = inferAdsActivity({
-        provider: "meta",
-        text: pageText(page),
-        now,
-        sourceUrl: url,
-        context: probe
-      });
-      attempts.push(metaAttempt(probe, result, url));
-      fallback = betterMetaFallback(fallback, result);
-      if (result.active === true) return withAttempts(result, attempts);
-    } catch (error) {
-      const result = evidence({
-        provider: "meta",
-        status: "error",
-        active: null,
-        confidence: 0,
-        sourceUrl: url,
-        error: error.message,
-        context: probe
-      });
-      attempts.push(metaAttempt(probe, result, url));
-      fallback = betterMetaFallback(fallback, result);
+  for (const metaCountry of countries) {
+    for (const probe of probes) {
+      const context = { ...probe, country: metaCountry };
+      const url = buildMetaAdsLibraryUrl({ query: probe.query, country: metaCountry, searchType: probe.searchType });
+      try {
+        const page = await firecrawl.scrape(url, {
+          formats: ["markdown", "html"],
+          onlyMainContent: false,
+          waitFor: 5000
+        });
+        const result = inferAdsActivity({
+          provider: "meta",
+          text: pageText(page),
+          now,
+          sourceUrl: url,
+          context
+        });
+        attempts.push(metaAttempt(context, result, url));
+        fallback = betterMetaFallback(fallback, result);
+        if (result.active === true) return withAttempts(result, attempts, socialDiscovery);
+      } catch (error) {
+        const result = evidence({
+          provider: "meta",
+          status: "error",
+          active: null,
+          confidence: 0,
+          sourceUrl: url,
+          error: error.message,
+          context
+        });
+        attempts.push(metaAttempt(context, result, url));
+        fallback = betterMetaFallback(fallback, result);
+      }
     }
   }
 
   return withAttempts(
     fallback || evidence({ provider: "meta", status: "unknown", active: null, confidence: 0.2, reason: "no_meta_probe_matched" }),
-    attempts
+    attempts,
+    socialDiscovery
   );
 }
 
@@ -219,7 +251,8 @@ function evidence({ provider, status, active, confidence, sourceUrl, reason, lat
     error: error || null,
     strategy: context?.strategy || null,
     query: context?.query || null,
-    searchType: context?.searchType || null
+    searchType: context?.searchType || null,
+    country: context?.country || null
   };
 }
 
@@ -232,6 +265,7 @@ function metaAttempt(probe, result, url) {
     strategy: probe.strategy,
     query: probe.query,
     searchType: probe.searchType,
+    country: probe.country || null,
     status: result.status,
     active: result.active,
     confidence: result.confidence,
@@ -240,10 +274,11 @@ function metaAttempt(probe, result, url) {
   };
 }
 
-function withAttempts(result, attempts) {
+function withAttempts(result, attempts, socialDiscovery) {
   return {
     ...result,
-    attempts: attempts.slice(0, 12)
+    socialDiscovery: socialDiscovery || null,
+    attempts: attempts.slice(0, 20)
   };
 }
 
@@ -269,6 +304,31 @@ function pageText(page) {
   return `${page?.markdown || ""}\n${page?.html || ""}\n${JSON.stringify(page?.raw || {})}`.slice(0, 250000);
 }
 
+function mergeDiscoveredSocials(business, socialDiscovery) {
+  if (!socialDiscovery || socialDiscovery.status !== "found") return business;
+  return {
+    ...business,
+    instagram: firstValue(business.instagram, business.custom_fields?.instagram, business.custom_fields?.instagram_url, socialDiscovery.instagram),
+    facebook: firstValue(business.facebook, business.custom_fields?.facebook, business.custom_fields?.facebook_url, socialDiscovery.facebook)
+  };
+}
+
+function extractSocialLinks(page) {
+  const candidates = [
+    ...(page?.links || []).map((link) => link.url),
+    ...Array.from(pageText(page).matchAll(/https?:\/\/(?:www\.)?(?:instagram\.com|facebook\.com|fb\.com)\/[^"'\s<>)]+/gi)).map((match) => match[0])
+  ];
+  const socials = {};
+  for (const value of candidates) {
+    const clean = cleanSocialUrl(value);
+    if (!clean) continue;
+    const host = hostname(clean);
+    if (!socials.instagram && host.endsWith("instagram.com")) socials.instagram = clean;
+    if (!socials.facebook && (host.endsWith("facebook.com") || host.endsWith("fb.com"))) socials.facebook = clean;
+  }
+  return socials;
+}
+
 function adSearchQuery(business) {
   return [business.name, business.city].filter(Boolean).join(" ") || extractDomain(business.website) || business.website || "";
 }
@@ -280,6 +340,54 @@ function extractDomain(value) {
     return parsed.hostname.replace(/^www\./, "");
   } catch {
     return String(value).replace(/^https?:\/\//, "").replace(/^www\./, "").split("/")[0];
+  }
+}
+
+function cleanSocialUrl(value) {
+  if (!value) return "";
+  try {
+    const parsed = new URL(String(value).trim());
+    parsed.hash = "";
+    const blockedParts = new Set([
+      "accounts",
+      "ads",
+      "business",
+      "connect",
+      "dialog",
+      "events",
+      "explore",
+      "intent",
+      "login",
+      "p",
+      "permalink",
+      "photos",
+      "plugins",
+      "posts",
+      "privacy",
+      "reel",
+      "reels",
+      "share.php",
+      "sharer",
+      "stories",
+      "tr",
+      "tr.php",
+      "watch"
+    ]);
+    const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
+    if (!parts.length || blockedParts.has(parts[0].toLowerCase())) return "";
+    parsed.pathname = `/${parts.slice(0, 2).join("/")}`;
+    parsed.search = parsed.pathname === "/profile.php" ? parsed.search : "";
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+function hostname(value) {
+  try {
+    return new URL(value).hostname.replace(/^www\./, "").toLowerCase();
+  } catch {
+    return "";
   }
 }
 
