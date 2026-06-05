@@ -7,6 +7,7 @@ export const QUEUE_NAMES = {
   webDiscovery: "web-discovery",
   businessCrawl: "business-crawl",
   scoring: "scoring",
+  adsEnrichment: "ads-enrichment",
   voiceCall: "voice-call"
 };
 

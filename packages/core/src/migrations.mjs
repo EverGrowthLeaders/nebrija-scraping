@@ -90,6 +90,11 @@ export async function ensureRuntimeSchema() {
 
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS scoring_notes TEXT`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS extraction_job_id UUID REFERENCES extraction_jobs(id) ON DELETE SET NULL`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS custom_fields JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_meta_active BOOLEAN`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_google_active BOOLEAN`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_last_checked_at TIMESTAMPTZ`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_enrichment JSONB NOT NULL DEFAULT '{}'::jsonb`);
     await run(`ALTER TABLE extraction_jobs ALTER COLUMN source_type SET DEFAULT 'google_places_api'`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_name TEXT`);
@@ -123,6 +128,7 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job ON businesses(tenant_id, extraction_job_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_status_city_niche ON businesses(tenant_id, status, city, niche)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_score ON businesses(tenant_id, score DESC)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_checked ON businesses(tenant_id, ads_last_checked_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_created ON extraction_jobs(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_voice_calls_tenant_created ON voice_calls(tenant_id, created_at DESC)`);
   });

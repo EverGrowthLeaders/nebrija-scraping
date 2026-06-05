@@ -15,8 +15,14 @@ export const CAMPAIGN_LEAD_EXPORT_COLUMNS = [
   { key: "review_count", label: "Reviews Google", type: "number" },
   { key: "has_online_booking", label: "Reserva online", type: "boolean" },
   { key: "has_chatbot", label: "Chatbot", type: "boolean" },
+  { key: "ads_meta_active", label: "Meta Ads activo", type: "boolean_nullable" },
+  { key: "ads_google_active", label: "Google Ads activo", type: "boolean_nullable" },
+  { key: "ads_last_checked_at", label: "Ads revisado" },
+  { key: "ads_meta_source", label: "Meta Ads fuente" },
+  { key: "ads_google_source", label: "Google Ads fuente" },
   { key: "instagram", label: "Instagram" },
   { key: "facebook", label: "Facebook" },
+  { key: "custom_fields", label: "Campos personalizados" },
   { key: "source_url", label: "URL fuente" },
   { key: "place_id", label: "Google Place ID" },
   { key: "scoring_notes", label: "Notas scoring" },
@@ -67,6 +73,14 @@ export { XLSX_CONTENT_TYPE };
 function exportValue(lead, column) {
   const value = lead?.[column.key];
   if (column.key === "emails") return Array.isArray(value) ? value.join("; ") : value || "";
+  if (column.key === "ads_meta_source") return lead?.ads_enrichment?.meta?.sourceUrl || "";
+  if (column.key === "ads_google_source") return lead?.ads_enrichment?.google?.sourceUrl || "";
+  if (column.key === "custom_fields") return value && Object.keys(value).length ? JSON.stringify(value) : "";
+  if (column.type === "boolean_nullable") {
+    if (value === true) return "si";
+    if (value === false) return "no";
+    return "";
+  }
   if (column.type === "boolean") return value ? "si" : "no";
   if (value instanceof Date) return value.toISOString();
   if (value == null) return "";

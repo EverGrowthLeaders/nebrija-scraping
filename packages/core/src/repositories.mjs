@@ -493,6 +493,7 @@ export async function updateBusinessEnrichment({ businessId, patch }) {
 
 export async function createManualBusiness({
   tenantId = DEFAULT_TENANT_ID,
+  extractionJobId,
   name,
   website,
   phone,
@@ -501,30 +502,69 @@ export async function createManualBusiness({
   city,
   niche,
   category,
+  instagram,
+  facebook,
+  postalCode,
+  scoringNotes,
   sourceUrl,
+  customFields,
   rawPayload
 }) {
   const result = await query(
     `INSERT INTO businesses
-       (tenant_id, external_source, name, website, phone, phone_e164, address, city, niche, category, source_url, raw_payload, status)
+       (tenant_id, extraction_job_id, external_source, name, website, phone, phone_e164, address, city, postal_code,
+        niche, category, instagram, facebook, scoring_notes, source_url, custom_fields, raw_payload, status)
      VALUES
-       ($1, 'manual_or_imported', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'new')
+       ($1, $2, 'manual_or_imported', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, 'new')
      RETURNING *`,
     [
       tenantId,
+      extractionJobId || null,
       name,
       website || null,
       phone || null,
       phoneE164 || null,
       address || null,
       city || null,
+      postalCode || null,
       niche || null,
       category || null,
+      instagram || null,
+      facebook || null,
+      scoringNotes || null,
       sourceUrl || null,
+      customFields || {},
       rawPayload || {}
     ]
   );
   return result.rows[0];
+}
+
+export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrichment }) {
+  const checkedAt = enrichment?.checkedAt ? new Date(enrichment.checkedAt) : new Date();
+  const result = await query(
+    `UPDATE businesses
+        SET ads_meta_active = $3,
+            ads_google_active = $4,
+            ads_last_checked_at = $5,
+            ads_enrichment = $6,
+            status = CASE
+              WHEN status IN ('new', 'scraped', 'enrichment_pending') THEN 'enriched'::lead_status
+              ELSE status
+            END,
+            updated_at = NOW()
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [
+      businessId,
+      tenantId,
+      enrichment?.meta?.active ?? null,
+      enrichment?.google?.active ?? null,
+      checkedAt,
+      enrichment || {}
+    ]
+  );
+  return result.rows[0] || null;
 }
 
 export async function updateBusinessScore({ businessId, score, tenantId }) {
@@ -717,11 +757,16 @@ export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID,
             b.facebook,
             b.has_online_booking,
             b.has_chatbot,
+            b.ads_meta_active,
+            b.ads_google_active,
+            b.ads_last_checked_at,
+            b.ads_enrichment,
             b.score,
             b.scoring_notes,
             b.niche,
             b.status,
             b.source_url,
+            b.custom_fields,
             b.created_at,
             b.updated_at,
             COALESCE(array_agg(DISTINCT c.value) FILTER (WHERE c.kind = 'email'), ARRAY[]::text[]) AS emails
@@ -766,7 +811,7 @@ export async function listBusinesses({ tenantId = DEFAULT_TENANT_ID, limit = 50,
   params.push(safeOffset);
   const result = await query(
     `SELECT id, name, niche, city, website, phone_e164, status, score, scoring_notes, has_online_booking, has_chatbot,
-            created_at, updated_at
+            ads_meta_active, ads_google_active, ads_last_checked_at, custom_fields, created_at, updated_at
        FROM businesses
        ${whereClause}
       ORDER BY score DESC, updated_at DESC
@@ -778,6 +823,19 @@ export async function listBusinesses({ tenantId = DEFAULT_TENANT_ID, limit = 50,
     params.slice(0, params.length - 2)
   );
   return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
+}
+
+export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID, campaignId, limit = 1000 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+  const result = await query(
+    `SELECT id
+       FROM businesses
+      WHERE tenant_id = $1 AND extraction_job_id = $2
+      ORDER BY updated_at DESC
+      LIMIT $3`,
+    [tenantId, campaignId, safeLimit]
+  );
+  return result.rows.map((row) => row.id);
 }
 
 export async function findBusinessDetail(id, { tenantId = DEFAULT_TENANT_ID } = {}) {

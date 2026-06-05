@@ -8,6 +8,7 @@ import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs"
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
+import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
 import { calculateLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
 import {
   createCrawlerRun,
@@ -20,6 +21,7 @@ import {
   persistCrawledPage,
   recordProvenance,
   updateBusinessEnrichment,
+  updateBusinessAdsEnrichment,
   updateBusinessScore,
   updateCrawlerRun,
   updateExtractionJob,
@@ -36,6 +38,7 @@ const queues = {
   webDiscovery: createQueue(QUEUE_NAMES.webDiscovery),
   businessCrawl: createQueue(QUEUE_NAMES.businessCrawl),
   scoring: createQueue(QUEUE_NAMES.scoring),
+  adsEnrichment: createQueue(QUEUE_NAMES.adsEnrichment),
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
@@ -44,6 +47,7 @@ const workers = [
   createWorker(QUEUE_NAMES.webDiscovery, runWebDiscovery),
   createWorker(QUEUE_NAMES.businessCrawl, runBusinessCrawl),
   createWorker(QUEUE_NAMES.scoring, runScoring),
+  createWorker(QUEUE_NAMES.adsEnrichment, runAdsEnrichment, { concurrency: 2 }),
   createWorker(QUEUE_NAMES.voiceCall, runVoiceCall, { concurrency: 2 })
 ];
 
@@ -347,6 +351,22 @@ async function runScoring(job) {
     await queues.voiceCall.add("call", { tenantId: business.tenant_id, businessId: business.id });
   }
   return { score, channel };
+}
+
+async function runAdsEnrichment(job) {
+  const business = await findBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
+  if (!business) throw new Error(`business not found: ${job.data.businessId}`);
+  const enrichment = await enrichBusinessAds({ business, firecrawl });
+  await updateBusinessAdsEnrichment({
+    tenantId: business.tenant_id,
+    businessId: business.id,
+    enrichment
+  });
+  return {
+    meta: enrichment.meta?.status,
+    google: enrichment.google?.status,
+    checkedAt: enrichment.checkedAt
+  };
 }
 
 async function runVoiceCall(job) {

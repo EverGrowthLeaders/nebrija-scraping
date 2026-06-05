@@ -88,6 +88,19 @@ const renderScore = (score) => {
   return `<span class="score ${cls}">${n}</span>`;
 };
 
+const renderAdsBadge = (value, label) => {
+  if (value === true) return `<span class="badge badge--green">${escape(label)} activo</span>`;
+  if (value === false) return `<span class="badge badge--zinc">${escape(label)} sin señal</span>`;
+  return `<span class="badge badge--zinc">${escape(label)} sin revisar</span>`;
+};
+
+const renderAdsState = (business) => `
+  <div class="ads-badges">
+    ${renderAdsBadge(business.ads_meta_active, "Meta")}
+    ${renderAdsBadge(business.ads_google_active, "Google")}
+  </div>
+`;
+
 // ── HTTP ──────────────────────────────────────────────────
 async function api(path, options = {}) {
   const { skipAuthRedirect = false, ...fetchOptions } = options;
@@ -554,6 +567,10 @@ async function renderCampaignDetail({ params }) {
         <p class="subhead mono">${escape(job.id)}</p>
       </div>
       <div class="row" style="gap:6px">
+        <button class="btn" data-action="campaign-ads" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 2 3 6.5v6.7c0 4.7 3.8 7.5 9 8.8 5.2-1.3 9-4.1 9-8.8V6.5L12 2Zm0 2.2 7 3.5v5.5c0 3.5-2.7 5.6-7 6.8-4.3-1.2-7-3.3-7-6.8V7.7l7-3.5Zm-1 5.3h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z"/></svg>
+          Enriquecer Ads
+        </button>
         <a class="btn" href="/api/campaigns/${escape(job.id)}/export.xlsx">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 3h9l5 5v13H5V3Zm8 1.8V9h4.2L13 4.8ZM8 12v6h8v-1.5h-6.5v-1h5.6V14H9.5v-1H16v-1.5H8V12Z"/></svg>
           Excel
@@ -627,6 +644,7 @@ async function renderCampaignDetail({ params }) {
     selectedAssistantVariables: job.voice_assistant_variables || []
   });
   voiceForm.addEventListener("submit", (event) => saveCampaignVoiceSettings(event, job.id));
+  $("[data-action='campaign-ads']", view).addEventListener("click", () => campaignAdsAction(job.id));
 }
 
 // ── Leads list ────────────────────────────────────────────
@@ -647,6 +665,10 @@ async function renderLeadsList({ search }) {
       <button class="btn btn--primary" data-action="new-lead" type="button">
         <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
         Importar lead
+      </button>
+      <button class="btn" data-action="import-leads" type="button">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 3h9l5 5v13H5V3Zm8 1.8V9h4.2L13 4.8ZM8 12h8v2H8v-2Zm0 3h8v2H8v-2Z"/></svg>
+        Importar lista
       </button>
     </div>
 
@@ -678,11 +700,12 @@ async function renderLeadsList({ search }) {
             <th>Web</th>
             <th>Teléfono</th>
             <th class="col-num">Score</th>
+            <th>Ads</th>
             <th>Estado</th>
             <th>Actualizado</th>
           </tr>
         </thead>
-        <tbody data-bind="rows"><tr><td colspan="7" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
+        <tbody data-bind="rows"><tr><td colspan="8" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
       </table>
     </div>
   `;
@@ -695,6 +718,7 @@ async function renderLeadsList({ search }) {
     location.hash = `#/leads${params.toString() ? "?" + params.toString() : ""}`;
   });
   $("[data-action='new-lead']", view).addEventListener("click", openLeadModal);
+  $("[data-action='import-leads']", view).addEventListener("click", openLeadImportModal);
 
   const params = new URLSearchParams();
   if (status) params.set("status", status);
@@ -707,7 +731,7 @@ async function renderLeadsList({ search }) {
   const data = await api(`/api/businesses?${params.toString()}`);
   const tbody = $("[data-bind='rows']");
   if (!data.rows.length) {
-    tbody.innerHTML = `<tr><td colspan="7">${emptyState(
+    tbody.innerHTML = `<tr><td colspan="8">${emptyState(
       "Sin resultados",
       "Ajusta los filtros o lanza una campaña."
     )}</td></tr>`;
@@ -722,6 +746,7 @@ async function renderLeadsList({ search }) {
         <td>${b.website ? `<span class="mono ellipsis" style="display:inline-block;max-width:220px">${escape(stripScheme(b.website))}</span>` : "<span class='faint'>—</span>"}</td>
         <td class="mono">${escape(b.phone_e164 || "—")}</td>
         <td class="col-num">${renderScore(b.score)}</td>
+        <td>${renderAdsState(b)}</td>
         <td>${renderStatus(b.status)}</td>
         <td>${fmtRel(b.updated_at)}</td>
       </tr>`
@@ -757,6 +782,10 @@ async function renderLeadDetail({ params }) {
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M12 2 9.2 8.6 2 9.3l5.5 4.8L5.8 21 12 17.3 18.2 21l-1.7-6.9L22 9.3l-7.2-.7Z"/></svg>
           Re-scorear
         </button>
+        <button class="btn" data-action="lead-ads" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 4h16v3H4V4Zm0 5h10v3H4V9Zm0 5h16v3H4v-3Zm0 5h10v2H4v-2Zm13.5-9 1.6 3.2 3.4.5-2.5 2.4.6 3.4-3.1-1.6-3 1.6.6-3.4-2.5-2.4 3.4-.5L17.5 10Z"/></svg>
+          Enriquecer Ads
+        </button>
         <button class="btn btn--gold" data-action="lead-call" type="button" ${!b.phone_e164 ? "disabled" : ""}>
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.3a11 11 0 0 0 3.4.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.4 1 1 0 0 1-.3 1l-2.2 2.4Z"/></svg>
           Llamar ahora
@@ -784,9 +813,21 @@ async function renderLeadDetail({ params }) {
           <dt>Creado</dt><dd>${fmtDate(b.created_at)}</dd>
           <dt>Actualizado</dt><dd>${fmtDate(b.updated_at)}</dd>
         </dl>
+        ${renderCustomFields(b.custom_fields)}
       </div>
 
       <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="card">
+          <div class="card__head">
+            <h3>Ads activos</h3>
+            <span class="muted">${b.ads_last_checked_at ? fmtDate(b.ads_last_checked_at) : "Sin revisar"}</span>
+          </div>
+          <div class="ads-panel">
+            ${renderAdsDetail("Meta", b.ads_meta_active, b.ads_enrichment?.meta)}
+            ${renderAdsDetail("Google", b.ads_google_active, b.ads_enrichment?.google)}
+          </div>
+        </div>
+
         <div class="card">
           <div class="card__head">
             <h3>Notas de scoring</h3>
@@ -867,21 +908,69 @@ async function renderLeadDetail({ params }) {
   bindRowNav(view);
   $("[data-action='lead-crawl']", view).addEventListener("click", () => leadAction(b, "crawl"));
   $("[data-action='lead-score']", view).addEventListener("click", () => leadAction(b, "score"));
+  $("[data-action='lead-ads']", view).addEventListener("click", () => leadAction(b, "ads"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
   $("[data-action='save-scoring-notes']", view).addEventListener("click", () => saveScoringNotes(b.id));
 }
 
 async function leadAction(business, kind) {
   try {
-    const url = `/businesses/${business.id}/${kind}`;
+    const url = kind === "ads" ? `/api/businesses/${business.id}/ads-enrichment` : `/businesses/${business.id}/${kind}`;
     await api(url, { method: "POST", body: "{}" });
     toast(
-      kind === "call" ? "Llamada en cola" : kind === "crawl" ? "Crawl en cola" : "Re-scoring en cola",
+      kind === "call"
+        ? "Llamada en cola"
+        : kind === "crawl"
+          ? "Crawl en cola"
+          : kind === "ads"
+            ? "Enriquecimiento Ads en cola"
+            : "Re-scoring en cola",
       "ok"
     );
   } catch (err) {
     toast(`No se pudo lanzar (${err.message})`, "error");
   }
+}
+
+async function campaignAdsAction(campaignId) {
+  const button = $("[data-action='campaign-ads']", view);
+  button.disabled = true;
+  try {
+    const result = await api(`/api/campaigns/${campaignId}/ads-enrichment`, { method: "POST", body: "{}" });
+    toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento Ads`, "ok");
+  } catch (err) {
+    toast(`No se pudo enriquecer la campaña (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function renderAdsDetail(label, value, evidence = {}) {
+  return `
+    <div class="ads-row">
+      <div>
+        <div class="ads-row__title">${escape(label)}</div>
+        <div class="ads-row__meta">${escape(evidence.reason || evidence.status || "pendiente")}${evidence.confidence != null ? ` · conf ${Math.round(Number(evidence.confidence) * 100)}%` : ""}</div>
+      </div>
+      <div class="ads-row__side">
+        ${renderAdsBadge(value, label)}
+        ${evidence.sourceUrl ? `<a class="mini-link" href="${escape(evidence.sourceUrl)}" target="_blank" rel="noopener">fuente</a>` : ""}
+      </div>
+    </div>
+  `;
+}
+
+function renderCustomFields(fields = {}) {
+  const entries = Object.entries(fields || {}).filter(([, value]) => value != null && value !== "");
+  if (!entries.length) return "";
+  return `
+    <div class="custom-fields">
+      <div class="custom-fields__title">Campos personalizados</div>
+      <dl class="kv">
+        ${entries.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join("")}
+      </dl>
+    </div>
+  `;
 }
 
 async function saveScoringNotes(businessId) {
@@ -1348,6 +1437,147 @@ function openLeadModal() {
   });
   footer.append(cancel, submit);
   openModal({ title: "Importar lead", body: form, footer });
+}
+
+function openLeadImportModal() {
+  const state = { file: null, contentBase64: "", preview: null };
+  const body = document.createElement("div");
+  body.innerHTML = `
+    <div class="import-box">
+      <label class="file-drop">
+        <input type="file" accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" data-bind="lead-import-file" />
+        <span class="file-drop__icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M5 20h14v-2H5v2ZM12 2 6.5 7.5 8 9l3-3v9h2V6l3 3 1.5-1.5L12 2Z"/></svg>
+        </span>
+        <span class="file-drop__main">Selecciona CSV o Excel</span>
+        <span class="file-drop__sub" data-bind="lead-import-filename">Hasta 5.000 filas por importación</span>
+      </label>
+      <label class="check-row">
+        <input type="checkbox" data-bind="lead-import-enrich" checked />
+        <span>Lanzar enriquecimiento de Ads al importar</span>
+      </label>
+    </div>
+    <div data-bind="lead-import-preview"></div>
+  `;
+
+  const footer = document.createDocumentFragment();
+  const cancel = btn("Cancelar", "ghost");
+  const submit = btn("Importar lista", "primary");
+  submit.disabled = true;
+  cancel.addEventListener("click", closeModal);
+  submit.addEventListener("click", async () => {
+    if (!state.preview || !state.contentBase64) return;
+    const mapping = {};
+    $$("[data-import-header]", body).forEach((select) => {
+      mapping[select.dataset.importHeader] = select.value;
+    });
+    submit.disabled = true;
+    try {
+      const result = await api("/api/imports/leads/commit", {
+        method: "POST",
+        body: JSON.stringify({
+          filename: state.file.name,
+          contentBase64: state.contentBase64,
+          mapping,
+          enrichAds: $("[data-bind='lead-import-enrich']", body).checked
+        })
+      });
+      const errors = result.errors?.length ? ` · ${result.errors.length} filas omitidas` : "";
+      toast(`${fmtNumber(result.imported)} leads importados${errors}`, result.imported ? "ok" : "error");
+      closeModal();
+      if (result.leads?.length === 1) {
+        location.hash = `#/leads/${result.leads[0].id}`;
+      } else {
+        location.hash = "#/leads";
+        router();
+      }
+    } catch (err) {
+      toast(`No se pudo importar (${err.message})`, "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  footer.append(cancel, submit);
+  openModal({ title: "Importar lista", body, footer });
+
+  $("[data-bind='lead-import-file']", body).addEventListener("change", async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    state.file = file;
+    $("[data-bind='lead-import-filename']", body).textContent = file.name;
+    const previewHost = $("[data-bind='lead-import-preview']", body);
+    previewHost.innerHTML = `<div class="row" style="padding:16px;justify-content:center"><span class="spinner"></span></div>`;
+    submit.disabled = true;
+    try {
+      state.contentBase64 = await fileToBase64(file);
+      state.preview = await api("/api/imports/leads/preview", {
+        method: "POST",
+        body: JSON.stringify({ filename: file.name, contentBase64: state.contentBase64 })
+      });
+      previewHost.innerHTML = renderLeadImportPreview(state.preview);
+      submit.disabled = false;
+    } catch (err) {
+      previewHost.innerHTML = `<div class="login-card__error">${escape(err.message)}</div>`;
+    }
+  });
+}
+
+function renderLeadImportPreview(preview) {
+  const fields = preview.crmFields || [];
+  const options = (selected, header) => `
+    <option value="ignore" ${selected === "ignore" ? "selected" : ""}>Ignorar</option>
+    ${fields.map((field) => `<option value="${escape(field.key)}" ${selected === field.key ? "selected" : ""}>${escape(field.label)}${field.required ? " *" : ""}</option>`).join("")}
+    <option value="custom:${escape(customKeyFromHeader(header))}" ${String(selected || "").startsWith("custom:") ? "selected" : ""}>Campo personalizado</option>
+  `;
+  return `
+    <div class="import-preview">
+      <div class="import-preview__head">
+        <div><strong>${fmtNumber(preview.totalRows)}</strong> filas detectadas</div>
+        <span class="badge badge--zinc">${escape(preview.format)}</span>
+      </div>
+      <div class="mapping-table">
+        ${preview.headers
+          .map((header) => {
+            const selected = preview.suggestedMapping?.[header] || "ignore";
+            const sample = preview.sampleRows?.map((row) => row[header]).filter(Boolean).slice(0, 2).join(" · ");
+            return `
+              <div class="mapping-row">
+                <div class="mapping-row__source">
+                  <strong>${escape(header)}</strong>
+                  <span>${escape(sample || "Sin muestra")}</span>
+                </div>
+                <select class="select" data-import-header="${escape(header)}">
+                  ${options(selected, header)}
+                </select>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    </div>
+  `;
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("file_read_failed"));
+    reader.onload = () => {
+      const text = String(reader.result || "");
+      resolve(text.includes(",") ? text.split(",").pop() : text);
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function customKeyFromHeader(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 48) || "custom";
 }
 
 function btn(label, variant) {

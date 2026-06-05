@@ -12,6 +12,7 @@ import { exchangeGoogleCode, getGoogleAuthUrl, verifyGoogleIdToken } from "../..
 import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { normalizeSpanishPhone } from "../../../packages/core/src/phone.mjs";
 import { LEAD_VARIABLES, defaultVariableMap } from "../../../packages/core/src/leadVariables.mjs";
+import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../../../packages/core/src/leadImport.mjs";
 import {
   XLSX_CONTENT_TYPE,
   buildCampaignCsv,
@@ -32,6 +33,7 @@ import {
   getEffectiveNebrijaSettings,
   getDashboardMetrics,
   getTenantNebrijaSettings,
+  listBusinessIdsForCampaign,
   listBusinesses,
   listCampaignLeadsForExport,
   listExtractionJobs,
@@ -42,6 +44,7 @@ import {
   updateBusinessScoringNotes,
   updateExtractionJobVoiceSettings,
   upsertTenantNebrijaSettings,
+  upsertContact,
   upsertGoogleUser,
   upsertVoiceCallReport
 } from "../../../packages/core/src/repositories.mjs";
@@ -70,6 +73,7 @@ const queues = {
   webDiscovery: createQueue(QUEUE_NAMES.webDiscovery),
   businessCrawl: createQueue(QUEUE_NAMES.businessCrawl),
   scoring: createQueue(QUEUE_NAMES.scoring),
+  adsEnrichment: createQueue(QUEUE_NAMES.adsEnrichment),
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
@@ -201,6 +205,27 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { metrics });
     }
 
+    if (req.method === "POST" && url.pathname === "/api/imports/leads/preview") {
+      const { json } = await readJson(req);
+      const preview = previewLeadImport({
+        filename: json.filename || json.name || "leads.csv",
+        contentBase64: json.contentBase64 || json.content_base64
+      });
+      return sendJson(res, 200, preview);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/imports/leads/commit") {
+      const { json } = await readJson(req);
+      const result = await commitLeadImport({
+        tenantId: auth.tenantId,
+        filename: json.filename || json.name || "leads.csv",
+        contentBase64: json.contentBase64 || json.content_base64,
+        mapping: json.mapping || json.columns || json.fieldMapping || json.field_mapping,
+        enrichAds: json.enrichAds ?? json.enrich_ads ?? false
+      });
+      return sendJson(res, 201, result);
+    }
+
     if (req.method === "GET" && url.pathname === "/api/campaigns") {
       const result = await listExtractionJobs({ ...parsePaging(url), tenantId: auth.tenantId });
       return sendJson(res, 200, result);
@@ -242,6 +267,32 @@ const server = http.createServer(async (req, res) => {
       });
       if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
       return sendJson(res, 200, { job });
+    }
+
+    const campaignAdsMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)\/ads-enrichment$/);
+    if (req.method === "POST" && campaignAdsMatch) {
+      const job = await findExtractionJobDetail(campaignAdsMatch[1], { tenantId: auth.tenantId });
+      if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+      const businessIds = await listBusinessIdsForCampaign({
+        tenantId: auth.tenantId,
+        campaignId: job.id,
+        limit: Number(url.searchParams.get("limit")) || 1000
+      });
+      const queueJobs = [];
+      for (const businessId of businessIds) {
+        queueJobs.push(
+          await queues.adsEnrichment.add("enrich", {
+            tenantId: auth.tenantId,
+            businessId,
+            campaignId: job.id
+          })
+        );
+      }
+      return sendJson(res, 202, {
+        queued: queueJobs.length,
+        queue: QUEUE_NAMES.adsEnrichment,
+        jobIds: queueJobs.map((queueJob) => queueJob.id)
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/api/businesses") {
@@ -343,6 +394,37 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        if (type === "ads_enrichment") {
+          validateRequired(json, ["name"]);
+          const business = await createManualBusiness({
+            tenantId: auth.tenantId,
+            name: json.name,
+            website: json.website,
+            phone: json.phone,
+            phoneE164: json.phoneE164 || json.phone_e164 || normalizeSpanishPhone(json.phone),
+            city: json.city || "Madrid",
+            niche: json.niche || "ads enrichment smoke test",
+            category: json.category || "test",
+            sourceUrl: json.sourceUrl || json.source_url || json.website,
+            rawPayload: { testJob: true, testId, type }
+          });
+          const queueJob = await queues.adsEnrichment.add("enrich", {
+            tenantId: auth.tenantId,
+            businessId: business.id,
+            testId
+          });
+          return sendJson(res, 202, {
+            testJob: {
+              id: business.id,
+              type,
+              testId,
+              statusUrl: `/api/test-jobs/businesses/${business.id}`,
+              queue: { name: QUEUE_NAMES.adsEnrichment, id: queueJob.id }
+            },
+            business
+          });
+        }
+
         if (type === "web_discovery") {
           validateRequired(json, ["name"]);
           const business = await createManualBusiness({
@@ -401,7 +483,7 @@ const server = http.createServer(async (req, res) => {
 
         return sendJson(res, 400, {
           error: "unsupported_test_job_type",
-          supportedTypes: ["business_crawl", "web_discovery", "campaign"]
+          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "campaign"]
         });
       }
 
@@ -523,6 +605,17 @@ const server = http.createServer(async (req, res) => {
       });
       if (!business) return sendJson(res, 404, { error: "business_not_found" });
       return sendJson(res, 200, { business });
+    }
+
+    const adsEnrichmentMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)\/ads-enrichment$/);
+    if (req.method === "POST" && adsEnrichmentMatch) {
+      const business = await findBusinessById(adsEnrichmentMatch[1], { tenantId: auth.tenantId });
+      if (!business) return sendJson(res, 404, { error: "business_not_found" });
+      const job = await queues.adsEnrichment.add("enrich", {
+        tenantId: auth.tenantId,
+        businessId: business.id
+      });
+      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.adsEnrichment });
     }
 
     const callMatch = matchPath(url.pathname, /^\/businesses\/([^/]+)\/call$/);
@@ -783,6 +876,60 @@ function parseStringArray(value) {
   return [];
 }
 
+async function commitLeadImport({ tenantId, filename, contentBase64, mapping, enrichAds = false }) {
+  const parsed = parseLeadFile({ filename, contentBase64 });
+  const mapped = buildImportedLeadRows(parsed.rows, mapping || parsed.headers.reduce((acc, header) => {
+    acc[header] = "ignore";
+    return acc;
+  }, {}));
+  const created = [];
+
+  for (const row of mapped.rows) {
+    const business = await createManualBusiness({
+      tenantId,
+      ...row.business,
+      customFields: row.customFields,
+      rawPayload: {
+        import: {
+          filename,
+          rowNumber: row.rowNumber,
+          originalRow: row.originalRow
+        }
+      }
+    });
+    for (const contact of row.contacts) {
+      await upsertContact({
+        businessId: business.id,
+        kind: contact.kind,
+        value: contact.value,
+        confidence: contact.confidence,
+        sourceUrl: business.source_url
+      });
+    }
+    if (enrichAds) {
+      await queues.adsEnrichment.add("enrich", {
+        tenantId,
+        businessId: business.id,
+        importFilename: filename
+      });
+    }
+    created.push(business);
+  }
+
+  return {
+    imported: created.length,
+    errors: mapped.errors,
+    enrichAdsQueued: enrichAds ? created.length : 0,
+    leads: created.slice(0, 20).map((business) => ({
+      id: business.id,
+      name: business.name,
+      website: business.website,
+      city: business.city,
+      niche: business.niche
+    }))
+  };
+}
+
 function matchPath(pathname, regex) {
   const match = pathname.match(regex);
   return match || null;
@@ -827,8 +974,7 @@ async function getQueueCounts() {
 
 function isBusinessTestDone(detail) {
   const latestRun = detail.crawlerRuns?.[0];
-  if (!latestRun) return false;
-  return ["completed", "failed"].includes(latestRun.status);
+  return Boolean(detail.business?.ads_last_checked_at) || Boolean(latestRun && ["completed", "failed"].includes(latestRun.status));
 }
 
 function safeEqual(a, b) {

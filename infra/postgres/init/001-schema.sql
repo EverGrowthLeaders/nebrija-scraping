@@ -105,11 +105,16 @@ CREATE TABLE IF NOT EXISTS businesses (
   facebook TEXT,
   has_online_booking BOOLEAN DEFAULT FALSE,
   has_chatbot BOOLEAN DEFAULT FALSE,
+  ads_meta_active BOOLEAN,
+  ads_google_active BOOLEAN,
+  ads_last_checked_at TIMESTAMPTZ,
+  ads_enrichment JSONB NOT NULL DEFAULT '{}'::jsonb,
   score INTEGER NOT NULL DEFAULT 0,
   scoring_notes TEXT,
   niche TEXT,
   status lead_status NOT NULL DEFAULT 'new',
   source_url TEXT,
+  custom_fields JSONB NOT NULL DEFAULT '{}'::jsonb,
   raw_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
   scraped_at TIMESTAMPTZ DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -277,6 +282,9 @@ CREATE INDEX IF NOT EXISTS idx_businesses_status_city_niche
 
 CREATE INDEX IF NOT EXISTS idx_businesses_score
   ON businesses(tenant_id, score DESC);
+
+CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_checked
+  ON businesses(tenant_id, ads_last_checked_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_tenants_google_domain
   ON tenants(google_domain)
