@@ -140,6 +140,19 @@ export async function ensureRuntimeSchema() {
     )
   `);
 
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS first_contact_at DATE`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS decision_maker_name TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS decision_maker_email TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS answered_by TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS crm_status TEXT NOT NULL DEFAULT 'Nuevo'`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS follow_up_date DATE`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS follow_up_time TIME`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS next_action TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS observations TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS checkpoint TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS objection TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS crm_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`);
+
     await run(`ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_place_id_key`);
     await run(`ALTER TABLE google_place_candidates DROP CONSTRAINT IF EXISTS google_place_candidates_place_id_query_key`);
     await run(`DROP INDEX IF EXISTS idx_businesses_place_id`);

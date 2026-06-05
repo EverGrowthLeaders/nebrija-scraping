@@ -1466,47 +1466,249 @@ function renderLeadListCard(list) {
 
 async function renderListDetail({ params }) {
   const id = params[0];
-  const [{ list }, leads] = await Promise.all([
-    api(`/api/lead-lists/${id}`),
-    api(`/api/businesses?listId=${encodeURIComponent(id)}&limit=100`)
-  ]);
+  const { list, rows, options } = await api(`/api/lead-lists/${id}/crm`);
+  const activeRows = rows.filter((row) => row.crm_status !== "Descartado");
+  const discardedRows = rows.filter((row) => row.crm_status === "Descartado");
+  const interested = rows.filter((row) => ["Interesado", "Cita Concertada"].includes(row.crm_status)).length;
+  const followUps = rows.filter((row) => row.follow_up_date).length;
   setCurrentCrumb(list.name);
   view.innerHTML = `
     <a class="back-link" href="#/lists">← Volver a listas</a>
     <div class="row" style="margin-bottom:14px">
       <div class="grow">
         <h1 class="headline">${escape(list.name)}</h1>
-        <p class="subhead">${escape(list.description || "Lista manual")} · ${fmtNumber(list.leads_count)} leads</p>
+        <p class="subhead">${escape(list.description || "CRM de cold calling")} · ${fmtNumber(list.leads_count)} leads</p>
       </div>
       <a class="btn" href="#/leads?listId=${encodeURIComponent(list.id)}">Ver en Leads</a>
     </div>
-    <div class="table-wrap">
-      <table class="table">
-        <thead><tr><th>Lead</th><th>Ciudad / Nicho</th><th>Score</th><th>Ads</th><th>Funnel Ads</th><th>Estado</th><th>Actualizado</th></tr></thead>
-        <tbody data-bind="rows">
+
+    <div class="crm-board" data-list-id="${escape(list.id)}">
+      <div class="crm-kpis">
+        ${kpiCard("Prospectos", fmtNumber(activeRows.length), "Activos para llamar", "accent")}
+        ${kpiCard("Interesados", fmtNumber(interested), "Interesado o cita concertada")}
+        ${kpiCard("Seguimientos", fmtNumber(followUps), "Con fecha asignada")}
+        ${kpiCard("No interesados", fmtNumber(discardedRows.length), "Histórico descartado")}
+      </div>
+
+      <datalist id="crm-objection-options">
+        ${(options.objections || []).map((option) => `<option value="${escape(option)}"></option>`).join("")}
+      </datalist>
+
+      <div class="crm-section-head">
+        <div>
+          <h2>Prospectos</h2>
+          <p>${fmtNumber(activeRows.length)} contactos activos</p>
+        </div>
+        <span class="crm-save-state" data-bind="crm-save-state">Listo</span>
+      </div>
+      ${renderCrmProspectsTable(activeRows, options)}
+
+      <div class="crm-section-head crm-section-head--secondary">
+        <div>
+          <h2>No Interesados</h2>
+          <p>${fmtNumber(discardedRows.length)} descartados para evitar rellamadas</p>
+        </div>
+      </div>
+      ${renderCrmDiscardedTable(discardedRows, options)}
+    </div>
+  `;
+  bindCrmBoard(view);
+}
+
+function renderCrmProspectsTable(rows, options) {
+  return `
+    <div class="table-wrap crm-table-wrap">
+      <table class="table crm-table crm-table--prospects">
+        <thead>
+          <tr>
+            <th>Primer contacto</th>
+            <th>Negocio</th>
+            <th>Nombre Decisor</th>
+            <th>Teléfono</th>
+            <th>Email Decisor</th>
+            <th>URL Web</th>
+            <th>¿Quién atendió?</th>
+            <th>Estado</th>
+            <th>Checkpoint</th>
+            <th>Objeción</th>
+            <th>Día (Seguimiento)</th>
+            <th>Hora (Seguimiento)</th>
+            <th>Próxima acción</th>
+            <th>Observaciones</th>
+          </tr>
+        </thead>
+        <tbody>
           ${
-            leads.rows.length
-              ? leads.rows
-                  .map(
-                    (b) => `
-            <tr data-href="#/leads/${escape(b.id)}">
-              <td class="cell-primary">${escape(b.name)}</td>
-              <td>${escape(b.city || "—")} <span class="muted">·</span> ${escape(b.niche || "—")}</td>
-              <td>${renderScore(b.score)}</td>
-              <td>${renderAdsState(b)}</td>
-              <td>${renderAdsFunnelBadge(b.ads_funnel_type || "unknown", b.ads_funnel_confidence)}</td>
-              <td>${renderStatus(b.status)}</td>
-              <td>${fmtRel(b.updated_at)}</td>
-            </tr>`
-                  )
-                  .join("")
-              : `<tr><td colspan="7">${emptyState("Lista vacía", "Añade leads desde la ficha de cada lead.")}</td></tr>`
+            rows.length
+              ? rows.map((row) => renderCrmProspectRow(row, options)).join("")
+              : `<tr><td colspan="14">${emptyState("Lista vacía", "Añade leads desde la ficha de cada lead.")}</td></tr>`
           }
         </tbody>
       </table>
     </div>
   `;
-  bindRowNav(view);
+}
+
+function renderCrmProspectRow(row, options) {
+  return `
+    <tr data-business-id="${escape(row.business_id)}">
+      <td>${crmInput("firstContactAt", row.first_contact_at, "date", "crm-input--date")}</td>
+      <td>${renderCrmBusinessCell(row)}</td>
+      <td>${crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name")}</td>
+      <td>${renderCrmPhone(row)}</td>
+      <td>${crmInput("decisionMakerEmail", row.decision_maker_email, "email", "crm-input--email", row.fallback_email || "")}</td>
+      <td>${renderCrmWebsite(row)}</td>
+      <td>${crmInput("answeredBy", row.answered_by, "text", "crm-input--name")}</td>
+      <td>${crmSelect("crmStatus", row.crm_status, options.statuses || [])}</td>
+      <td>${crmSelect("checkpoint", row.checkpoint, options.checkpoints || [], true)}</td>
+      <td>${crmObjectionInput(row.objection)}</td>
+      <td>${crmInput("followUpDate", row.follow_up_date, "date", "crm-input--date")}</td>
+      <td>${crmInput("followUpTime", row.follow_up_time, "time", "crm-input--time")}</td>
+      <td>${crmTextarea("nextAction", row.next_action, "crm-textarea--action")}</td>
+      <td>${crmTextarea("observations", row.observations, "crm-textarea--notes")}</td>
+    </tr>
+  `;
+}
+
+function renderCrmDiscardedTable(rows, options) {
+  return `
+    <div class="table-wrap crm-table-wrap">
+      <table class="table crm-table crm-table--discarded">
+        <thead>
+          <tr>
+            <th>Primer contacto</th>
+            <th>Negocio</th>
+            <th>Nombre Decisor</th>
+            <th>Teléfono</th>
+            <th>Estado</th>
+            <th>Objeción</th>
+            <th>Observaciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${
+            rows.length
+              ? rows.map((row) => renderCrmDiscardedRow(row, options)).join("")
+              : `<tr><td colspan="7">${emptyState("Sin descartados", "Los leads marcados como Descartado aparecerán aquí.")}</td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function renderCrmDiscardedRow(row, options) {
+  return `
+    <tr data-business-id="${escape(row.business_id)}">
+      <td>${crmInput("firstContactAt", row.first_contact_at, "date", "crm-input--date")}</td>
+      <td>${renderCrmBusinessCell(row)}</td>
+      <td>${crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name")}</td>
+      <td>${renderCrmPhone(row)}</td>
+      <td>${crmSelect("crmStatus", row.crm_status, options.statuses || [])}</td>
+      <td>${crmObjectionInput(row.objection)}</td>
+      <td>${crmTextarea("observations", row.observations, "crm-textarea--notes")}</td>
+    </tr>
+  `;
+}
+
+function renderCrmBusinessCell(row) {
+  return `
+    <a class="crm-business" href="#/leads/${escape(row.business_id)}">
+      <span>${escape(row.name)}</span>
+      <small>${escape([row.city, row.niche].filter(Boolean).join(" · ") || "Lead")}</small>
+    </a>
+  `;
+}
+
+function renderCrmPhone(row) {
+  const phone = row.phone_e164 || row.phone;
+  return phone
+    ? `<a class="mono crm-phone" href="tel:${escape(phone)}">${escape(phone)}</a>`
+    : `<span class="faint">—</span>`;
+}
+
+function renderCrmWebsite(row) {
+  return row.website
+    ? `<a class="mono crm-url" href="${escape(row.website)}" target="_blank" rel="noopener">${escape(stripScheme(row.website))}</a>`
+    : `<span class="faint">—</span>`;
+}
+
+function crmInput(field, value, type = "text", extraClass = "", placeholder = "") {
+  return `<input class="crm-input ${escape(extraClass)}" data-crm-field="${escape(field)}" type="${escape(type)}" value="${escape(value || "")}" placeholder="${escape(placeholder)}" />`;
+}
+
+function crmTextarea(field, value, extraClass = "") {
+  return `<textarea class="crm-textarea ${escape(extraClass)}" data-crm-field="${escape(field)}" rows="2">${escape(value || "")}</textarea>`;
+}
+
+function crmSelect(field, value, options, allowBlank = false) {
+  const safeValue = value || "";
+  const selectOptions = Array.from(new Set([...(allowBlank ? [""] : []), ...(options || []), safeValue].filter((option) => allowBlank || option)));
+  return `
+    <select class="crm-input crm-select" data-crm-field="${escape(field)}">
+      ${selectOptions
+        .map((option) => `<option value="${escape(option)}" ${option === safeValue ? "selected" : ""}>${escape(option || "—")}</option>`)
+        .join("")}
+    </select>
+  `;
+}
+
+function crmObjectionInput(value) {
+  return `<input class="crm-input crm-input--objection" data-crm-field="objection" list="crm-objection-options" value="${escape(value || "")}" />`;
+}
+
+function bindCrmBoard(scope) {
+  const board = $(".crm-board", scope);
+  if (!board) return;
+  const saveState = $("[data-bind='crm-save-state']", board);
+  $$("[data-crm-field]", board).forEach((control) => {
+    control.dataset.lastValue = control.value;
+    const eventName = control.tagName === "SELECT" || control.type === "date" || control.type === "time" ? "change" : "blur";
+    control.addEventListener(eventName, () => saveCrmControl(control, board, saveState));
+    if (control.tagName === "TEXTAREA") {
+      control.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") control.blur();
+      });
+    }
+  });
+}
+
+async function saveCrmControl(control, board, saveState) {
+  if (control.value === control.dataset.lastValue) return;
+  const row = control.closest("tr[data-business-id]");
+  if (!row) return;
+  const listId = board.dataset.listId;
+  const businessId = row.dataset.businessId;
+  const field = control.dataset.crmField;
+  control.classList.add("is-saving");
+  control.classList.remove("is-saved", "is-error");
+  if (saveState) saveState.textContent = "Guardando...";
+  try {
+    await api(`/api/lead-lists/${encodeURIComponent(listId)}/businesses/${encodeURIComponent(businessId)}/crm`, {
+      method: "PATCH",
+      body: JSON.stringify({ [field]: control.value })
+    });
+    control.dataset.lastValue = control.value;
+    control.classList.remove("is-saving");
+    control.classList.add("is-saved");
+    if (field === "objection" && control.value) appendCrmObjectionOption(board, control.value);
+    if (saveState) saveState.textContent = "Guardado";
+    setTimeout(() => control.classList.remove("is-saved"), 900);
+    if (field === "crmStatus") setTimeout(router, 120);
+  } catch (err) {
+    control.classList.remove("is-saving");
+    control.classList.add("is-error");
+    if (saveState) saveState.textContent = "Error al guardar";
+    toast(`No se pudo guardar (${err.message})`, "error");
+  }
+}
+
+function appendCrmObjectionOption(board, value) {
+  const list = $("#crm-objection-options", board);
+  if (!list || Array.from(list.options).some((option) => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  list.appendChild(option);
 }
 
 function openListModal() {

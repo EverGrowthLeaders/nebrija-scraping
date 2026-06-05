@@ -21,6 +21,9 @@ import {
 } from "../../../packages/core/src/exporters.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import {
+  CRM_CHECKPOINT_OPTIONS,
+  CRM_OBJECTION_OPTIONS,
+  CRM_STATUS_OPTIONS,
   DEFAULT_TENANT_ID,
   addBusinessToLeadList,
   createLeadList,
@@ -43,6 +46,7 @@ import {
   listBusinesses,
   listCampaignLeadsForExport,
   listExtractionJobs,
+  listLeadListCrmEntries,
   listLeadLists,
   listVoiceCalls,
   persistNebrijaWebhookEvent,
@@ -52,6 +56,7 @@ import {
   updateBusinessScoringNotes,
   updateExtractionJobVoiceSettings,
   updateLeadList,
+  updateLeadListCrmEntry,
   upsertTenantScoringRules,
   upsertTenantNebrijaSettings,
   upsertContact,
@@ -282,6 +287,25 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { list });
     }
 
+    const leadListCrmMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)\/crm$/);
+    if (req.method === "GET" && leadListCrmMatch) {
+      const list = await findLeadList(leadListCrmMatch[1], { tenantId: auth.tenantId });
+      if (!list) return sendJson(res, 404, { error: "lead_list_not_found" });
+      const rows = await listLeadListCrmEntries({ tenantId: auth.tenantId, listId: leadListCrmMatch[1] });
+      const objections = Array.from(
+        new Set([...CRM_OBJECTION_OPTIONS, ...rows.map((row) => row.objection).filter(Boolean)])
+      );
+      return sendJson(res, 200, {
+        list,
+        rows,
+        options: {
+          statuses: CRM_STATUS_OPTIONS,
+          checkpoints: CRM_CHECKPOINT_OPTIONS,
+          objections
+        }
+      });
+    }
+
     const leadListBusinessMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)\/businesses$/);
     if (req.method === "POST" && leadListBusinessMatch) {
       const { json } = await readJson(req);
@@ -294,6 +318,19 @@ const server = http.createServer(async (req, res) => {
       });
       if (!member) return sendJson(res, 404, { error: "lead_or_list_not_found" });
       return sendJson(res, 201, { member });
+    }
+
+    const leadListBusinessCrmMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)\/businesses\/([^/]+)\/crm$/);
+    if (req.method === "PATCH" && leadListBusinessCrmMatch) {
+      const { json } = await readJson(req);
+      const entry = await updateLeadListCrmEntry({
+        tenantId: auth.tenantId,
+        listId: leadListBusinessCrmMatch[1],
+        businessId: leadListBusinessCrmMatch[2],
+        patch: json
+      });
+      if (!entry) return sendJson(res, 404, { error: "lead_or_list_not_found" });
+      return sendJson(res, 200, { entry });
     }
 
     const leadListBusinessDeleteMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)\/businesses\/([^/]+)$/);

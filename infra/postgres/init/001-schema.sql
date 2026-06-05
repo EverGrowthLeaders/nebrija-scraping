@@ -160,6 +160,18 @@ CREATE TABLE IF NOT EXISTS lead_list_members (
   lead_list_id UUID NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE,
   business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
   added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  first_contact_at DATE,
+  decision_maker_name TEXT,
+  decision_maker_email TEXT,
+  answered_by TEXT,
+  crm_status TEXT NOT NULL DEFAULT 'Nuevo',
+  follow_up_date DATE,
+  follow_up_time TIME,
+  next_action TEXT,
+  observations TEXT,
+  checkpoint TEXT,
+  objection TEXT,
+  crm_updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (lead_list_id, business_id)
 );
 

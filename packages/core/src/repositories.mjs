@@ -3,6 +3,23 @@ import { config } from "./config.mjs";
 import { DEFAULT_SCORING_RULES, normalizeScoringRules } from "./scoring.mjs";
 
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
+export const CRM_STATUS_OPTIONS = [
+  "Nuevo",
+  "Aplazado",
+  "Interesado",
+  "Cita Concertada",
+  "Seguimiento",
+  "No contesta",
+  "Descartado"
+];
+export const CRM_CHECKPOINT_OPTIONS = ["Secretaria", "Inicio", "Pitch", "Agendado", "No lo coge", "Objeción"];
+export const CRM_OBJECTION_OPTIONS = [
+  "No puedo ahora",
+  "Estamos bien",
+  "Ya tenemos proveedor",
+  "Quién eres",
+  "Puedes enviar esto por email"
+];
 
 export async function findSessionByTokenHash(tokenHash) {
   const result = await query(
@@ -1065,6 +1082,147 @@ export async function removeBusinessFromLeadList({ tenantId = DEFAULT_TENANT_ID,
     [listId, businessId, tenantId]
   );
   return result.rows[0] || null;
+}
+
+const CRM_ROW_SELECT = `
+  SELECT
+    lm.lead_list_id,
+    lm.business_id,
+    lm.added_at,
+    to_char(lm.first_contact_at, 'YYYY-MM-DD') AS first_contact_at,
+    lm.decision_maker_name,
+    lm.decision_maker_email,
+    lm.answered_by,
+    COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') AS crm_status,
+    to_char(lm.follow_up_date, 'YYYY-MM-DD') AS follow_up_date,
+    to_char(lm.follow_up_time, 'HH24:MI') AS follow_up_time,
+    lm.next_action,
+    lm.observations,
+    lm.checkpoint,
+    lm.objection,
+    lm.crm_updated_at,
+    b.id,
+    b.name,
+    b.website,
+    b.phone,
+    b.phone_e164,
+    b.address,
+    b.city,
+    b.niche,
+    b.status AS lead_status,
+    b.score,
+    b.ads_meta_active,
+    b.ads_google_active,
+    b.ads_funnel_type,
+    b.ads_funnel_confidence,
+    email_contact.value AS fallback_email
+  FROM lead_list_members lm
+  JOIN lead_lists ll ON ll.id = lm.lead_list_id
+  JOIN businesses b ON b.id = lm.business_id AND b.tenant_id = ll.tenant_id
+  LEFT JOIN LATERAL (
+    SELECT c.value
+      FROM business_contacts c
+     WHERE c.business_id = b.id
+       AND c.kind = 'email'
+     ORDER BY c.confidence DESC, c.created_at DESC
+     LIMIT 1
+  ) email_contact ON TRUE
+`;
+
+export async function listLeadListCrmEntries({ tenantId = DEFAULT_TENANT_ID, listId }) {
+  const result = await query(
+    `${CRM_ROW_SELECT}
+      WHERE ll.id = $1 AND ll.tenant_id = $2
+      ORDER BY
+        CASE WHEN COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') = 'Descartado' THEN 1 ELSE 0 END,
+        lm.crm_updated_at DESC,
+        lm.added_at DESC`,
+    [listId, tenantId]
+  );
+  return result.rows;
+}
+
+export async function findLeadListCrmEntry({ tenantId = DEFAULT_TENANT_ID, listId, businessId }) {
+  const result = await query(
+    `${CRM_ROW_SELECT}
+      WHERE ll.id = $1 AND ll.tenant_id = $2 AND b.id = $3`,
+    [listId, tenantId, businessId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateLeadListCrmEntry({ tenantId = DEFAULT_TENANT_ID, listId, businessId, patch }) {
+  const allowed = {
+    firstContactAt: ["first_contact_at", normalizeCrmDate],
+    first_contact_at: ["first_contact_at", normalizeCrmDate],
+    decisionMakerName: ["decision_maker_name", normalizeCrmText],
+    decision_maker_name: ["decision_maker_name", normalizeCrmText],
+    decisionMakerEmail: ["decision_maker_email", normalizeCrmText],
+    decision_maker_email: ["decision_maker_email", normalizeCrmText],
+    answeredBy: ["answered_by", normalizeCrmText],
+    answered_by: ["answered_by", normalizeCrmText],
+    crmStatus: ["crm_status", normalizeCrmStatus],
+    crm_status: ["crm_status", normalizeCrmStatus],
+    status: ["crm_status", normalizeCrmStatus],
+    followUpDate: ["follow_up_date", normalizeCrmDate],
+    follow_up_date: ["follow_up_date", normalizeCrmDate],
+    followUpTime: ["follow_up_time", normalizeCrmTime],
+    follow_up_time: ["follow_up_time", normalizeCrmTime],
+    nextAction: ["next_action", normalizeCrmText],
+    next_action: ["next_action", normalizeCrmText],
+    observations: ["observations", normalizeCrmText],
+    checkpoint: ["checkpoint", normalizeCrmText],
+    objection: ["objection", normalizeCrmText]
+  };
+  const sets = [];
+  const values = [];
+  const seenColumns = new Set();
+  for (const [key, rawValue] of Object.entries(patch || {})) {
+    const field = allowed[key];
+    if (!field) continue;
+    const [column, normalize] = field;
+    if (seenColumns.has(column)) continue;
+    seenColumns.add(column);
+    values.push(normalize(rawValue));
+    sets.push(`${column} = $${values.length + 3}`);
+  }
+  if (!sets.length) return findLeadListCrmEntry({ tenantId, listId, businessId });
+
+  await query(
+    `UPDATE lead_list_members lm
+        SET ${sets.join(", ")},
+            crm_updated_at = NOW()
+       FROM lead_lists ll, businesses b
+      WHERE lm.lead_list_id = ll.id
+        AND lm.business_id = b.id
+        AND ll.id = $1
+        AND b.id = $2
+        AND ll.tenant_id = $3
+        AND b.tenant_id = $3`,
+    [listId, businessId, tenantId, ...values]
+  );
+  return findLeadListCrmEntry({ tenantId, listId, businessId });
+}
+
+function normalizeCrmText(value) {
+  const text = String(value ?? "").trim();
+  return text || null;
+}
+
+function normalizeCrmStatus(value) {
+  return normalizeCrmText(value) || "Nuevo";
+}
+
+function normalizeCrmDate(value) {
+  const text = normalizeCrmText(value);
+  return text && /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : null;
+}
+
+function normalizeCrmTime(value) {
+  const text = normalizeCrmText(value);
+  if (!text) return null;
+  const match = text.match(/^([01]\d|2[0-3]):([0-5]\d)/);
+  return match ? `${match[1]}:${match[2]}` : null;
 }
 
 function normalizeListColor(color) {
