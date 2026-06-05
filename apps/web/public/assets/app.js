@@ -1104,6 +1104,8 @@ async function campaignAdsAction(campaignId) {
 
 function renderAdsDetail(label, value, evidence = {}) {
   const attempts = Array.isArray(evidence.attempts) ? evidence.attempts : [];
+  const visibleAttempts = attempts.filter((attempt) => attempt.active === true || attempt.status === "error").slice(-3);
+  const hiddenAttempts = attempts.filter((attempt) => !visibleAttempts.includes(attempt));
   return `
     <div class="ads-row">
       <div class="ads-row__head">
@@ -1117,7 +1119,9 @@ function renderAdsDetail(label, value, evidence = {}) {
         </div>
       </div>
       ${renderAdsDiscovery(evidence)}
-      ${attempts.length ? `<div class="ads-signals">${attempts.slice(-8).map(renderAdsAttempt).join("")}</div>` : `<div class="ads-empty">Sin trazas guardadas todavía.</div>`}
+      ${visibleAttempts.length ? `<div class="ads-signals">${visibleAttempts.map(renderAdsAttempt).join("")}</div>` : ""}
+      ${renderAdsAttemptsDisclosure(hiddenAttempts)}
+      ${!attempts.length ? `<div class="ads-empty">Sin trazas guardadas todavía.</div>` : ""}
     </div>
   `;
 }
@@ -1128,6 +1132,8 @@ function renderAdsFunnelDetail(classification = {}, business = {}) {
   const signals = Array.isArray(classification?.signals) ? classification.signals : [];
   const scores = classification?.scores || {};
   const landingUrl = classification?.landingUrl || business.ads_funnel_landing_url;
+  const visibleSignals = signals.slice(0, 3);
+  const hiddenSignals = signals.slice(3);
   return `
     <div class="ads-row ads-row--funnel">
       <div class="ads-row__head">
@@ -1142,10 +1148,11 @@ function renderAdsFunnelDetail(classification = {}, business = {}) {
       </div>
       ${renderAdsFunnelScores(scores)}
       ${
-        signals.length
-          ? `<div class="ads-signals">${signals.slice(0, 8).map(renderAdsFunnelSignal).join("")}</div>`
+        visibleSignals.length
+          ? `<div class="ads-signals">${visibleSignals.map(renderAdsFunnelSignal).join("")}</div>`
           : `<div class="ads-empty">Sin señales de landing guardadas todavía.</div>`
       }
+      ${renderAdsFunnelDisclosure(hiddenSignals, classification)}
     </div>
   `;
 }
@@ -1174,6 +1181,59 @@ function renderAdsFunnelSignal(signal = {}) {
   `;
 }
 
+function renderAdsAttemptsDisclosure(attempts = []) {
+  if (!attempts.length) return "";
+  const failed = attempts.filter((attempt) => attempt.active !== true).length;
+  return `
+    <details class="ads-disclosure">
+      <summary>${fmtNumber(attempts.length)} traza${attempts.length === 1 ? "" : "s"} secundaria${failed ? ` · ${fmtNumber(failed)} sin señal` : ""}</summary>
+      <div class="ads-signals">${attempts.slice(-12).map(renderAdsAttempt).join("")}</div>
+    </details>
+  `;
+}
+
+function renderAdsFunnelDisclosure(signals = [], classification = {}) {
+  const evaluated = Array.isArray(classification?.evaluated) ? classification.evaluated : [];
+  const rejected = Array.isArray(classification?.rejected) ? classification.rejected : [];
+  if (!signals.length && !evaluated.length && !rejected.length) return "";
+  return `
+    <details class="ads-disclosure">
+      <summary>Ver análisis completo de landing</summary>
+      ${
+        signals.length
+          ? `<div class="ads-signals">${signals.map(renderAdsFunnelSignal).join("")}</div>`
+          : ""
+      }
+      ${
+        evaluated.length || rejected.length
+          ? `<div class="ads-debug-grid">
+              ${evaluated.map(renderAdsEvaluatedLanding).join("")}
+              ${rejected.map(renderAdsRejectedLanding).join("")}
+            </div>`
+          : ""
+      }
+    </details>
+  `;
+}
+
+function renderAdsEvaluatedLanding(item = {}) {
+  return `
+    <div class="ads-debug-card">
+      <strong>${escape(adsFunnelLabel(item.type))} · ${item.confidence != null ? `${Math.round(Number(item.confidence) * 100)}%` : "—"}</strong>
+      <span>${item.landingUrl ? escape(stripScheme(item.landingUrl)) : "Landing sin URL"}</span>
+    </div>
+  `;
+}
+
+function renderAdsRejectedLanding(item = {}) {
+  return `
+    <div class="ads-debug-card ads-debug-card--muted">
+      <strong>${escape(item.reason || "Descartada")}</strong>
+      <span>${item.url ? escape(stripScheme(item.url)) : escape(item.error || "Sin URL")}</span>
+    </div>
+  `;
+}
+
 function renderAdsDiscovery(evidence = {}) {
   const discovery = evidence.socialDiscovery;
   if (!discovery) return "";
@@ -1196,7 +1256,8 @@ function renderAdsAttempt(attempt = {}) {
     attempt.itemsSeen != null ? `${fmtNumber(attempt.itemsSeen)} item${Number(attempt.itemsSeen) === 1 ? "" : "s"}` : "",
     attempt.total != null ? `total ${fmtNumber(attempt.total)}` : "",
     attempt.samplePageName ? `page ${attempt.samplePageName}` : "",
-    Array.isArray(attempt.matchedFields) && attempt.matchedFields.length ? `match ${attempt.matchedFields.join("+")}` : ""
+    Array.isArray(attempt.matchedFields) && attempt.matchedFields.length ? `match ${attempt.matchedFields.join("+")}` : "",
+    attempt.actorId ? `actor ${formatActorId(attempt.actorId)}` : ""
   ].filter(Boolean).join(" · ");
   return `
     <div class="ads-signal ads-signal--${tone}">
@@ -1207,6 +1268,10 @@ function renderAdsAttempt(attempt = {}) {
       ${attempt.sourceUrl ? `<a class="mini-link" href="${escape(attempt.sourceUrl)}" target="_blank" rel="noopener">fuente</a>` : ""}
     </div>
   `;
+}
+
+function formatActorId(actorId) {
+  return String(actorId || "").replace("~", "/");
 }
 
 function adsProviderLabel(provider) {

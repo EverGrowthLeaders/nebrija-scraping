@@ -162,7 +162,6 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
   const text = pageText(page);
   const normalized = normalizeText(text);
   const html = String(page.html || "");
-  const htmlLower = html.toLowerCase();
   const path = urlPath(url);
   const signals = [];
   let leadScore = 0;
@@ -178,12 +177,30 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     if (target === "other") otherScore += weight;
   };
 
-  if (/<form\b/i.test(html)) {
+  if (/<form\b/i.test(html) || /elementor-form|wpforms|gform_|wpcf7|contact-form-7/i.test(html)) {
     addSignal({
       target: "lead_generation",
       id: "form_present",
       label: genericContactPage ? "Generic form on contact page" : "Form present",
       weight: genericContactPage ? 0.6 : 2.2
+    });
+  }
+
+  const customQuoteCopy = firstMatchedPattern(normalized, [
+    /\b(?:maqueta|fotomontaje|diseno|diseño).{0,80}\b(?:gratis|sin compromiso|presupuesto)\b/i,
+    /\b(?:presupuesto|cotizacion|cotización).{0,100}\b(?:sin compromiso|maqueta|asesoramiento|alternativas|ahorrar)\b/i,
+    /\b(?:te enviamos|enviamos).{0,80}\b(?:maqueta|presupuesto|alternativas)\b/i,
+    /\b(?:pedido|producto|sudaderas?|camisetas?|ropa).{0,80}\bpersonalizad[oa]s?\b/i,
+    /\b(?:quiero|solicita|pide).{0,80}\b(?:diseno|diseño|maqueta|presupuesto)\b/i,
+    /\bsin compromiso\b.{0,80}\b(?:maqueta|presupuesto|diseno|diseño|formulario)\b/i
+  ]);
+  if (customQuoteCopy) {
+    addSignal({
+      target: "lead_generation",
+      id: "custom_quote_landing",
+      label: "Custom quote landing copy",
+      weight: 4.2,
+      snippet: customQuoteCopy
     });
   }
 
@@ -208,7 +225,9 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     /\bte llamamos\b|\bllamanos\b|\bhabla con (?:un|nuestro|una)\b/i,
     /\bagenda (?:una )?(?:demo|llamada|consulta|cita)\b/i,
     /\breserva (?:tu )?(?:cita|consulta|demo)\b/i,
-    /\bdiagnostico gratuito\b|\basesoramiento gratuito\b|\bcotiza\b|\bquote\b/i
+    /\bdiagnostico gratuito\b|\basesoramiento gratuito\b|\bcotiza\b|\bquote\b/i,
+    /\bregistrate\b|\bregístrate\b|\bcontacta con nuestro equipo\b/i,
+    /\bquiero (?:un )?(?:diseno|diseño|presupuesto|maqueta)\b/i
   ]);
   if (leadCopy) {
     addSignal({
@@ -239,27 +258,38 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     });
   }
 
-  const ecommerceIntegration = firstMatchedPattern(text, [
+  const checkoutIntegration = firstMatchedPattern(text, [
     /shopify|cdn\.shopify|ShopifyAnalytics/i,
-    /woocommerce|wc-ajax|add-to-cart|wp-content\/plugins\/woocommerce/i,
-    /prestashop|magento|bigcommerce|product-form/i,
+    /wc-ajax|add-to-cart|product-form/i,
     /cart_url|checkout_url|data-product-id|schema\.org\/Product/i
   ]);
-  if (ecommerceIntegration) {
+  if (checkoutIntegration) {
     addSignal({
       target: "ecommerce",
-      id: "ecommerce_platform",
-      label: "Ecommerce platform signal",
+      id: "checkout_integration",
+      label: "Checkout or product integration",
       weight: 3.2,
-      snippet: ecommerceIntegration
+      snippet: checkoutIntegration
+    });
+  }
+
+  const ecommerceInfrastructure = firstMatchedPattern(text, [
+    /woocommerce|wp-content\/plugins\/woocommerce|prestashop|magento|bigcommerce/i
+  ]);
+  if (ecommerceInfrastructure) {
+    addSignal({
+      target: "ecommerce",
+      id: "ecommerce_infrastructure",
+      label: "Ecommerce infrastructure detected",
+      weight: 0.8,
+      snippet: ecommerceInfrastructure
     });
   }
 
   const ecommerceCopy = firstMatchedPattern(normalized, [
     /\banadir al carrito\b|\bañadir al carrito\b|\bagregar al carrito\b/i,
-    /\bcomprar ahora\b|\bcomprar\b|\bcheckout\b|\bfinalizar compra\b/i,
-    /\bcarrito\b|\bcesta\b|\benvio gratis\b|\bpago seguro\b/i,
-    /\bsku\b|\bstock\b|\btalla\b|\bcolor\b|\bunidades\b|\bprecio\b/i
+    /\bcomprar ahora\b|\bcheckout\b|\bfinalizar compra\b/i,
+    /\bcarrito\b|\bcesta\b|\bpago seguro\b/i
   ]);
   if (ecommerceCopy) {
     addSignal({
@@ -281,13 +311,13 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     });
   }
 
-  const priceSignals = Array.from(text.matchAll(/(?:€|\bEUR\b|\bdesde\b)\s?\d{1,5}(?:[.,]\d{2})?/gi)).slice(0, 4);
+  const priceSignals = Array.from(text.matchAll(/(?:€|\bEUR\b)\s?\d{1,5}(?:[.,]\d{2})?|\b\d{1,5}(?:[.,]\d{2})?\s?(?:€|\bEUR\b)/gi)).slice(0, 4);
   if (priceSignals.length >= 2) {
     addSignal({
       target: "ecommerce",
       id: "multiple_prices",
       label: "Multiple price signals",
-      weight: 1.6,
+      weight: 0.8,
       snippet: priceSignals.map((match) => match[0]).join(" ")
     });
   }
@@ -305,17 +335,25 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
 
   const strongLeadSignal = signals.some((signal) =>
     signal.target === "lead_generation" &&
-    ["lead_form_integration", "lead_generation_copy", "lead_landing_path", "whatsapp_lead_cta"].includes(signal.id)
+    ["custom_quote_landing", "lead_form_integration", "lead_generation_copy", "lead_landing_path", "whatsapp_lead_cta"].includes(signal.id)
   );
+  const strongTransactionalSignal = signals.some((signal) =>
+    signal.target === "ecommerce" &&
+    ["checkout_integration", "commerce_copy", "commerce_path"].includes(signal.id)
+  );
+  const leadOverride = strongLeadSignal && leadScore >= 4 && leadScore >= ecommerceScore - 1.5;
   let type = "other";
   let reason = "insufficient_campaign_intent_signal";
-  if (ecommerceScore >= 4.5 && ecommerceScore >= leadScore + 1) {
+  if (leadOverride && (!genericContactPage || strongLeadSignal)) {
+    type = "lead_generation";
+    reason = "lead_generation_signals_won";
+  } else if (strongTransactionalSignal && ecommerceScore >= 4.5 && ecommerceScore >= leadScore + 2) {
     type = "ecommerce";
     reason = "ecommerce_signals_won";
   } else if (leadScore >= 4 && leadScore >= ecommerceScore && (!genericContactPage || strongLeadSignal)) {
     type = "lead_generation";
     reason = genericContactPage ? "lead_specific_contact_page" : "lead_generation_signals_won";
-  } else if (ecommerceScore >= 4 && leadScore < 3) {
+  } else if (strongTransactionalSignal && ecommerceScore >= 4 && leadScore < 3) {
     type = "ecommerce";
     reason = "ecommerce_signals_won";
   }

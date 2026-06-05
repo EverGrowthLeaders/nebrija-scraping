@@ -14,6 +14,7 @@ import { explainLeadScore, nextOutreachChannel } from "../../../packages/core/sr
 import {
   createCrawlerRun,
   createVoiceCallFromDispatch,
+  deleteContactsByKindAndSource,
   findBusinessById,
   findCallableBusinessById,
   findBusinessVoiceContext,
@@ -253,7 +254,9 @@ async function runBusinessCrawl(job) {
       });
       const extracted = extractLeadSignals(page);
       for (const email of extracted.emails) aggregate.emails.add(email);
-      for (const phone of extracted.phones) aggregate.phones.add(phone);
+      for (const phone of extracted.phones) {
+        if (aggregate.phones.size < 8) aggregate.phones.add(phone);
+      }
       aggregate.socials = { ...aggregate.socials, ...extracted.socials };
       aggregate.signals.hasOnlineBooking ||= extracted.signals.hasOnlineBooking;
       aggregate.signals.hasChatbot ||= extracted.signals.hasChatbot;
@@ -289,6 +292,7 @@ async function runBusinessCrawl(job) {
         observedValue: email
       });
     }
+    await deleteContactsByKindAndSource({ businessId: business.id, kind: "phone", sourceUrl: rootUrl });
     for (const phone of aggregate.phones) {
       await upsertContact({ businessId: business.id, kind: "phone", value: phone, confidence: 0.85, sourceUrl: rootUrl });
       await recordProvenance({

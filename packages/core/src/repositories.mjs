@@ -486,6 +486,18 @@ export async function upsertContact({ businessId, kind, value, confidence, sourc
   return result.rows[0];
 }
 
+export async function deleteContactsByKindAndSource({ businessId, kind, sourceUrl }) {
+  const result = await query(
+    `DELETE FROM business_contacts
+      WHERE business_id = $1
+        AND kind = $2
+        AND source_url IS NOT DISTINCT FROM $3
+      RETURNING id`,
+    [businessId, kind, sourceUrl || null]
+  );
+  return result.rowCount || 0;
+}
+
 export async function recordProvenance({ businessId, fieldName, sourceType, sourceUrl, sourceRecordId, observedValue }) {
   const result = await query(
     `INSERT INTO data_provenance

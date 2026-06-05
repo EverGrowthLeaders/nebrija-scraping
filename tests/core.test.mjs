@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { normalizeSpanishPhone } from "../packages/core/src/phone.mjs";
-import { extractEmails, extractLeadSignals, selectBusinessUrls } from "../packages/core/src/extractors.mjs";
+import { extractEmails, extractLeadSignals, extractPhones, selectBusinessUrls } from "../packages/core/src/extractors.mjs";
 import { calculateLeadScore, nextOutreachChannel } from "../packages/core/src/scoring.mjs";
 import { parseEndOfCallReport } from "../packages/core/src/vapiReport.mjs";
 import {
@@ -45,6 +45,18 @@ test("extracts lead signals from crawled content", () => {
   assert.equal(result.socials.instagram, "https://instagram.com/clinica");
   assert.equal(result.signals.hasOnlineBooking, true);
   assert.equal(result.signals.hasContactForm, true);
+});
+
+test("extracts only contact-quality phones from crawled pages", () => {
+  const noisyHtml = Array.from({ length: 30 }, (_, index) => `<script>window.x${index}=600${String(index).padStart(6, "0")}</script>`).join("");
+  const result = extractLeadSignals({
+    markdown: "Contacto por WhatsApp o telefono: 600 111 222. Referencia interna 600999888 sin contexto comercial lejano.",
+    html: `${noisyHtml}<a href="tel:+34911222333">Llamar</a><a href="https://wa.me/34600333444">WhatsApp</a>`,
+    links: [{ url: "https://wa.me/34600333444" }]
+  });
+
+  assert.deepEqual(result.phones, ["+34911222333", "+34600333444", "+34600111222"]);
+  assert.equal(extractPhones(noisyHtml, { strict: true }).length, 0);
 });
 
 test("selects useful business URLs", () => {
@@ -365,7 +377,32 @@ test("classifies ecommerce ad landings from catalog and checkout signals", () =>
 
   assert.equal(result.type, "ecommerce");
   assert.ok(result.scores.ecommerce > result.scores.lead_generation);
-  assert.ok(result.signals.some((signal) => signal.id === "ecommerce_platform"));
+  assert.ok(result.signals.some((signal) => signal.id === "checkout_integration"));
+});
+
+test("classifies custom quote apparel landing as lead generation despite WooCommerce", () => {
+  const result = classifyLandingPage({
+    url: "https://disownedfactory.com/sudaderas-para-grupos/",
+    page: {
+      markdown: `
+        Sudaderas para grupos personalizadas. Quiero un diseño único.
+        En 5 minutos te enviamos maqueta + presupuesto y alternativas para ahorrar.
+        Sin compromiso. Incluye diseño/fotomontaje y asesoramiento para ajustar coste.
+        Testimonio: volveré a comprar. Desde 1 unidad.
+      `,
+      html: `
+        <div class="woocommerce"></div>
+        <form class="elementor-form"><input type="email" name="email"></form>
+      `,
+      links: []
+    },
+    business: { website: "https://disownedfactory.com" }
+  });
+
+  assert.equal(result.type, "lead_generation");
+  assert.ok(result.scores.lead_generation > result.scores.ecommerce);
+  assert.ok(result.signals.some((signal) => signal.id === "custom_quote_landing"));
+  assert.ok(result.signals.some((signal) => signal.id === "ecommerce_infrastructure"));
 });
 
 test("does not treat generic contact pages as lead-generation landings", () => {

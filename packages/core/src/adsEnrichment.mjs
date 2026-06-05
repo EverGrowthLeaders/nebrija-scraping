@@ -283,10 +283,14 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
   let fallback = null;
 
   for (const source of sources) {
+    const sourceWithActor = {
+      ...source,
+      actorId: apify.facebookAdsActorId || null
+    };
     try {
-      const items = await apify.runFacebookAdsLibrary(buildApifyMetaInput(source, apify));
-      const analyzed = inferApifyMetaActivity({ items, business, source, now });
-      attempts.push(apifyAttempt(source, analyzed, items));
+      const items = await apify.runFacebookAdsLibrary(buildApifyMetaInput(sourceWithActor, apify));
+      const analyzed = inferApifyMetaActivity({ items, business, source: sourceWithActor, now });
+      attempts.push(apifyAttempt(sourceWithActor, analyzed, items));
       fallback = betterMetaFallback(fallback, analyzed);
       if (analyzed.active === true && hasLandingUrls(analyzed)) return withAttempts(analyzed, attempts, socialDiscovery);
     } catch (error) {
@@ -295,12 +299,12 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
         status: "error",
         active: null,
         confidence: 0,
-        sourceUrl: source.sourceUrl,
+        sourceUrl: sourceWithActor.sourceUrl,
         reason: "apify_error",
         error: error.message,
-        context: source
+        context: sourceWithActor
       });
-      attempts.push(apifyAttempt(source, result, []));
+      attempts.push(apifyAttempt(sourceWithActor, result, []));
       fallback = betterMetaFallback(fallback, result);
     }
   }
@@ -364,6 +368,7 @@ function evidence({ provider, status, active, confidence, sourceUrl, reason, lat
     total: context?.total ?? null,
     samplePageName: context?.samplePageName || null,
     adArchiveId: context?.adArchiveId || null,
+    actorId: context?.actorId || null,
     landingUrl: landingUrls[0] || null,
     landingUrls
   };
@@ -395,6 +400,7 @@ function adAttempt(probe, result, url) {
     samplePageName: result.samplePageName || null,
     matchedFields: result.matchedFields || null,
     adArchiveId: result.adArchiveId || null,
+    actorId: result.actorId || probe.actorId || null,
     landingUrl: result.landingUrl || null,
     landingUrls: Array.isArray(result.landingUrls) ? result.landingUrls.slice(0, 8) : []
   };
