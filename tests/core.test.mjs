@@ -525,6 +525,62 @@ test("falls back to Apify for matched active Meta ads only", async () => {
   assert.ok(enrichment.google.attempts.length >= 1);
 });
 
+test("continues Apify sources when the first active match has no landing URL", async () => {
+  const apifyCalls = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://demo.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      if (url === "https://demo.example/landing") {
+        return {
+          markdown: "Solicita presupuesto y agenda una demo.",
+          html: '<form class="elementor-form"></form>',
+          links: []
+        };
+      }
+      return { markdown: "Ad Library", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary(input) {
+      apifyCalls.push(input.urls[0].url);
+      if (apifyCalls.length === 1) {
+        return [{
+          is_active: true,
+          page_name: "Demo Factory",
+          snapshot: { body: { text: "demo.example" } }
+        }];
+      }
+      return [{
+        ad_archive_id: "123456789",
+        is_active: true,
+        page_name: "Demo Factory",
+        snapshot: {
+          caption: "https://demo.example/landing",
+          body: { text: "demo.example" }
+        }
+      }];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Demo Factory", website: "https://demo.example", facebook: "https://facebook.com/demofactory" },
+    firecrawl,
+    apify,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyCalls.length, 2);
+  assert.equal(enrichment.meta.active, true);
+  assert.deepEqual(enrichment.meta.landingUrls, ["https://demo.example/landing"]);
+  assert.equal(enrichment.classification.type, "lead_generation");
+});
+
 test("ignores active Apify Meta ads that do not match the business", async () => {
   const firecrawl = {
     async search() {

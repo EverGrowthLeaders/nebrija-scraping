@@ -288,7 +288,7 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
       const analyzed = inferApifyMetaActivity({ items, business, source, now });
       attempts.push(apifyAttempt(source, analyzed, items));
       fallback = betterMetaFallback(fallback, analyzed);
-      if (analyzed.active === true) return withAttempts(analyzed, attempts, socialDiscovery);
+      if (analyzed.active === true && hasLandingUrls(analyzed)) return withAttempts(analyzed, attempts, socialDiscovery);
     } catch (error) {
       const result = evidence({
         provider: "meta",
@@ -465,16 +465,6 @@ function buildApifyMetaSources(business, country) {
   const instagramHandle = extractSocialHandle(instagram, "instagram");
   const metaCountry = country || DEFAULT_COUNTRY;
 
-  if (facebook) {
-    addApifySource(sources, {
-      strategy: "facebook_page_apify",
-      query: facebookHandle || facebook,
-      searchType: "page",
-      country: metaCountry,
-      sourceUrl: facebook.startsWith("http") ? facebook : `https://www.facebook.com/${facebookHandle || facebook}`,
-      confidence: 0.92
-    });
-  }
   if (instagramHandle) {
     addApifySource(sources, {
       strategy: "instagram_handle_apify",
@@ -495,6 +485,16 @@ function buildApifyMetaSources(business, country) {
       confidence: 0.86
     });
   }
+  if (facebook) {
+    addApifySource(sources, {
+      strategy: "facebook_page_apify",
+      query: facebookHandle || facebook,
+      searchType: "page",
+      country: metaCountry,
+      sourceUrl: buildMetaAdsLibraryUrl({ query: facebookHandle || facebook, country: metaCountry, searchType: "page" }),
+      confidence: 0.92
+    });
+  }
   if (business.name) {
     addApifySource(sources, {
       strategy: "business_name_apify",
@@ -507,6 +507,10 @@ function buildApifyMetaSources(business, country) {
   }
 
   return sources.slice(0, 4);
+}
+
+function hasLandingUrls(result) {
+  return Array.isArray(result?.landingUrls) && result.landingUrls.length > 0;
 }
 
 function addApifySource(sources, source) {
