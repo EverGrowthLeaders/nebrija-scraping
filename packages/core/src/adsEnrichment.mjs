@@ -11,7 +11,7 @@ export async function enrichBusinessAds({ business, firecrawl, country = DEFAULT
   };
 }
 
-export function buildMetaAdsLibraryUrl({ query, country = DEFAULT_COUNTRY }) {
+export function buildMetaAdsLibraryUrl({ query, country = DEFAULT_COUNTRY, searchType = "keyword_unordered" }) {
   const url = new URL("https://www.facebook.com/ads/library/");
   url.searchParams.set("active_status", "active");
   url.searchParams.set("ad_type", "all");
@@ -19,7 +19,7 @@ export function buildMetaAdsLibraryUrl({ query, country = DEFAULT_COUNTRY }) {
   url.searchParams.set("is_targeted_country", "false");
   url.searchParams.set("media_type", "all");
   url.searchParams.set("q", query);
-  url.searchParams.set("search_type", "keyword_unordered");
+  url.searchParams.set("search_type", searchType);
   return url.toString();
 }
 
@@ -30,7 +30,7 @@ export function buildGoogleAdsTransparencyUrl({ domain, country = DEFAULT_COUNTR
   return url.toString();
 }
 
-export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl }) {
+export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, context = {} }) {
   const normalized = normalizeText(text);
   const negative = [
     "no ads match",
@@ -46,15 +46,19 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl }
   if (negative) return evidence({ provider, status: "inactive", active: false, confidence: 0.72, sourceUrl, reason: "negative_copy" });
 
   const recentDate = latestDateWithin(text, now, 45);
+  const hasMetaLibraryId = /\blibrary\s+id\s*[:#]?\s*\d{6,}\b/i.test(text) || /"ad_archive_id"\s*:\s*"?\d{6,}"?/i.test(text);
   const activePhrases = provider === "meta"
     ? [
         "active ads",
         "active ad",
         "currently running ads",
         "page is running ads",
+        "this page is running ads",
+        "this page is currently running ads",
         "anuncios activos",
         "anuncio activo",
-        "biblioteca de anuncios"
+        "esta publicando anuncios",
+        "está publicando anuncios"
       ]
     : [
         "last shown",
@@ -79,8 +83,16 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl }
       latestDetectedDate: recentDate
     });
   }
-  if (provider === "meta" && hasActiveCopy && !normalized.includes("0 results")) {
-    return evidence({ provider, status: "active", active: true, confidence: 0.7, sourceUrl, reason: "active_ad_library_copy" });
+  if (provider === "meta" && (hasActiveCopy || hasMetaLibraryId) && !normalized.includes("0 results")) {
+    return evidence({
+      provider,
+      status: "active",
+      active: true,
+      confidence: metaConfidence(context, hasMetaLibraryId ? 0.84 : 0.7),
+      sourceUrl,
+      reason: hasMetaLibraryId ? "meta_library_id_found" : "active_ad_library_copy",
+      context
+    });
   }
   if (hasActiveCopy) {
     return evidence({ provider, status: "unknown", active: null, confidence: 0.45, sourceUrl, reason: "generic_ad_library_copy" });
@@ -89,23 +101,47 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl }
 }
 
 async function inspectMetaAds({ business, firecrawl, country, now }) {
-  const query = adSearchQuery(business);
-  const url = buildMetaAdsLibraryUrl({ query, country });
-  try {
-    const page = await firecrawl.scrape(url, {
-      formats: ["markdown", "html"],
-      onlyMainContent: false,
-      waitFor: 5000
-    });
-    return inferAdsActivity({
-      provider: "meta",
-      text: pageText(page),
-      now,
-      sourceUrl: url
-    });
-  } catch (error) {
-    return evidence({ provider: "meta", status: "error", active: null, confidence: 0, sourceUrl: url, error: error.message });
+  const probes = buildMetaAdProbes(business);
+  const attempts = [];
+  let fallback = null;
+
+  for (const probe of probes) {
+    const url = buildMetaAdsLibraryUrl({ query: probe.query, country, searchType: probe.searchType });
+    try {
+      const page = await firecrawl.scrape(url, {
+        formats: ["markdown", "html"],
+        onlyMainContent: false,
+        waitFor: 5000
+      });
+      const result = inferAdsActivity({
+        provider: "meta",
+        text: pageText(page),
+        now,
+        sourceUrl: url,
+        context: probe
+      });
+      attempts.push(metaAttempt(probe, result, url));
+      fallback = betterMetaFallback(fallback, result);
+      if (result.active === true) return withAttempts(result, attempts);
+    } catch (error) {
+      const result = evidence({
+        provider: "meta",
+        status: "error",
+        active: null,
+        confidence: 0,
+        sourceUrl: url,
+        error: error.message,
+        context: probe
+      });
+      attempts.push(metaAttempt(probe, result, url));
+      fallback = betterMetaFallback(fallback, result);
+    }
   }
+
+  return withAttempts(
+    fallback || evidence({ provider: "meta", status: "unknown", active: null, confidence: 0.2, reason: "no_meta_probe_matched" }),
+    attempts
+  );
 }
 
 async function inspectGoogleAds({ business, firecrawl, country, now }) {
@@ -148,7 +184,30 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
   return evidence({ provider: "google", status: "unknown", active: null, confidence: 0.2, sourceUrl: primaryUrl, reason: "no_strong_signal" });
 }
 
-function evidence({ provider, status, active, confidence, sourceUrl, reason, latestDetectedDate, error }) {
+export function buildMetaAdProbes(business = {}) {
+  const probes = [];
+  const domain = extractDomain(business.website);
+  const rootDomain = rootDomainToken(domain);
+  const facebook = firstValue(business.facebook, business.custom_fields?.facebook, business.custom_fields?.facebook_url, business.custom_fields?.fb);
+  const instagram = firstValue(business.instagram, business.custom_fields?.instagram, business.custom_fields?.instagram_url, business.custom_fields?.ig);
+  const facebookHandle = extractSocialHandle(facebook, "facebook");
+  const instagramHandle = extractSocialHandle(instagram, "instagram");
+
+  addProbe(probes, "website_domain", domain, "keyword_unordered", 0.84);
+  addProbe(probes, "facebook_url", facebook, "keyword_unordered", 0.9);
+  addProbe(probes, "facebook_handle", facebookHandle, "keyword_unordered", 0.88);
+  addProbe(probes, "facebook_page", facebookHandle, "page", 0.88);
+  addProbe(probes, "instagram_url", instagram, "keyword_unordered", 0.9);
+  addProbe(probes, "instagram_handle", instagramHandle ? `@${instagramHandle}` : "", "keyword_unordered", 0.88);
+  addProbe(probes, "instagram_account", instagramHandle, "keyword_unordered", 0.84);
+  addProbe(probes, "business_name_city", adSearchQuery(business), "keyword_unordered", 0.68);
+  addProbe(probes, "business_name", business.name, "keyword_unordered", 0.62);
+  addProbe(probes, "website_brand", rootDomain, "keyword_unordered", 0.7);
+
+  return uniqueProbes(probes);
+}
+
+function evidence({ provider, status, active, confidence, sourceUrl, reason, latestDetectedDate, error, context }) {
   return {
     provider,
     status,
@@ -157,8 +216,42 @@ function evidence({ provider, status, active, confidence, sourceUrl, reason, lat
     sourceUrl,
     reason: reason || null,
     latestDetectedDate: latestDetectedDate || null,
-    error: error || null
+    error: error || null,
+    strategy: context?.strategy || null,
+    query: context?.query || null,
+    searchType: context?.searchType || null
   };
+}
+
+function metaConfidence(context, fallback) {
+  return Math.max(fallback, Number(context?.confidence || 0));
+}
+
+function metaAttempt(probe, result, url) {
+  return {
+    strategy: probe.strategy,
+    query: probe.query,
+    searchType: probe.searchType,
+    status: result.status,
+    active: result.active,
+    confidence: result.confidence,
+    reason: result.reason,
+    sourceUrl: url
+  };
+}
+
+function withAttempts(result, attempts) {
+  return {
+    ...result,
+    attempts: attempts.slice(0, 12)
+  };
+}
+
+function betterMetaFallback(current, next) {
+  if (!current) return next;
+  if (next.active === false && current.active !== false) return next;
+  if ((next.confidence || 0) > (current.confidence || 0)) return next;
+  return current;
 }
 
 function latestDateWithin(text, now, days) {
@@ -200,4 +293,68 @@ function normalizeText(value) {
 
 function unique(items) {
   return Array.from(new Set(items.filter(Boolean)));
+}
+
+function addProbe(probes, strategy, query, searchType, confidence) {
+  const cleaned = cleanQuery(query);
+  if (!cleaned) return;
+  probes.push({ strategy, query: cleaned, searchType, confidence });
+}
+
+function uniqueProbes(probes) {
+  const seen = new Set();
+  return probes.filter((probe) => {
+    const key = `${probe.searchType}:${normalizeText(probe.query)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function cleanQuery(value) {
+  return String(value || "")
+    .replace(/^https?:\/\//, "")
+    .replace(/^www\./, "")
+    .replace(/\/$/, "")
+    .trim()
+    .slice(0, 120);
+}
+
+function firstValue(...values) {
+  return values.find((value) => String(value || "").trim()) || "";
+}
+
+function extractSocialHandle(value, provider) {
+  if (!value) return "";
+  const raw = String(value).trim();
+  if (raw.startsWith("@")) return sanitizeHandle(raw.slice(1));
+  try {
+    const parsed = new URL(raw.startsWith("http") ? raw : `https://${raw}`);
+    const host = parsed.hostname.replace(/^www\./, "");
+    const facebookHosts = ["facebook.com", "m.facebook.com", "fb.com"];
+    const instagramHosts = ["instagram.com"];
+    if (provider === "facebook" && !facebookHosts.some((item) => host.endsWith(item))) return sanitizeHandle(raw);
+    if (provider === "instagram" && !instagramHosts.some((item) => host.endsWith(item))) return sanitizeHandle(raw);
+    if (provider === "facebook" && parsed.pathname === "/profile.php") return sanitizeHandle(parsed.searchParams.get("id") || "");
+    const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
+    const blocked = new Set(["ads", "business", "dialog", "events", "groups", "marketplace", "pages", "people", "plugins", "reel", "share", "stories"]);
+    return sanitizeHandle(parts.find((part) => !blocked.has(part.toLowerCase())) || "");
+  } catch {
+    return sanitizeHandle(raw);
+  }
+}
+
+function sanitizeHandle(value) {
+  return String(value || "")
+    .replace(/^@/, "")
+    .replace(/[?#].*$/, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "")
+    .slice(0, 80);
+}
+
+function rootDomainToken(domain) {
+  if (!domain) return "";
+  const parts = domain.split(".").filter(Boolean);
+  if (parts.length <= 2) return parts[0] || "";
+  return parts[parts.length - 2] || "";
 }

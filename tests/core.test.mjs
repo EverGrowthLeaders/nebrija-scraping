@@ -16,7 +16,7 @@ import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
 import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../packages/core/src/leadImport.mjs";
-import { buildMetaAdsLibraryUrl, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
+import { buildMetaAdProbes, buildMetaAdsLibraryUrl, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -287,4 +287,35 @@ test("infers active ads from public transparency page signals", () => {
   });
   assert.equal(google.active, true);
   assert.equal(google.latestDetectedDate, "2026-06-04");
+});
+
+test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {
+  const probes = buildMetaAdProbes({
+    name: "Bufete Demo",
+    city: "Logroño",
+    website: "https://www.bufetedemo.es/contacto",
+    facebook: "https://www.facebook.com/bufetedemo",
+    instagram: "https://www.instagram.com/bufete_demo/"
+  });
+  const byStrategy = Object.fromEntries(probes.map((probe) => [probe.strategy, probe]));
+
+  assert.equal(byStrategy.business_name_city.query, "Bufete Demo Logroño");
+  assert.equal(byStrategy.website_domain.query, "bufetedemo.es");
+  assert.equal(byStrategy.facebook_handle.query, "bufetedemo");
+  assert.equal(byStrategy.facebook_page.searchType, "page");
+  assert.equal(byStrategy.instagram_handle.query, "@bufete_demo");
+});
+
+test("Meta active inference stores matching strategy and query evidence", () => {
+  const result = inferAdsActivity({
+    provider: "meta",
+    sourceUrl: "https://www.facebook.com/ads/library/?q=bufetedemo",
+    context: { strategy: "facebook_handle", query: "bufetedemo", searchType: "keyword_unordered", confidence: 0.88 },
+    text: "Library ID: 123456789 This Page is currently running ads."
+  });
+  assert.equal(result.active, true);
+  assert.equal(result.reason, "meta_library_id_found");
+  assert.equal(result.strategy, "facebook_handle");
+  assert.equal(result.query, "bufetedemo");
+  assert.equal(result.confidence, 0.88);
 });

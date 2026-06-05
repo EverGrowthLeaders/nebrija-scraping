@@ -405,6 +405,8 @@ const server = http.createServer(async (req, res) => {
             city: json.city || "Madrid",
             niche: json.niche || "ads enrichment smoke test",
             category: json.category || "test",
+            instagram: json.instagram,
+            facebook: json.facebook,
             sourceUrl: json.sourceUrl || json.source_url || json.website,
             rawPayload: { testJob: true, testId, type }
           });
