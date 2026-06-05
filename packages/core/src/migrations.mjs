@@ -95,6 +95,11 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_google_active BOOLEAN`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_last_checked_at TIMESTAMPTZ`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_enrichment JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_type TEXT`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_confidence DOUBLE PRECISION`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_landing_url TEXT`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_last_checked_at TIMESTAMPTZ`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS scoring_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb`);
     await run(`ALTER TABLE extraction_jobs ALTER COLUMN source_type SET DEFAULT 'google_places_api'`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_name TEXT`);
@@ -103,6 +108,37 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_variables JSONB NOT NULL DEFAULT '[]'::jsonb`);
     await run(`ALTER TABLE voice_calls ALTER COLUMN assistant_id TYPE TEXT USING assistant_id::TEXT`);
     await run(`ALTER TABLE voice_calls ALTER COLUMN phone_number_id TYPE TEXT USING phone_number_id::TEXT`);
+
+    await run(`
+    CREATE TABLE IF NOT EXISTS tenant_scoring_rules (
+      tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+      rules JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+    await run(`
+    CREATE TABLE IF NOT EXISTS lead_lists (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      description TEXT,
+      color TEXT NOT NULL DEFAULT 'gold',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE (tenant_id, name)
+    )
+  `);
+
+    await run(`
+    CREATE TABLE IF NOT EXISTS lead_list_members (
+      lead_list_id UUID NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE,
+      business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+      added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (lead_list_id, business_id)
+    )
+  `);
 
     await run(`ALTER TABLE businesses DROP CONSTRAINT IF EXISTS businesses_place_id_key`);
     await run(`ALTER TABLE google_place_candidates DROP CONSTRAINT IF EXISTS google_place_candidates_place_id_query_key`);
@@ -125,10 +161,13 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_users_tenant_email ON users(tenant_id, email)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_tenant_integrations_provider ON tenant_integrations(provider)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_lead_lists_tenant_created ON lead_lists(tenant_id, created_at DESC)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_business ON lead_list_members(business_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job ON businesses(tenant_id, extraction_job_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_status_city_niche ON businesses(tenant_id, status, city, niche)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_score ON businesses(tenant_id, score DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_checked ON businesses(tenant_id, ads_last_checked_at DESC)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_funnel ON businesses(tenant_id, ads_funnel_type, ads_funnel_last_checked_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_created ON extraction_jobs(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_voice_calls_tenant_created ON voice_calls(tenant_id, created_at DESC)`);
   });

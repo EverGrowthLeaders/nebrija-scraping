@@ -1,5 +1,6 @@
 import { query, withTransaction } from "./db.mjs";
 import { config } from "./config.mjs";
+import { DEFAULT_SCORING_RULES, normalizeScoringRules } from "./scoring.mjs";
 
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
 
@@ -168,6 +169,40 @@ export async function upsertTenantNebrijaSettings({
     [tenantId, apiBaseUrl || null, nextApiKey, nextLast4, defaultPhoneNumberId || null, settings || {}]
   );
   return result.rows[0];
+}
+
+export async function getTenantScoringRules({ tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT tenant_id, rules, created_at, updated_at
+       FROM tenant_scoring_rules
+      WHERE tenant_id = $1`,
+    [tenantId]
+  );
+  const row = result.rows[0];
+  return {
+    tenantId,
+    rules: normalizeScoringRules(row?.rules?.length ? row.rules : DEFAULT_SCORING_RULES),
+    updatedAt: row?.updated_at || null,
+    stored: Boolean(row)
+  };
+}
+
+export async function upsertTenantScoringRules({ tenantId = DEFAULT_TENANT_ID, rules }) {
+  const normalized = normalizeScoringRules(rules);
+  const result = await query(
+    `INSERT INTO tenant_scoring_rules (tenant_id, rules)
+     VALUES ($1, $2)
+     ON CONFLICT (tenant_id)
+     DO UPDATE SET rules = EXCLUDED.rules, updated_at = NOW()
+     RETURNING tenant_id, rules, created_at, updated_at`,
+    [tenantId, normalized]
+  );
+  return {
+    tenantId,
+    rules: normalizeScoringRules(result.rows[0].rules),
+    updatedAt: result.rows[0].updated_at,
+    stored: true
+  };
 }
 
 export async function createExtractionJob({
@@ -542,12 +577,18 @@ export async function createManualBusiness({
 
 export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrichment }) {
   const checkedAt = enrichment?.checkedAt ? new Date(enrichment.checkedAt) : new Date();
+  const classification = enrichment?.classification || {};
+  const classifiedAt = classification.checkedAt ? new Date(classification.checkedAt) : checkedAt;
   const result = await query(
     `UPDATE businesses
         SET ads_meta_active = $3,
             ads_google_active = $4,
             ads_last_checked_at = $5,
             ads_enrichment = $6,
+            ads_funnel_type = $7,
+            ads_funnel_confidence = $8,
+            ads_funnel_landing_url = $9,
+            ads_funnel_last_checked_at = $10,
             status = CASE
               WHEN status IN ('new', 'scraped', 'enrichment_pending') THEN 'enriched'::lead_status
               ELSE status
@@ -561,17 +602,28 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
       enrichment?.meta?.active ?? null,
       enrichment?.google?.active ?? null,
       checkedAt,
-      enrichment || {}
+      enrichment || {},
+      classification.type || null,
+      classification.confidence ?? null,
+      classification.landingUrl || null,
+      classifiedAt
     ]
   );
   return result.rows[0] || null;
 }
 
-export async function updateBusinessScore({ businessId, score, tenantId }) {
-  const params = [businessId, score];
-  const tenantClause = tenantId ? `AND tenant_id = $3` : "";
+export async function updateBusinessScore({ businessId, score, tenantId, breakdown }) {
+  const params = [businessId, score, breakdown || {}];
   if (tenantId) params.push(tenantId);
-  const result = await query(`UPDATE businesses SET score = $2, updated_at = NOW() WHERE id = $1 ${tenantClause} RETURNING *`, params);
+  const result = await query(
+    `UPDATE businesses
+        SET score = $2,
+            scoring_breakdown = $3,
+            updated_at = NOW()
+      WHERE id = $1 ${tenantId ? "AND tenant_id = $4" : ""}
+      RETURNING *`,
+    params
+  );
   return result.rows[0] || null;
 }
 
@@ -761,6 +813,10 @@ export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID,
             b.ads_google_active,
             b.ads_last_checked_at,
             b.ads_enrichment,
+            b.ads_funnel_type,
+            b.ads_funnel_confidence,
+            b.ads_funnel_landing_url,
+            b.ads_funnel_last_checked_at,
             b.score,
             b.scoring_notes,
             b.niche,
@@ -781,45 +837,93 @@ export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID,
   return result.rows;
 }
 
-export async function listBusinesses({ tenantId = DEFAULT_TENANT_ID, limit = 50, offset = 0, status, niche, city, search, extractionJobId } = {}) {
+export async function listBusinesses({
+  tenantId = DEFAULT_TENANT_ID,
+  limit = 50,
+  offset = 0,
+  status,
+  niche,
+  city,
+  search,
+  extractionJobId,
+  listId,
+  adsActive,
+  adsFunnelType
+} = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
-  const where = ["tenant_id = $1"];
+  const where = ["b.tenant_id = $1"];
   const params = [tenantId];
   if (status) {
     params.push(status);
-    where.push(`status = $${params.length}::lead_status`);
+    where.push(`b.status = $${params.length}::lead_status`);
   }
   if (niche) {
     params.push(niche);
-    where.push(`niche = $${params.length}`);
+    where.push(`b.niche = $${params.length}`);
   }
   if (city) {
     params.push(city);
-    where.push(`city = $${params.length}`);
+    where.push(`b.city = $${params.length}`);
   }
   if (search) {
     params.push(`%${search}%`);
-    where.push(`(name ILIKE $${params.length} OR website ILIKE $${params.length} OR address ILIKE $${params.length})`);
+    where.push(`(b.name ILIKE $${params.length} OR b.website ILIKE $${params.length} OR b.address ILIKE $${params.length})`);
   }
   if (extractionJobId) {
     params.push(extractionJobId);
-    where.push(`extraction_job_id = $${params.length}`);
+    where.push(`b.extraction_job_id = $${params.length}`);
+  }
+  if (listId) {
+    params.push(listId);
+    where.push(`EXISTS (
+      SELECT 1
+        FROM lead_list_members lm
+        JOIN lead_lists ll ON ll.id = lm.lead_list_id
+       WHERE lm.business_id = b.id
+         AND lm.lead_list_id = $${params.length}
+         AND ll.tenant_id = b.tenant_id
+    )`);
+  }
+  if (adsActive) {
+    if (adsActive === "any") {
+      where.push(`(b.ads_meta_active IS TRUE OR b.ads_google_active IS TRUE)`);
+    } else if (adsActive === "meta") {
+      where.push(`b.ads_meta_active IS TRUE`);
+    } else if (adsActive === "google") {
+      where.push(`b.ads_google_active IS TRUE`);
+    } else if (adsActive === "both") {
+      where.push(`b.ads_meta_active IS TRUE AND b.ads_google_active IS TRUE`);
+    }
+  }
+  if (adsFunnelType) {
+    params.push(adsFunnelType);
+    where.push(`b.ads_funnel_type = $${params.length}`);
   }
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(safeLimit);
   params.push(safeOffset);
   const result = await query(
-    `SELECT id, name, niche, city, website, phone_e164, status, score, scoring_notes, has_online_booking, has_chatbot,
-            ads_meta_active, ads_google_active, ads_last_checked_at, custom_fields, created_at, updated_at
-       FROM businesses
+    `SELECT b.id, b.name, b.niche, b.city, b.website, b.phone_e164, b.status, b.score, b.scoring_notes,
+            b.has_online_booking, b.has_chatbot, b.ads_meta_active, b.ads_google_active, b.ads_last_checked_at,
+            b.ads_funnel_type, b.ads_funnel_confidence, b.ads_funnel_landing_url, b.ads_funnel_last_checked_at,
+            b.custom_fields, b.extraction_job_id, b.created_at, b.updated_at,
+            j.niche AS campaign_niche,
+            j.city AS campaign_city,
+            COALESCE(jsonb_agg(DISTINCT jsonb_build_object('id', ll.id, 'name', ll.name, 'color', ll.color))
+              FILTER (WHERE ll.id IS NOT NULL), '[]'::jsonb) AS lists
+       FROM businesses b
+       LEFT JOIN extraction_jobs j ON j.id = b.extraction_job_id AND j.tenant_id = b.tenant_id
+       LEFT JOIN lead_list_members lm_all ON lm_all.business_id = b.id
+       LEFT JOIN lead_lists ll ON ll.id = lm_all.lead_list_id AND ll.tenant_id = b.tenant_id
        ${whereClause}
-      ORDER BY score DESC, updated_at DESC
+      GROUP BY b.id, j.id, j.niche, j.city
+      ORDER BY b.score DESC, b.updated_at DESC
       LIMIT $${params.length - 1} OFFSET $${params.length}`,
     params
   );
   const totalRow = await query(
-    `SELECT COUNT(*)::int AS total FROM businesses ${whereClause}`,
+    `SELECT COUNT(*)::int AS total FROM businesses b ${whereClause}`,
     params.slice(0, params.length - 2)
   );
   return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
@@ -838,10 +942,118 @@ export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID,
   return result.rows.map((row) => row.id);
 }
 
+export async function listBusinessIdsForTenant({ tenantId = DEFAULT_TENANT_ID, limit = 5000 } = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 5000, 1), 20000);
+  const result = await query(
+    `SELECT id
+       FROM businesses
+      WHERE tenant_id = $1
+      ORDER BY updated_at DESC
+      LIMIT $2`,
+    [tenantId, safeLimit]
+  );
+  return result.rows.map((row) => row.id);
+}
+
+export async function listLeadLists({ tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT ll.id, ll.name, ll.description, ll.color, ll.created_at, ll.updated_at,
+            COUNT(lm.business_id)::int AS leads_count
+       FROM lead_lists ll
+       LEFT JOIN lead_list_members lm ON lm.lead_list_id = ll.id
+      WHERE ll.tenant_id = $1
+      GROUP BY ll.id
+      ORDER BY ll.created_at DESC`,
+    [tenantId]
+  );
+  return result.rows;
+}
+
+export async function findLeadList(id, { tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT ll.id, ll.name, ll.description, ll.color, ll.created_at, ll.updated_at,
+            COUNT(lm.business_id)::int AS leads_count
+       FROM lead_lists ll
+       LEFT JOIN lead_list_members lm ON lm.lead_list_id = ll.id
+      WHERE ll.id = $1 AND ll.tenant_id = $2
+      GROUP BY ll.id`,
+    [id, tenantId]
+  );
+  return result.rows[0] || null;
+}
+
+export async function createLeadList({ tenantId = DEFAULT_TENANT_ID, name, description, color }) {
+  const result = await query(
+    `INSERT INTO lead_lists (tenant_id, name, description, color)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (tenant_id, name)
+     DO UPDATE SET
+       description = COALESCE(EXCLUDED.description, lead_lists.description),
+       color = EXCLUDED.color,
+       updated_at = NOW()
+     RETURNING *`,
+    [tenantId, String(name || "").trim(), description || null, normalizeListColor(color)]
+  );
+  return result.rows[0];
+}
+
+export async function updateLeadList({ tenantId = DEFAULT_TENANT_ID, id, name, description, color }) {
+  const result = await query(
+    `UPDATE lead_lists
+        SET name = COALESCE($3, name),
+            description = $4,
+            color = COALESCE($5, color),
+            updated_at = NOW()
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [id, tenantId, name ? String(name).trim() : null, description || null, color ? normalizeListColor(color) : null]
+  );
+  return result.rows[0] || null;
+}
+
+export async function addBusinessToLeadList({ tenantId = DEFAULT_TENANT_ID, listId, businessId }) {
+  return withTransaction(async (client) => {
+    const list = await client.query(`SELECT id FROM lead_lists WHERE id = $1 AND tenant_id = $2`, [listId, tenantId]);
+    if (!list.rows[0]) return null;
+    const business = await client.query(`SELECT id FROM businesses WHERE id = $1 AND tenant_id = $2`, [businessId, tenantId]);
+    if (!business.rows[0]) return null;
+    const result = await client.query(
+      `INSERT INTO lead_list_members (lead_list_id, business_id)
+       VALUES ($1, $2)
+       ON CONFLICT (lead_list_id, business_id)
+       DO UPDATE SET added_at = lead_list_members.added_at
+       RETURNING *`,
+      [listId, businessId]
+    );
+    return result.rows[0];
+  });
+}
+
+export async function removeBusinessFromLeadList({ tenantId = DEFAULT_TENANT_ID, listId, businessId }) {
+  const result = await query(
+    `DELETE FROM lead_list_members lm
+      USING lead_lists ll, businesses b
+      WHERE lm.lead_list_id = ll.id
+        AND lm.business_id = b.id
+        AND ll.id = $1
+        AND b.id = $2
+        AND ll.tenant_id = $3
+        AND b.tenant_id = $3
+      RETURNING lm.*`,
+    [listId, businessId, tenantId]
+  );
+  return result.rows[0] || null;
+}
+
+function normalizeListColor(color) {
+  const safe = String(color || "gold").trim().toLowerCase();
+  return ["gold", "green", "cyan", "burgundy", "zinc"].includes(safe) ? safe : "gold";
+}
+
 export async function findBusinessDetail(id, { tenantId = DEFAULT_TENANT_ID } = {}) {
   const business = await query(`SELECT * FROM businesses WHERE id = $1 AND tenant_id = $2`, [id, tenantId]);
   if (!business.rows[0]) return null;
-  const [contacts, calls, crawlerRuns] = await Promise.all([
+  const [contacts, calls, crawlerRuns, lists] = await Promise.all([
     query(
       `SELECT id, kind, value, confidence, source_url, created_at
          FROM business_contacts WHERE business_id = $1
@@ -859,13 +1071,22 @@ export async function findBusinessDetail(id, { tenantId = DEFAULT_TENANT_ID } = 
          FROM crawler_runs WHERE business_id = $1
          ORDER BY created_at DESC LIMIT 10`,
       [id]
+    ),
+    query(
+      `SELECT ll.id, ll.name, ll.description, ll.color, lm.added_at
+         FROM lead_list_members lm
+         JOIN lead_lists ll ON ll.id = lm.lead_list_id
+        WHERE lm.business_id = $1 AND ll.tenant_id = $2
+        ORDER BY lm.added_at DESC`,
+      [id, tenantId]
     )
   ]);
   return {
     business: business.rows[0],
     contacts: contacts.rows,
     calls: calls.rows,
-    crawlerRuns: crawlerRuns.rows
+    crawlerRuns: crawlerRuns.rows,
+    lists: lists.rows
   };
 }
 

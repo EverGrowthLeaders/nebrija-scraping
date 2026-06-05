@@ -4,12 +4,13 @@ import { closeDb } from "../../../packages/core/src/db.mjs";
 import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { createQueue, createWorker, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
+import { ApifyClient } from "../../../packages/core/src/apify.mjs";
 import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
 import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
-import { calculateLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
+import { explainLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
 import {
   createCrawlerRun,
   createVoiceCallFromDispatch,
@@ -18,6 +19,7 @@ import {
   findBusinessVoiceContext,
   findExtractionJob,
   getEffectiveNebrijaSettings,
+  getTenantScoringRules,
   persistCrawledPage,
   recordProvenance,
   updateBusinessEnrichment,
@@ -31,6 +33,7 @@ import {
 } from "../../../packages/core/src/repositories.mjs";
 
 const firecrawl = new FirecrawlClient();
+const apify = new ApifyClient();
 const googlePlaces = new GooglePlacesClient();
 await ensureRuntimeSchema();
 
@@ -62,6 +65,7 @@ logger.info(
   {
     queues: Object.values(QUEUE_NAMES),
     firecrawlBaseUrl: config.firecrawl.baseUrl,
+    apifyMetaAdsEnabled: apify.enabled,
     crawlerProvider: config.crawler.provider
   },
   "worker started"
@@ -340,8 +344,10 @@ async function runBusinessCrawl(job) {
 async function runScoring(job) {
   const business = await findCallableBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
-  const score = calculateLeadScore(business);
-  await updateBusinessScore({ tenantId: business.tenant_id, businessId: business.id, score });
+  const scoring = await getTenantScoringRules({ tenantId: business.tenant_id });
+  const breakdown = explainLeadScore(business, scoring.rules);
+  const score = breakdown.score;
+  await updateBusinessScore({ tenantId: business.tenant_id, businessId: business.id, score, breakdown });
   const channel = nextOutreachChannel({
     score,
     phone_e164: business.phone_e164,
@@ -356,15 +362,19 @@ async function runScoring(job) {
 async function runAdsEnrichment(job) {
   const business = await findBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
-  const enrichment = await enrichBusinessAds({ business, firecrawl });
-  await updateBusinessAdsEnrichment({
+  const enrichment = await enrichBusinessAds({ business, firecrawl, apify: apify.enabled ? apify : null });
+  const updated = await updateBusinessAdsEnrichment({
     tenantId: business.tenant_id,
     businessId: business.id,
     enrichment
   });
+  if (updated) {
+    await queues.scoring.add("score", { tenantId: business.tenant_id, businessId: business.id });
+  }
   return {
     meta: enrichment.meta?.status,
     google: enrichment.google?.status,
+    funnel: enrichment.classification?.type,
     checkedAt: enrichment.checkedAt
   };
 }

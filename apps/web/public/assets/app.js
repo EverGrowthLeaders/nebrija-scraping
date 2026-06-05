@@ -94,12 +94,40 @@ const renderAdsBadge = (value, label) => {
   return `<span class="badge badge--zinc">${escape(label)} sin revisar</span>`;
 };
 
+const renderAdsEvidenceBadge = (value, label, evidence = {}) => {
+  if (value === true) return `<span class="badge badge--green">${escape(label)} activo</span>`;
+  if (value === false) return `<span class="badge badge--zinc">${escape(label)} sin señal</span>`;
+  if (evidence.status === "error") return `<span class="badge badge--burgundy">${escape(label)} error</span>`;
+  if (evidence.status === "unknown") return `<span class="badge badge--zinc">${escape(label)} sin señal fuerte</span>`;
+  return `<span class="badge badge--zinc">${escape(label)} pendiente</span>`;
+};
+
 const renderAdsState = (business) => `
   <div class="ads-badges">
     ${renderAdsBadge(business.ads_meta_active, "Meta")}
     ${renderAdsBadge(business.ads_google_active, "Google")}
   </div>
 `;
+
+const ADS_FUNNEL_LABELS = {
+  lead_generation: ["cyan", "Captación"],
+  ecommerce: ["gold", "Ecommerce"],
+  other: ["zinc", "Otro"],
+  unknown: ["zinc", "Sin clasificar"]
+};
+
+const renderAdsFunnelBadge = (type, confidence) => {
+  const [tone, label] = ADS_FUNNEL_LABELS[type] || ADS_FUNNEL_LABELS.unknown;
+  const suffix = confidence != null ? ` · ${Math.round(Number(confidence) * 100)}%` : "";
+  return `<span class="badge badge--${tone}">${escape(label)}${escape(suffix)}</span>`;
+};
+
+const renderListBadges = (lists = []) =>
+  lists?.length
+    ? `<div class="list-badges">${lists
+        .map((list) => `<span class="badge badge--${escape(list.color || "zinc")}">${escape(list.name)}</span>`)
+        .join("")}</div>`
+    : `<span class="faint">Sin lista</span>`;
 
 // ── HTTP ──────────────────────────────────────────────────
 async function api(path, options = {}) {
@@ -313,6 +341,9 @@ const routes = [
   { match: /^\/campaigns\/([^/]+)$/, render: renderCampaignDetail, key: "campaigns", title: "Campaña" },
   { match: /^\/leads$/, render: renderLeadsList, key: "leads", title: "Leads" },
   { match: /^\/leads\/([^/]+)$/, render: renderLeadDetail, key: "leads", title: "Lead" },
+  { match: /^\/lists$/, render: renderLists, key: "lists", title: "Listas" },
+  { match: /^\/lists\/([^/]+)$/, render: renderListDetail, key: "lists", title: "Lista" },
+  { match: /^\/scoring$/, render: renderScoring, key: "scoring", title: "Scoring" },
   { match: /^\/calls$/, render: renderCallsList, key: "calls", title: "Llamadas" },
   { match: /^\/calls\/([^/]+)$/, render: renderCallDetail, key: "calls", title: "Llamada" },
   { match: /^\/settings$/, render: renderSettings, key: "settings", title: "Settings" }
@@ -654,7 +685,14 @@ async function renderLeadsList({ search }) {
   const niche = search.get("niche") || "";
   const city = search.get("city") || "";
   const campaignId = search.get("campaignId") || "";
+  const listId = search.get("listId") || "";
+  const adsActive = search.get("adsActive") || "";
+  const adsFunnelType = search.get("adsFunnelType") || "";
   const term = search.get("search") || "";
+  const [leadLists, campaigns] = await Promise.all([
+    api("/api/lead-lists"),
+    api("/api/campaigns?limit=100")
+  ]);
 
   view.innerHTML = `
     <div class="row" style="margin-bottom:14px">
@@ -686,6 +724,32 @@ async function renderLeadsList({ search }) {
         </select>
         <input class="input" name="niche" placeholder="Nicho" value="${escape(niche)}" style="max-width:160px" />
         <input class="input" name="city" placeholder="Ciudad" value="${escape(city)}" style="max-width:140px" />
+        <select class="select" name="campaignId" style="max-width:220px">
+          <option value="">Todas las campañas</option>
+          ${(campaigns.rows || [])
+            .map((j) => `<option value="${escape(j.id)}" ${j.id === campaignId ? "selected" : ""}>${escape(j.niche)} · ${escape(j.city)}</option>`)
+            .join("")}
+        </select>
+        <select class="select" name="listId" style="max-width:200px">
+          <option value="">Todas las listas</option>
+          ${(leadLists.rows || [])
+            .map((list) => `<option value="${escape(list.id)}" ${list.id === listId ? "selected" : ""}>${escape(list.name)}</option>`)
+            .join("")}
+        </select>
+        <select class="select" name="adsActive" style="max-width:180px">
+          <option value="">Cualquier Ads</option>
+          <option value="any" ${adsActive === "any" ? "selected" : ""}>Ads activos</option>
+          <option value="meta" ${adsActive === "meta" ? "selected" : ""}>Meta activo</option>
+          <option value="google" ${adsActive === "google" ? "selected" : ""}>Google activo</option>
+          <option value="both" ${adsActive === "both" ? "selected" : ""}>Meta + Google</option>
+        </select>
+        <select class="select" name="adsFunnelType" style="max-width:200px">
+          <option value="">Cualquier funnel</option>
+          <option value="lead_generation" ${adsFunnelType === "lead_generation" ? "selected" : ""}>Captación</option>
+          <option value="ecommerce" ${adsFunnelType === "ecommerce" ? "selected" : ""}>Ecommerce</option>
+          <option value="other" ${adsFunnelType === "other" ? "selected" : ""}>Otro</option>
+          <option value="unknown" ${adsFunnelType === "unknown" ? "selected" : ""}>Sin clasificar</option>
+        </select>
         <button class="btn" type="submit">Filtrar</button>
         <a class="btn btn--ghost" href="#/leads">Reset</a>
       </div>
@@ -700,12 +764,14 @@ async function renderLeadsList({ search }) {
             <th>Web</th>
             <th>Teléfono</th>
             <th class="col-num">Score</th>
+            <th>Listas</th>
             <th>Ads</th>
+            <th>Funnel Ads</th>
             <th>Estado</th>
             <th>Actualizado</th>
           </tr>
         </thead>
-        <tbody data-bind="rows"><tr><td colspan="8" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
+        <tbody data-bind="rows"><tr><td colspan="10" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
       </table>
     </div>
   `;
@@ -725,13 +791,16 @@ async function renderLeadsList({ search }) {
   if (niche) params.set("niche", niche);
   if (city) params.set("city", city);
   if (campaignId) params.set("campaignId", campaignId);
+  if (listId) params.set("listId", listId);
+  if (adsActive) params.set("adsActive", adsActive);
+  if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
   if (term) params.set("search", term);
   params.set("limit", "100");
 
   const data = await api(`/api/businesses?${params.toString()}`);
   const tbody = $("[data-bind='rows']");
   if (!data.rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8">${emptyState(
+    tbody.innerHTML = `<tr><td colspan="10">${emptyState(
       "Sin resultados",
       "Ajusta los filtros o lanza una campaña."
     )}</td></tr>`;
@@ -746,7 +815,9 @@ async function renderLeadsList({ search }) {
         <td>${b.website ? `<span class="mono ellipsis" style="display:inline-block;max-width:220px">${escape(stripScheme(b.website))}</span>` : "<span class='faint'>—</span>"}</td>
         <td class="mono">${escape(b.phone_e164 || "—")}</td>
         <td class="col-num">${renderScore(b.score)}</td>
+        <td>${renderListBadges(b.lists || [])}</td>
         <td>${renderAdsState(b)}</td>
+        <td>${renderAdsFunnelBadge(b.ads_funnel_type || "unknown", b.ads_funnel_confidence)}</td>
         <td>${renderStatus(b.status)}</td>
         <td>${fmtRel(b.updated_at)}</td>
       </tr>`
@@ -762,7 +833,10 @@ function stripScheme(url) {
 // ── Lead detail ───────────────────────────────────────────
 async function renderLeadDetail({ params }) {
   const id = params[0];
-  const data = await api(`/api/businesses/${id}`);
+  const [data, leadLists] = await Promise.all([
+    api(`/api/businesses/${id}`),
+    api("/api/lead-lists")
+  ]);
   const b = data.business;
   setCurrentCrumb(b.name);
 
@@ -825,7 +899,32 @@ async function renderLeadDetail({ params }) {
           <div class="ads-panel">
             ${renderAdsDetail("Meta", b.ads_meta_active, b.ads_enrichment?.meta)}
             ${renderAdsDetail("Google", b.ads_google_active, b.ads_enrichment?.google)}
+            ${renderAdsFunnelDetail(b.ads_enrichment?.classification, b)}
           </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <h3>Listas</h3>
+            <button class="btn btn--sm" data-action="add-to-list" type="button">Añadir</button>
+          </div>
+          <div class="list-picker">
+            <select class="select" data-bind="lead-list-select">
+              <option value="">Selecciona lista</option>
+              ${(leadLists.rows || []).map((list) => `<option value="${escape(list.id)}">${escape(list.name)}</option>`).join("")}
+            </select>
+          </div>
+          <div data-bind="lead-lists" style="margin-top:10px">
+            ${renderLeadListMembership(data.lists || [], b.id)}
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card__head">
+            <h3>Breakdown scoring</h3>
+            ${renderScore(b.score)}
+          </div>
+          ${renderScoringBreakdown(b.scoring_breakdown)}
         </div>
 
         <div class="card">
@@ -911,6 +1010,64 @@ async function renderLeadDetail({ params }) {
   $("[data-action='lead-ads']", view).addEventListener("click", () => leadAction(b, "ads"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
   $("[data-action='save-scoring-notes']", view).addEventListener("click", () => saveScoringNotes(b.id));
+  $("[data-action='add-to-list']", view).addEventListener("click", () => addLeadToSelectedList(b.id));
+  $$("[data-action='remove-from-list']", view).forEach((button) =>
+    button.addEventListener("click", () => removeLeadFromList(button.dataset.listId, b.id))
+  );
+}
+
+function renderLeadListMembership(lists, businessId) {
+  if (!lists.length) return `<p class="muted" style="margin:0">Este lead todavía no está en ninguna lista.</p>`;
+  return `<div class="list">${lists
+    .map(
+      (list) => `
+      <div class="list__item" style="cursor:default">
+        <span class="badge badge--${escape(list.color || "zinc")}">${escape(list.name)}</span>
+        <div class="list__main"><div class="list__meta">Añadido ${fmtRel(list.added_at)}</div></div>
+        <button class="btn btn--sm btn--ghost" data-action="remove-from-list" data-list-id="${escape(list.id)}" type="button">Quitar</button>
+      </div>`
+    )
+    .join("")}</div>`;
+}
+
+function renderScoringBreakdown(breakdown = {}) {
+  const rules = breakdown?.matchedRules || [];
+  if (!rules.length) return `<p class="muted" style="margin:0">Sin reglas aplicadas todavía. Re-scorea el lead para generar detalle.</p>`;
+  return `<div class="score-breakdown">${rules
+    .map(
+      (rule) => `
+      <div class="score-breakdown__row">
+        <span>${escape(rule.label || rule.id)}</span>
+        <strong class="mono">${Number(rule.points) > 0 ? "+" : ""}${escape(rule.points)}</strong>
+      </div>`
+    )
+    .join("")}</div>`;
+}
+
+async function addLeadToSelectedList(businessId) {
+  const select = $("[data-bind='lead-list-select']", view);
+  const listId = select.value;
+  if (!listId) return toast("Selecciona una lista", "error");
+  try {
+    await api(`/api/lead-lists/${listId}/businesses`, {
+      method: "POST",
+      body: JSON.stringify({ businessId })
+    });
+    toast("Lead añadido a la lista", "ok");
+    await router();
+  } catch (err) {
+    toast(`No se pudo añadir (${err.message})`, "error");
+  }
+}
+
+async function removeLeadFromList(listId, businessId) {
+  try {
+    await api(`/api/lead-lists/${listId}/businesses/${businessId}`, { method: "DELETE" });
+    toast("Lead retirado de la lista", "ok");
+    await router();
+  } catch (err) {
+    toast(`No se pudo quitar (${err.message})`, "error");
+  }
 }
 
 async function leadAction(business, kind) {
@@ -946,18 +1103,177 @@ async function campaignAdsAction(campaignId) {
 }
 
 function renderAdsDetail(label, value, evidence = {}) {
+  const attempts = Array.isArray(evidence.attempts) ? evidence.attempts : [];
   return `
     <div class="ads-row">
-      <div>
-        <div class="ads-row__title">${escape(label)}</div>
-        <div class="ads-row__meta">${escape(evidence.reason || evidence.status || "pendiente")}${evidence.confidence != null ? ` · conf ${Math.round(Number(evidence.confidence) * 100)}%` : ""}</div>
+      <div class="ads-row__head">
+        <div>
+          <div class="ads-row__title">${escape(label)}</div>
+          <div class="ads-row__meta">${escape(adsReasonLabel(evidence.reason || evidence.status || "pendiente"))}${evidence.confidence != null ? ` · conf ${Math.round(Number(evidence.confidence) * 100)}%` : ""}</div>
+        </div>
+        <div class="ads-row__side">
+          ${renderAdsEvidenceBadge(value, label, evidence)}
+          ${evidence.sourceUrl ? `<a class="mini-link" href="${escape(evidence.sourceUrl)}" target="_blank" rel="noopener">fuente principal</a>` : ""}
+        </div>
       </div>
-      <div class="ads-row__side">
-        ${renderAdsBadge(value, label)}
-        ${evidence.sourceUrl ? `<a class="mini-link" href="${escape(evidence.sourceUrl)}" target="_blank" rel="noopener">fuente</a>` : ""}
+      ${renderAdsDiscovery(evidence)}
+      ${attempts.length ? `<div class="ads-signals">${attempts.slice(-8).map(renderAdsAttempt).join("")}</div>` : `<div class="ads-empty">Sin trazas guardadas todavía.</div>`}
+    </div>
+  `;
+}
+
+function renderAdsFunnelDetail(classification = {}, business = {}) {
+  const type = classification?.type || business.ads_funnel_type || "unknown";
+  const confidence = classification?.confidence ?? business.ads_funnel_confidence;
+  const signals = Array.isArray(classification?.signals) ? classification.signals : [];
+  const scores = classification?.scores || {};
+  const landingUrl = classification?.landingUrl || business.ads_funnel_landing_url;
+  return `
+    <div class="ads-row ads-row--funnel">
+      <div class="ads-row__head">
+        <div>
+          <div class="ads-row__title">Funnel Ads</div>
+          <div class="ads-row__meta">${escape(adsFunnelReasonLabel(classification?.reason || type))}${confidence != null ? ` · conf ${Math.round(Number(confidence) * 100)}%` : ""}</div>
+        </div>
+        <div class="ads-row__side">
+          ${renderAdsFunnelBadge(type, confidence)}
+          ${landingUrl ? `<a class="mini-link" href="${escape(landingUrl)}" target="_blank" rel="noopener">landing</a>` : ""}
+        </div>
+      </div>
+      ${renderAdsFunnelScores(scores)}
+      ${
+        signals.length
+          ? `<div class="ads-signals">${signals.slice(0, 8).map(renderAdsFunnelSignal).join("")}</div>`
+          : `<div class="ads-empty">Sin señales de landing guardadas todavía.</div>`
+      }
+    </div>
+  `;
+}
+
+function renderAdsFunnelScores(scores = {}) {
+  const items = [
+    ["lead_generation", "Captación", scores.lead_generation],
+    ["ecommerce", "Ecommerce", scores.ecommerce],
+    ["other", "Otro", scores.other]
+  ];
+  if (!items.some(([, , value]) => Number(value) > 0)) return "";
+  return `<div class="ads-funnel-scores">${items
+    .map(([key, label, value]) => `<span class="ads-funnel-score ads-funnel-score--${escape(key)}"><strong>${escape(label)}</strong><span>${escape(value ?? 0)}</span></span>`)
+    .join("")}</div>`;
+}
+
+function renderAdsFunnelSignal(signal = {}) {
+  const target = signal.target || "other";
+  return `
+    <div class="ads-signal ads-signal--${target === "lead_generation" || target === "ecommerce" ? "ok" : "unknown"}">
+      <div class="ads-signal__main">
+        <div class="ads-signal__title">${escape(signal.label || signal.id || "Señal")}</div>
+        <div class="ads-signal__meta">${escape(adsFunnelLabel(target))} · peso ${escape(signal.weight ?? 0)}${signal.snippet ? ` · ${escape(signal.snippet)}` : ""}</div>
       </div>
     </div>
   `;
+}
+
+function renderAdsDiscovery(evidence = {}) {
+  const discovery = evidence.socialDiscovery;
+  if (!discovery) return "";
+  if (discovery.status === "found") {
+    const socials = [
+      discovery.instagram ? `Instagram: ${stripScheme(discovery.instagram)}` : "",
+      discovery.facebook ? `Facebook: ${stripScheme(discovery.facebook)}` : ""
+    ].filter(Boolean).join(" · ");
+    return `<div class="ads-discovery">Social detectado en web · ${escape(socials)}</div>`;
+  }
+  if (discovery.status === "error") return `<div class="ads-discovery ads-discovery--warn">No se pudieron leer sociales de la web.</div>`;
+  return "";
+}
+
+function renderAdsAttempt(attempt = {}) {
+  const tone = attempt.active === true ? "ok" : attempt.status === "error" ? "error" : attempt.active === false ? "off" : "unknown";
+  const title = [adsProviderLabel(attempt.sourceProvider), adsStrategyLabel(attempt.strategy), attempt.country].filter(Boolean).join(" · ");
+  const meta = [
+    attempt.query ? `q=${attempt.query}` : "",
+    attempt.itemsSeen != null ? `${fmtNumber(attempt.itemsSeen)} item${Number(attempt.itemsSeen) === 1 ? "" : "s"}` : "",
+    attempt.total != null ? `total ${fmtNumber(attempt.total)}` : "",
+    attempt.samplePageName ? `page ${attempt.samplePageName}` : "",
+    Array.isArray(attempt.matchedFields) && attempt.matchedFields.length ? `match ${attempt.matchedFields.join("+")}` : ""
+  ].filter(Boolean).join(" · ");
+  return `
+    <div class="ads-signal ads-signal--${tone}">
+      <div class="ads-signal__main">
+        <div class="ads-signal__title">${escape(title || "Intento")}</div>
+        <div class="ads-signal__meta">${escape(adsReasonLabel(attempt.reason || attempt.status || "sin resultado"))}${attempt.confidence != null ? ` · conf ${Math.round(Number(attempt.confidence) * 100)}%` : ""}${meta ? ` · ${escape(meta)}` : ""}</div>
+      </div>
+      ${attempt.sourceUrl ? `<a class="mini-link" href="${escape(attempt.sourceUrl)}" target="_blank" rel="noopener">fuente</a>` : ""}
+    </div>
+  `;
+}
+
+function adsProviderLabel(provider) {
+  return {
+    firecrawl: "Firecrawl",
+    apify: "Apify"
+  }[provider] || provider || "";
+}
+
+function adsStrategyLabel(strategy) {
+  return {
+    direct_transparency: "Transparency directo",
+    search_transparency: "Transparency búsqueda",
+    website_domain: "Dominio",
+    website_domain_apify: "Dominio",
+    facebook_url: "Facebook URL",
+    facebook_handle: "Facebook handle",
+    facebook_page: "Facebook página",
+    facebook_page_apify: "Facebook página",
+    instagram_url: "Instagram URL",
+    instagram_handle: "Instagram handle",
+    instagram_handle_apify: "Instagram handle",
+    instagram_account: "Instagram cuenta",
+    business_name_city: "Nombre + ciudad",
+    business_name: "Nombre",
+    business_name_apify: "Nombre",
+    website_brand: "Marca web"
+  }[strategy] || strategy || "";
+}
+
+function adsReasonLabel(reason) {
+  return {
+    active_ad_library_copy: "Texto activo en Ad Library",
+    apify_active_ad_matched: "Anuncio activo verificado",
+    apify_active_items_not_matched: "Items activos sin match del lead",
+    apify_error: "Error en Apify",
+    apify_no_active_items: "Apify sin anuncios activos",
+    creative_id_found: "Creative ID encontrado",
+    generic_ad_library_copy: "Texto genérico de Ad Library",
+    meta_library_id_found: "Library ID encontrado",
+    negative_copy: "Fuente indica sin anuncios",
+    no_meta_probe_matched: "Sin query Meta útil",
+    no_strong_signal: "Sin señal fuerte",
+    recent_last_shown_date: "Fecha reciente detectada"
+  }[reason] || reason || "Pendiente";
+}
+
+function adsFunnelLabel(type) {
+  return {
+    lead_generation: "Captación",
+    ecommerce: "Ecommerce",
+    other: "Otro",
+    unknown: "Sin clasificar"
+  }[type] || type || "Sin clasificar";
+}
+
+function adsFunnelReasonLabel(reason) {
+  return {
+    ecommerce_signals_won: "Señales de compra y catálogo",
+    firecrawl_client_missing: "Firecrawl no disponible",
+    insufficient_campaign_intent_signal: "Señal insuficiente",
+    lead_generation_signals_won: "Señales de captación",
+    lead_specific_contact_page: "Contacto con intención específica",
+    no_active_ads: "Sin Ads activos verificados",
+    no_landing_page_classified: "Landing no clasificada",
+    unknown: "Sin clasificar"
+  }[reason] || adsFunnelLabel(reason);
 }
 
 function renderCustomFields(fields = {}) {
@@ -985,6 +1301,222 @@ async function saveScoringNotes(businessId) {
     toast("Notas guardadas", "ok");
   } catch (err) {
     toast(`No se pudieron guardar las notas (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+// ── Lists ────────────────────────────────────────────────
+async function renderLists() {
+  setCurrentCrumb("Manual");
+  view.innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      <div class="grow">
+        <h1 class="headline">Listas</h1>
+        <p class="subhead">Agrupa leads manualmente sin sacarlos de sus campañas.</p>
+      </div>
+      <button class="btn btn--primary" data-action="new-list" type="button">
+        <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
+        Nueva lista
+      </button>
+    </div>
+    <div data-bind="lists-grid" class="lists-grid">${rowSkeleton(4)}</div>
+  `;
+  $("[data-action='new-list']", view).addEventListener("click", openListModal);
+  const data = await api("/api/lead-lists");
+  const host = $("[data-bind='lists-grid']", view);
+  host.innerHTML = data.rows.length
+    ? data.rows.map(renderLeadListCard).join("")
+    : emptyState("Sin listas", "Crea listas para separar leads por intención, cliente o prioridad.", `<button class="btn btn--primary" data-action="new-list">Nueva lista</button>`);
+  $$("[data-action='new-list']", host).forEach((button) => button.addEventListener("click", openListModal));
+}
+
+function renderLeadListCard(list) {
+  return `
+    <a class="list-card list-card--${escape(list.color || "gold")}" href="#/lists/${escape(list.id)}">
+      <div class="list-card__top">
+        <span class="badge badge--${escape(list.color || "gold")}">${escape(list.color || "gold")}</span>
+        <span class="mono faint">${fmtRel(list.created_at)}</span>
+      </div>
+      <h3>${escape(list.name)}</h3>
+      <p>${escape(list.description || "Lista manual de leads.")}</p>
+      <div class="list-card__count">${fmtNumber(list.leads_count)} <span>leads</span></div>
+    </a>
+  `;
+}
+
+async function renderListDetail({ params }) {
+  const id = params[0];
+  const [{ list }, leads] = await Promise.all([
+    api(`/api/lead-lists/${id}`),
+    api(`/api/businesses?listId=${encodeURIComponent(id)}&limit=100`)
+  ]);
+  setCurrentCrumb(list.name);
+  view.innerHTML = `
+    <a class="back-link" href="#/lists">← Volver a listas</a>
+    <div class="row" style="margin-bottom:14px">
+      <div class="grow">
+        <h1 class="headline">${escape(list.name)}</h1>
+        <p class="subhead">${escape(list.description || "Lista manual")} · ${fmtNumber(list.leads_count)} leads</p>
+      </div>
+      <a class="btn" href="#/leads?listId=${encodeURIComponent(list.id)}">Ver en Leads</a>
+    </div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead><tr><th>Lead</th><th>Ciudad / Nicho</th><th>Score</th><th>Ads</th><th>Funnel Ads</th><th>Estado</th><th>Actualizado</th></tr></thead>
+        <tbody data-bind="rows">
+          ${
+            leads.rows.length
+              ? leads.rows
+                  .map(
+                    (b) => `
+            <tr data-href="#/leads/${escape(b.id)}">
+              <td class="cell-primary">${escape(b.name)}</td>
+              <td>${escape(b.city || "—")} <span class="muted">·</span> ${escape(b.niche || "—")}</td>
+              <td>${renderScore(b.score)}</td>
+              <td>${renderAdsState(b)}</td>
+              <td>${renderAdsFunnelBadge(b.ads_funnel_type || "unknown", b.ads_funnel_confidence)}</td>
+              <td>${renderStatus(b.status)}</td>
+              <td>${fmtRel(b.updated_at)}</td>
+            </tr>`
+                  )
+                  .join("")
+              : `<tr><td colspan="7">${emptyState("Lista vacía", "Añade leads desde la ficha de cada lead.")}</td></tr>`
+          }
+        </tbody>
+      </table>
+    </div>
+  `;
+  bindRowNav(view);
+}
+
+function openListModal() {
+  const form = document.createElement("form");
+  form.innerHTML = `
+    <div class="field"><label>Nombre</label><input class="input" name="name" required placeholder="Prioridad Madrid" /></div>
+    <div class="field"><label>Descripción</label><textarea class="textarea" name="description" placeholder="Criterio interno, cliente, vertical o siguiente acción"></textarea></div>
+    <div class="field">
+      <label>Color</label>
+      <select class="select" name="color">
+        <option value="gold">Gold</option>
+        <option value="green">Green</option>
+        <option value="cyan">Cyan</option>
+        <option value="burgundy">Burgundy</option>
+        <option value="zinc">Zinc</option>
+      </select>
+    </div>
+  `;
+  const footer = document.createDocumentFragment();
+  const cancel = btn("Cancelar", "ghost");
+  const submit = btn("Crear lista", "primary");
+  cancel.addEventListener("click", closeModal);
+  submit.addEventListener("click", async () => {
+    const data = Object.fromEntries(new FormData(form).entries());
+    if (!data.name) return toast("El nombre es obligatorio", "error");
+    submit.disabled = true;
+    try {
+      const res = await api("/api/lead-lists", { method: "POST", body: JSON.stringify(data) });
+      toast("Lista creada", "ok");
+      closeModal();
+      location.hash = `#/lists/${res.list.id}`;
+    } catch (err) {
+      toast(`No se pudo crear (${err.message})`, "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  footer.append(cancel, submit);
+  openModal({ title: "Nueva lista", body: form, footer });
+}
+
+// ── Scoring ──────────────────────────────────────────────
+async function renderScoring() {
+  setCurrentCrumb("Reglas");
+  view.innerHTML = `
+    <div class="row" style="margin-bottom:14px">
+      <div class="grow">
+        <h1 class="headline">Scoring</h1>
+        <p class="subhead">Edita cuánto pesa cada señal. Ads ya puede sumar al score; chatbot queda fuera del cálculo por defecto.</p>
+      </div>
+      <button class="btn" data-action="rescore-all" type="button">Re-scorear todos</button>
+      <button class="btn btn--primary" data-action="save-scoring-rules" type="button">Guardar reglas</button>
+    </div>
+    <div class="scoring-layout">
+      <form class="rules-panel" data-bind="rules">${rowSkeleton(6)}</form>
+      <aside class="scoring-aside">
+        <div class="card">
+          <h3>Cómo se aplica</h3>
+          <p class="muted" style="margin:0;line-height:1.6">Las reglas se evalúan en orden. Rating, reseñas y presencia web usan grupos excluyentes para no sumar dos veces el mismo concepto. El resultado se limita a 100.</p>
+        </div>
+        <div class="card">
+          <h3>Canal automático</h3>
+          <dl class="kv">
+            <dt>70+</dt><dd>Llamada si hay teléfono</dd>
+            <dt>50-69</dt><dd>Llamada y seguimiento</dd>
+            <dt>Email</dt><dd>Si no hay teléfono y sí email</dd>
+          </dl>
+        </div>
+      </aside>
+    </div>
+  `;
+  const data = await api("/api/scoring/rules");
+  renderScoringRules(data.rules || []);
+  $("[data-action='save-scoring-rules']", view).addEventListener("click", saveScoringRules);
+  $("[data-action='rescore-all']", view).addEventListener("click", rescoreAllLeads);
+}
+
+function renderScoringRules(rules) {
+  const host = $("[data-bind='rules']", view);
+  host.innerHTML = rules
+    .map(
+      (rule) => `
+      <label class="rule-row" data-rule-id="${escape(rule.id)}">
+        <input class="rule-row__toggle" type="checkbox" name="${escape(rule.id)}:enabled" ${rule.enabled ? "checked" : ""} />
+        <span class="rule-row__main">
+          <strong>${escape(rule.label)}</strong>
+          <span>${escape(rule.description || rule.condition)}</span>
+        </span>
+        <span class="rule-row__points">
+          <input class="input mono" type="number" name="${escape(rule.id)}:points" value="${escape(rule.points)}" min="-100" max="100" />
+          <span>pts</span>
+        </span>
+        <input type="hidden" name="${escape(rule.id)}:payload" value="${escape(JSON.stringify(rule))}" />
+      </label>`
+    )
+    .join("");
+}
+
+async function saveScoringRules() {
+  const button = $("[data-action='save-scoring-rules']", view);
+  const form = $("[data-bind='rules']", view);
+  const rules = $$("[data-rule-id]", form).map((row) => {
+    const id = row.dataset.ruleId;
+    const payload = JSON.parse($(`input[name='${CSS.escape(id)}:payload']`, row).value);
+    return {
+      ...payload,
+      enabled: $(`input[name='${CSS.escape(id)}:enabled']`, row).checked,
+      points: Number($(`input[name='${CSS.escape(id)}:points']`, row).value)
+    };
+  });
+  button.disabled = true;
+  try {
+    await api("/api/scoring/rules", { method: "PATCH", body: JSON.stringify({ rules }) });
+    toast("Reglas guardadas", "ok");
+  } catch (err) {
+    toast(`No se pudo guardar scoring (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function rescoreAllLeads() {
+  const button = $("[data-action='rescore-all']", view);
+  button.disabled = true;
+  try {
+    const result = await api("/api/scoring/rescore", { method: "POST", body: "{}" });
+    toast(`${fmtNumber(result.queued)} leads enviados a scoring`, "ok");
+  } catch (err) {
+    toast(`No se pudo re-scorear (${err.message})`, "error");
   } finally {
     button.disabled = false;
   }
@@ -1399,7 +1931,11 @@ async function saveCampaignVoiceSettings(event, campaignId) {
   }
 }
 
-function openLeadModal() {
+async function openLeadModal() {
+  let leadLists = { rows: [] };
+  try {
+    leadLists = await api("/api/lead-lists");
+  } catch {}
   const form = document.createElement("form");
   form.innerHTML = `
     <div class="field"><label>Nombre</label><input class="input" name="name" required placeholder="Clínica Demo" /></div>
@@ -1410,6 +1946,12 @@ function openLeadModal() {
     <div class="row">
       <div class="field"><label>Ciudad</label><input class="input" name="city" placeholder="Madrid" /></div>
       <div class="field"><label>Nicho</label><input class="input" name="niche" placeholder="clínica dental" /></div>
+    </div>
+    <div class="field"><label>Lista</label>
+      <select class="select" name="listId">
+        <option value="">Sin lista inicial</option>
+        ${(leadLists.rows || []).map((list) => `<option value="${escape(list.id)}">${escape(list.name)}</option>`).join("")}
+      </select>
     </div>
     <div class="field"><label>Dirección</label><input class="input" name="address" /></div>
   `;
@@ -1426,6 +1968,12 @@ function openLeadModal() {
     submit.disabled = true;
     try {
       const res = await api("/businesses", { method: "POST", body: JSON.stringify(data) });
+      if (data.listId) {
+        await api(`/api/lead-lists/${data.listId}/businesses`, {
+          method: "POST",
+          body: JSON.stringify({ businessId: res.business.id })
+        });
+      }
       toast("Lead importado", "ok");
       closeModal();
       location.hash = `#/leads/${res.business.id}`;

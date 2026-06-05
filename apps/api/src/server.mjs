@@ -22,9 +22,12 @@ import {
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import {
   DEFAULT_TENANT_ID,
+  addBusinessToLeadList,
+  createLeadList,
   createExtractionJob,
   createManualBusiness,
   createUserSession,
+  findLeadList,
   findBusinessById,
   findBusinessDetail,
   findExtractionJobDetail,
@@ -33,16 +36,22 @@ import {
   getEffectiveNebrijaSettings,
   getDashboardMetrics,
   getTenantNebrijaSettings,
+  getTenantScoringRules,
   listBusinessIdsForCampaign,
+  listBusinessIdsForTenant,
   listBusinesses,
   listCampaignLeadsForExport,
   listExtractionJobs,
+  listLeadLists,
   listVoiceCalls,
   persistNebrijaWebhookEvent,
+  removeBusinessFromLeadList,
   revokeSession,
   updateBusinessFromCallReport,
   updateBusinessScoringNotes,
   updateExtractionJobVoiceSettings,
+  updateLeadList,
+  upsertTenantScoringRules,
   upsertTenantNebrijaSettings,
   upsertContact,
   upsertGoogleUser,
@@ -205,6 +214,98 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { metrics });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/scoring/rules") {
+      const scoring = await getTenantScoringRules({ tenantId: auth.tenantId });
+      return sendJson(res, 200, scoring);
+    }
+
+    if (req.method === "PATCH" && url.pathname === "/api/scoring/rules") {
+      const { json } = await readJson(req);
+      const scoring = await upsertTenantScoringRules({
+        tenantId: auth.tenantId,
+        rules: json.rules || []
+      });
+      return sendJson(res, 200, scoring);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/scoring/rescore") {
+      const businessIds = await listBusinessIdsForTenant({
+        tenantId: auth.tenantId,
+        limit: Number(url.searchParams.get("limit")) || 5000
+      });
+      const queueJobs = [];
+      for (const businessId of businessIds) {
+        queueJobs.push(await queues.scoring.add("score", { tenantId: auth.tenantId, businessId }));
+      }
+      return sendJson(res, 202, {
+        queued: queueJobs.length,
+        queue: QUEUE_NAMES.scoring,
+        jobIds: queueJobs.map((queueJob) => queueJob.id)
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/lead-lists") {
+      const rows = await listLeadLists({ tenantId: auth.tenantId });
+      return sendJson(res, 200, { rows, total: rows.length });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/lead-lists") {
+      const { json } = await readJson(req);
+      validateRequired(json, ["name"]);
+      const list = await createLeadList({
+        tenantId: auth.tenantId,
+        name: json.name,
+        description: json.description,
+        color: json.color
+      });
+      return sendJson(res, 201, { list });
+    }
+
+    const leadListMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)$/);
+    if (req.method === "GET" && leadListMatch) {
+      const list = await findLeadList(leadListMatch[1], { tenantId: auth.tenantId });
+      if (!list) return sendJson(res, 404, { error: "lead_list_not_found" });
+      return sendJson(res, 200, { list });
+    }
+
+    if (req.method === "PATCH" && leadListMatch) {
+      const { json } = await readJson(req);
+      const list = await updateLeadList({
+        tenantId: auth.tenantId,
+        id: leadListMatch[1],
+        name: json.name,
+        description: json.description ?? null,
+        color: json.color
+      });
+      if (!list) return sendJson(res, 404, { error: "lead_list_not_found" });
+      return sendJson(res, 200, { list });
+    }
+
+    const leadListBusinessMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)\/businesses$/);
+    if (req.method === "POST" && leadListBusinessMatch) {
+      const { json } = await readJson(req);
+      const businessId = json.businessId || json.business_id;
+      if (!businessId) return sendJson(res, 400, { error: "missing_required_fields", fields: ["businessId"] });
+      const member = await addBusinessToLeadList({
+        tenantId: auth.tenantId,
+        listId: leadListBusinessMatch[1],
+        businessId
+      });
+      if (!member) return sendJson(res, 404, { error: "lead_or_list_not_found" });
+      return sendJson(res, 201, { member });
+    }
+
+    const leadListBusinessDeleteMatch = matchPath(url.pathname, /^\/api\/lead-lists\/([^/]+)\/businesses\/([^/]+)$/);
+    if (req.method === "DELETE" && leadListBusinessDeleteMatch) {
+      const member = await removeBusinessFromLeadList({
+        tenantId: auth.tenantId,
+        listId: leadListBusinessDeleteMatch[1],
+        businessId: leadListBusinessDeleteMatch[2]
+      });
+      if (!member) return sendJson(res, 404, { error: "lead_or_list_not_found" });
+      return sendJson(res, 200, { ok: true });
+    }
+
     if (req.method === "POST" && url.pathname === "/api/imports/leads/preview") {
       const { json } = await readJson(req);
       const preview = previewLeadImport({
@@ -303,7 +404,10 @@ const server = http.createServer(async (req, res) => {
         niche: url.searchParams.get("niche") || undefined,
         city: url.searchParams.get("city") || undefined,
         search: url.searchParams.get("search") || undefined,
-        extractionJobId: url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined
+        extractionJobId: url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined,
+        listId: url.searchParams.get("listId") || undefined,
+        adsActive: url.searchParams.get("adsActive") || undefined,
+        adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined
       });
       return sendJson(res, 200, result);
     }

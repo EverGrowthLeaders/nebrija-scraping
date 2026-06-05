@@ -17,6 +17,7 @@ import { buildVariableValues, defaultVariableMap } from "../packages/core/src/le
 import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../packages/core/src/leadImport.mjs";
 import { buildMetaAdProbes, buildMetaAdsLibraryUrl, discoverSocialsForAds, enrichBusinessAds, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
+import { classifyAdsLandingIntent, classifyLandingPage, extractLandingUrlsFromText } from "../packages/core/src/adsLandingClassifier.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -320,6 +321,77 @@ test("Meta active inference stores matching strategy and query evidence", () => 
   assert.equal(result.confidence, 0.88);
 });
 
+test("classifies lead-generation ad landings from forms, CRM and CTA copy", async () => {
+  const firecrawl = {
+    async scrape(url) {
+      assert.equal(url, "https://clinica.example/landing-presupuesto");
+      return {
+        markdown: "Solicita presupuesto. Agenda una consulta gratuita y te llamamos hoy.",
+        html: '<script src="https://js.hsforms.net/forms/v2.js"></script><form><input type="email"></form>',
+        links: []
+      };
+    }
+  };
+
+  const classification = await classifyAdsLandingIntent({
+    business: { website: "https://clinica.example" },
+    enrichment: {
+      meta: {
+        active: true,
+        sourceProvider: "apify",
+        landingUrls: ["https://clinica.example/landing-presupuesto?utm_source=facebook"]
+      }
+    },
+    firecrawl,
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(classification.type, "lead_generation");
+  assert.equal(classification.landingUrl, "https://clinica.example/landing-presupuesto");
+  assert.ok(classification.signals.some((signal) => signal.id === "lead_form_integration"));
+  assert.ok(classification.signals.some((signal) => signal.id === "lead_generation_copy"));
+});
+
+test("classifies ecommerce ad landings from catalog and checkout signals", () => {
+  const result = classifyLandingPage({
+    url: "https://shop.example/products/sudadera-premium",
+    page: {
+      markdown: "Sudadera premium. Precio 59,90 €. Envio gratis. Comprar ahora.",
+      html: '<form class="product-form"><button name="add-to-cart">Añadir al carrito</button><script>window.ShopifyAnalytics={}</script></form>',
+      links: [{ url: "https://shop.example/cart", text: "Carrito" }]
+    },
+    business: { website: "https://shop.example" }
+  });
+
+  assert.equal(result.type, "ecommerce");
+  assert.ok(result.scores.ecommerce > result.scores.lead_generation);
+  assert.ok(result.signals.some((signal) => signal.id === "ecommerce_platform"));
+});
+
+test("does not treat generic contact pages as lead-generation landings", () => {
+  const result = classifyLandingPage({
+    url: "https://bufete.example/contacto",
+    page: {
+      markdown: "Contacto. Nombre, email y mensaje.",
+      html: "<form><input name='email'><textarea name='mensaje'></textarea></form>",
+      links: []
+    },
+    business: { website: "https://bufete.example" }
+  });
+
+  assert.notEqual(result.type, "lead_generation");
+  assert.equal(result.genericContactPage, true);
+});
+
+test("extracts landing URLs from escaped ad snapshots and strips tracking noise", () => {
+  const urls = extractLandingUrlsFromText(
+    'caption":"https:\\/\\/disownedfactory.com\\/sudaderas-para-grupos\\/?utm_source=facebook&fbclid=abc","ad":"https://facebook.com/ads/library/?id=1"',
+    { business: { website: "https://disownedfactory.com" } }
+  );
+
+  assert.deepEqual(urls, ["https://disownedfactory.com/sudaderas-para-grupos/"]);
+});
+
 test("discovers social profiles from business website for Meta ad probes", async () => {
   const firecrawl = {
     async scrape(url) {
@@ -384,4 +456,117 @@ test("enriches Meta ads from discovered Instagram and retries all-country librar
   assert.equal(enrichment.meta.socialDiscovery.instagram, "http://www.instagram.com/disowned_factory");
   assert.ok(calls.some((url) => url.includes("country=ES")));
   assert.ok(calls.some((url) => url.includes("country=ALL")));
+});
+
+test("falls back to Apify for matched active Meta ads only", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://disownedfactory.com") {
+        return {
+          markdown: "[Instagram](https://www.instagram.com/disowned_factory)",
+          html: "",
+          links: [{ url: "https://www.instagram.com/disowned_factory" }]
+        };
+      }
+      if (url.includes("adstransparency.google.com")) {
+        return { markdown: "CR123456789 first shown 2026-06-04", html: "" };
+      }
+      return { markdown: "Ad Library", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary(input) {
+      assert.equal(input.limitPerSource, 1);
+      assert.equal(input.count, 10);
+      assert.equal(input.scrapeAdDetails, false);
+      assert.equal(input["scrapePageAds.activeStatus"], "active");
+      assert.match(input.urls[0].url, /%40disowned_factory/);
+      return [
+        {
+          ad_archive_id: "1919274085400585",
+          is_active: true,
+          page_name: "Disowned Factory",
+          total: 13,
+          ad_library_url: "https://www.facebook.com/ads/library/?id=1919274085400585",
+          snapshot: {
+            page_name: "Disowned Factory",
+            caption: "https://disownedfactory.com/sudaderas-para-grupos/",
+            body: { text: "Escríbenos @disowned_factory" },
+            cards: [{ link_url: "https://disownedfactory.com/sudaderas-personalizadas/" }]
+          },
+          start_date: 1780642800
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Disowned Factory", website: "https://disownedfactory.com", city: "Madrid" },
+    firecrawl,
+    apify,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.reason, "apify_active_ad_matched");
+  assert.equal(enrichment.meta.sourceProvider, "apify");
+  assert.deepEqual(enrichment.meta.matchedFields, ["domain", "page_name", "instagram_handle"]);
+  assert.equal(enrichment.meta.adArchiveId, "1919274085400585");
+  assert.deepEqual(enrichment.meta.landingUrls, [
+    "https://disownedfactory.com/sudaderas-para-grupos/",
+    "https://disownedfactory.com/sudaderas-personalizadas/"
+  ]);
+  assert.ok(enrichment.meta.attempts.some((attempt) => attempt.sourceProvider === "apify" && attempt.active === true));
+  assert.ok(enrichment.google.attempts.length >= 1);
+});
+
+test("ignores active Apify Meta ads that do not match the business", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://disownedfactory.com") {
+        return { markdown: "", html: "", links: [{ url: "https://www.instagram.com/disowned_factory" }] };
+      }
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          ad_archive_id: "890683230705549",
+          is_active: true,
+          page_name: "DT Lite",
+          total: 13,
+          ad_library_url: "https://www.facebook.com/ads/library/?id=890683230705549",
+          snapshot: {
+            page_name: "DT Lite",
+            caption: "play.google.com",
+            body: { text: "A story where someone is disowned by family" }
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Disowned Factory", website: "https://disownedfactory.com", city: "Madrid" },
+    firecrawl,
+    apify,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, null);
+  assert.equal(enrichment.meta.reason, "apify_active_items_not_matched");
+  assert.equal(enrichment.meta.itemsSeen, 1);
+  assert.equal(enrichment.meta.samplePageName, "DT Lite");
 });

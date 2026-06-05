@@ -115,6 +115,7 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `FIRECRAWL_BASE_URL`
 - `FIRECRAWL_API_KEY`
+- `APIFY_API_KEY` opcional; fallback de bajo consumo para validar Meta Ads cuando la Ad Library bloquea Firecrawl
 - `GOOGLE_MAPS_API_KEY`
 - `NEBRIJA_API_KEY`
 - `NEBRIJA_ASSISTANT_ID`

@@ -1,15 +1,30 @@
+import { classifyAdsLandingIntent, extractLandingUrlsFromText } from "./adsLandingClassifier.mjs";
+
 const DEFAULT_COUNTRY = "ES";
 
-export async function enrichBusinessAds({ business, firecrawl, country = DEFAULT_COUNTRY, now = new Date() }) {
+export async function enrichBusinessAds({ business, firecrawl, apify, country = DEFAULT_COUNTRY, now = new Date() }) {
   if (!firecrawl) throw new Error("firecrawl_client_required");
   const socialDiscovery = await discoverSocialsForAds({ business, firecrawl });
   const enrichedBusiness = mergeDiscoveredSocials(business, socialDiscovery);
-  const meta = await inspectMetaAds({ business: enrichedBusiness, firecrawl, country, now, socialDiscovery });
+  const firecrawlMeta = await inspectMetaAds({ business: enrichedBusiness, firecrawl, country, now, socialDiscovery });
+  const meta = firecrawlMeta.active === true || !apify
+    ? firecrawlMeta
+    : mergeMetaResults(
+        firecrawlMeta,
+        await inspectMetaAdsWithApify({ business: enrichedBusiness, apify, country, now, socialDiscovery })
+      );
   const google = await inspectGoogleAds({ business, firecrawl, country, now });
+  const classification = await classifyAdsLandingIntent({
+    business: enrichedBusiness,
+    enrichment: { meta, google },
+    firecrawl,
+    now
+  });
   return {
     checkedAt: now.toISOString(),
     meta,
-    google
+    google,
+    classification
   };
 }
 
@@ -45,7 +60,7 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
     "sin anuncios",
     "no hay anuncios"
   ].some((phrase) => normalized.includes(normalizeText(phrase)));
-  if (negative) return evidence({ provider, status: "inactive", active: false, confidence: 0.72, sourceUrl, reason: "negative_copy" });
+  if (negative) return evidence({ provider, status: "inactive", active: false, confidence: 0.72, sourceUrl, reason: "negative_copy", context });
 
   const recentDate = latestDateWithin(text, now, 45);
   const hasMetaLibraryId = /\blibrary\s+id\s*[:#]?\s*\d{6,}\b/i.test(text) || /"ad_archive_id"\s*:\s*"?\d{6,}"?/i.test(text);
@@ -82,7 +97,8 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
       confidence: recentDate ? 0.84 : 0.68,
       sourceUrl,
       reason: recentDate ? "recent_last_shown_date" : "creative_id_found",
-      latestDetectedDate: recentDate
+      latestDetectedDate: recentDate,
+      context
     });
   }
   if (provider === "meta" && (hasActiveCopy || hasMetaLibraryId) && !normalized.includes("0 results")) {
@@ -97,9 +113,9 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
     });
   }
   if (hasActiveCopy) {
-    return evidence({ provider, status: "unknown", active: null, confidence: 0.45, sourceUrl, reason: "generic_ad_library_copy" });
+    return evidence({ provider, status: "unknown", active: null, confidence: 0.45, sourceUrl, reason: "generic_ad_library_copy", context });
   }
-  return evidence({ provider, status: "unknown", active: null, confidence: 0.2, sourceUrl, reason: "no_strong_signal" });
+  return evidence({ provider, status: "unknown", active: null, confidence: 0.2, sourceUrl, reason: "no_strong_signal", context });
 }
 
 export async function discoverSocialsForAds({ business = {}, firecrawl }) {
@@ -135,23 +151,25 @@ async function inspectMetaAds({ business, firecrawl, country, now, socialDiscove
 
   for (const metaCountry of countries) {
     for (const probe of probes) {
-      const context = { ...probe, country: metaCountry };
+      const context = { ...probe, country: metaCountry, sourceProvider: "firecrawl" };
       const url = buildMetaAdsLibraryUrl({ query: probe.query, country: metaCountry, searchType: probe.searchType });
       try {
-        const page = await firecrawl.scrape(url, {
-          formats: ["markdown", "html"],
-          onlyMainContent: false,
-          waitFor: 5000
-        });
-        const result = inferAdsActivity({
-          provider: "meta",
-          text: pageText(page),
-          now,
-          sourceUrl: url,
-          context
-        });
-        attempts.push(metaAttempt(context, result, url));
-        fallback = betterMetaFallback(fallback, result);
+      const page = await firecrawl.scrape(url, {
+        formats: ["markdown", "html"],
+        onlyMainContent: false,
+        waitFor: 5000
+      });
+      const text = pageText(page);
+      const landingUrls = extractLandingUrlsFromText(text, { business });
+      const result = inferAdsActivity({
+        provider: "meta",
+        text,
+        now,
+        sourceUrl: url,
+        context: { ...context, landingUrls }
+      });
+      attempts.push(metaAttempt(context, result, url));
+      fallback = betterMetaFallback(fallback, result);
         if (result.active === true) return withAttempts(result, attempts, socialDiscovery);
       } catch (error) {
         const result = evidence({
@@ -180,6 +198,7 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
   const domain = extractDomain(business.website);
   const primaryUrl = buildGoogleAdsTransparencyUrl({ domain, country });
   const candidates = [primaryUrl];
+  const attempts = [];
 
   try {
     if (domain) {
@@ -188,32 +207,117 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
         if (result.url?.includes("adstransparency.google.com/advertiser/")) candidates.push(result.url);
       }
     }
-  } catch {
-    // Search is a fallback only; the direct Transparency Center scrape below still runs.
+  } catch (error) {
+    attempts.push(adAttempt(
+      { provider: "google", strategy: "search_transparency", query: domain, sourceProvider: "firecrawl" },
+      evidence({
+        provider: "google",
+        status: "error",
+        active: null,
+        confidence: 0,
+        error: error.message,
+        context: { strategy: "search_transparency", query: domain, sourceProvider: "firecrawl" }
+      }),
+      null
+    ));
   }
 
   for (const url of unique(candidates)) {
+    const context = {
+      strategy: url === primaryUrl ? "direct_transparency" : "search_transparency",
+      query: domain,
+      country,
+      sourceProvider: "firecrawl"
+    };
     try {
       const page = await firecrawl.scrape(url, {
         formats: ["markdown", "html"],
         onlyMainContent: false,
         waitFor: 5000
       });
+      const text = pageText(page);
+      const landingUrls = extractLandingUrlsFromText(text, { business });
       const result = inferAdsActivity({
         provider: "google",
-        text: pageText(page),
+        text,
         now,
-        sourceUrl: url
+        sourceUrl: url,
+        context: { ...context, landingUrls }
       });
-      if (result.active || result.status === "inactive") return result;
+      attempts.push(adAttempt(context, result, url));
+      if (result.active || result.status === "inactive") return withAttempts(result, attempts);
     } catch (error) {
+      const result = evidence({
+        provider: "google",
+        status: "error",
+        active: null,
+        confidence: 0,
+        sourceUrl: url,
+        error: error.message,
+        context
+      });
+      attempts.push(adAttempt(context, result, url));
       if (url === candidates[candidates.length - 1]) {
-        return evidence({ provider: "google", status: "error", active: null, confidence: 0, sourceUrl: url, error: error.message });
+        return withAttempts(result, attempts);
       }
     }
   }
 
-  return evidence({ provider: "google", status: "unknown", active: null, confidence: 0.2, sourceUrl: primaryUrl, reason: "no_strong_signal" });
+  return withAttempts(
+    evidence({
+      provider: "google",
+      status: "unknown",
+      active: null,
+      confidence: 0.2,
+      sourceUrl: primaryUrl,
+      reason: "no_strong_signal",
+      context: { strategy: "direct_transparency", query: domain, country, sourceProvider: "firecrawl" }
+    }),
+    attempts
+  );
+}
+
+async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery }) {
+  const sources = buildApifyMetaSources(business, country);
+  const attempts = [];
+  let fallback = null;
+
+  for (const source of sources) {
+    try {
+      const items = await apify.runFacebookAdsLibrary(buildApifyMetaInput(source, apify));
+      const analyzed = inferApifyMetaActivity({ items, business, source, now });
+      attempts.push(apifyAttempt(source, analyzed, items));
+      fallback = betterMetaFallback(fallback, analyzed);
+      if (analyzed.active === true) return withAttempts(analyzed, attempts, socialDiscovery);
+    } catch (error) {
+      const result = evidence({
+        provider: "meta",
+        status: "error",
+        active: null,
+        confidence: 0,
+        sourceUrl: source.sourceUrl,
+        reason: "apify_error",
+        error: error.message,
+        context: source
+      });
+      attempts.push(apifyAttempt(source, result, []));
+      fallback = betterMetaFallback(fallback, result);
+    }
+  }
+
+  return withAttempts(
+    fallback ||
+      evidence({
+        provider: "meta",
+        status: "unknown",
+        active: null,
+        confidence: 0.2,
+        reason: "apify_no_sources",
+        context: { sourceProvider: "apify" }
+      }),
+    attempts,
+    socialDiscovery
+  );
 }
 
 export function buildMetaAdProbes(business = {}) {
@@ -240,6 +344,7 @@ export function buildMetaAdProbes(business = {}) {
 }
 
 function evidence({ provider, status, active, confidence, sourceUrl, reason, latestDetectedDate, error, context }) {
+  const landingUrls = Array.isArray(context?.landingUrls) ? context.landingUrls.filter(Boolean).slice(0, 8) : [];
   return {
     provider,
     status,
@@ -252,7 +357,15 @@ function evidence({ provider, status, active, confidence, sourceUrl, reason, lat
     strategy: context?.strategy || null,
     query: context?.query || null,
     searchType: context?.searchType || null,
-    country: context?.country || null
+    country: context?.country || null,
+    sourceProvider: context?.sourceProvider || null,
+    matchedFields: context?.matchedFields || null,
+    itemsSeen: context?.itemsSeen ?? null,
+    total: context?.total ?? null,
+    samplePageName: context?.samplePageName || null,
+    adArchiveId: context?.adArchiveId || null,
+    landingUrl: landingUrls[0] || null,
+    landingUrls
   };
 }
 
@@ -261,7 +374,13 @@ function metaConfidence(context, fallback) {
 }
 
 function metaAttempt(probe, result, url) {
+  return adAttempt(probe, result, url);
+}
+
+function adAttempt(probe, result, url) {
   return {
+    provider: result.provider,
+    sourceProvider: probe.sourceProvider || result.sourceProvider || null,
     strategy: probe.strategy,
     query: probe.query,
     searchType: probe.searchType,
@@ -270,15 +389,63 @@ function metaAttempt(probe, result, url) {
     active: result.active,
     confidence: result.confidence,
     reason: result.reason,
-    sourceUrl: url
+    sourceUrl: url,
+    itemsSeen: result.itemsSeen ?? null,
+    total: result.total ?? null,
+    samplePageName: result.samplePageName || null,
+    matchedFields: result.matchedFields || null,
+    adArchiveId: result.adArchiveId || null,
+    landingUrl: result.landingUrl || null,
+    landingUrls: Array.isArray(result.landingUrls) ? result.landingUrls.slice(0, 8) : []
   };
+}
+
+function apifyAttempt(source, result, items) {
+  return adAttempt(
+    source,
+    {
+      ...result,
+      itemsSeen: result.itemsSeen ?? items.length,
+      total: result.total ?? apifyTotal(items),
+      samplePageName: result.samplePageName || samplePageName(items[0]),
+      matchedFields: result.matchedFields || null,
+      adArchiveId: result.adArchiveId || null
+    },
+    result.sourceUrl || source.sourceUrl
+  );
 }
 
 function withAttempts(result, attempts, socialDiscovery) {
   return {
     ...result,
     socialDiscovery: socialDiscovery || null,
-    attempts: attempts.slice(0, 20)
+    attempts: attempts.slice(0, 30)
+  };
+}
+
+function mergeMetaResults(firecrawlMeta, apifyMeta) {
+  const attempts = [...(firecrawlMeta?.attempts || []), ...(apifyMeta?.attempts || [])].slice(0, 30);
+  if (apifyMeta?.active === true) {
+    return {
+      ...apifyMeta,
+      attempts,
+      socialDiscovery: firecrawlMeta?.socialDiscovery || apifyMeta.socialDiscovery || null,
+      firecrawlStatus: firecrawlMeta?.status || null,
+      firecrawlReason: firecrawlMeta?.reason || null
+    };
+  }
+  if ((apifyMeta?.confidence || 0) > (firecrawlMeta?.confidence || 0)) {
+    return {
+      ...apifyMeta,
+      attempts,
+      socialDiscovery: firecrawlMeta?.socialDiscovery || apifyMeta.socialDiscovery || null
+    };
+  }
+  return {
+    ...firecrawlMeta,
+    attempts,
+    apifyStatus: apifyMeta?.status || null,
+    apifyReason: apifyMeta?.reason || null
   };
 }
 
@@ -287,6 +454,223 @@ function betterMetaFallback(current, next) {
   if (next.active === false && current.active !== false) return next;
   if ((next.confidence || 0) > (current.confidence || 0)) return next;
   return current;
+}
+
+function buildApifyMetaSources(business, country) {
+  const sources = [];
+  const domain = extractDomain(business.website);
+  const facebook = firstValue(business.facebook, business.custom_fields?.facebook, business.custom_fields?.facebook_url, business.custom_fields?.fb);
+  const instagram = firstValue(business.instagram, business.custom_fields?.instagram, business.custom_fields?.instagram_url, business.custom_fields?.ig);
+  const facebookHandle = extractSocialHandle(facebook, "facebook");
+  const instagramHandle = extractSocialHandle(instagram, "instagram");
+  const metaCountry = country || DEFAULT_COUNTRY;
+
+  if (facebook) {
+    addApifySource(sources, {
+      strategy: "facebook_page_apify",
+      query: facebookHandle || facebook,
+      searchType: "page",
+      country: metaCountry,
+      sourceUrl: facebook.startsWith("http") ? facebook : `https://www.facebook.com/${facebookHandle || facebook}`,
+      confidence: 0.92
+    });
+  }
+  if (instagramHandle) {
+    addApifySource(sources, {
+      strategy: "instagram_handle_apify",
+      query: `@${instagramHandle}`,
+      searchType: "keyword_unordered",
+      country: "ALL",
+      sourceUrl: buildMetaAdsLibraryUrl({ query: `@${instagramHandle}`, country: "ALL" }),
+      confidence: 0.9
+    });
+  }
+  if (domain) {
+    addApifySource(sources, {
+      strategy: "website_domain_apify",
+      query: domain,
+      searchType: "keyword_unordered",
+      country: "ALL",
+      sourceUrl: buildMetaAdsLibraryUrl({ query: domain, country: "ALL" }),
+      confidence: 0.86
+    });
+  }
+  if (business.name) {
+    addApifySource(sources, {
+      strategy: "business_name_apify",
+      query: business.name,
+      searchType: "keyword_unordered",
+      country: "ALL",
+      sourceUrl: buildMetaAdsLibraryUrl({ query: business.name, country: "ALL" }),
+      confidence: 0.68
+    });
+  }
+
+  return sources.slice(0, 4);
+}
+
+function addApifySource(sources, source) {
+  if (!source.sourceUrl || sources.some((item) => item.sourceUrl === source.sourceUrl)) return;
+  sources.push({ ...source, sourceProvider: "apify" });
+}
+
+function buildApifyMetaInput(source, apify) {
+  const maxChargedResults = Math.max(10, Number(apify?.maxChargedResults || 10));
+  return {
+    urls: [{ url: source.sourceUrl }],
+    limitPerSource: 1,
+    count: maxChargedResults,
+    scrapeAdDetails: false,
+    "scrapePageAds.period": "",
+    "scrapePageAds.activeStatus": "active",
+    "scrapePageAds.sortBy": "most_recent",
+    "scrapePageAds.countryCode": source.country || "ALL",
+    runTag: "lexington-meta-active-check"
+  };
+}
+
+function inferApifyMetaActivity({ items = [], business, source, now }) {
+  const activeItems = items.filter((item) => item?.is_active === true || item?.is_active == null);
+  for (const item of activeItems) {
+    const match = matchApifyBusinessItem({ item, business });
+    if (!match.matched) continue;
+    const latestDetectedDate = apifyItemDate(item, now);
+    const landingUrls = collectApifyLandingUrls(item, business);
+    return evidence({
+      provider: "meta",
+      status: "active",
+      active: true,
+      confidence: Math.max(Number(source.confidence || 0), match.confidence),
+      sourceUrl: item.ad_library_url || source.sourceUrl,
+      reason: "apify_active_ad_matched",
+      latestDetectedDate,
+      context: {
+        ...source,
+        matchedFields: match.fields,
+        itemsSeen: items.length,
+        total: apifyTotal(items),
+        samplePageName: samplePageName(item),
+        adArchiveId: item.ad_archive_id || null,
+        landingUrls
+      }
+    });
+  }
+
+  return evidence({
+    provider: "meta",
+    status: "unknown",
+    active: null,
+    confidence: activeItems.length ? 0.35 : 0.2,
+    sourceUrl: source.sourceUrl,
+    reason: activeItems.length ? "apify_active_items_not_matched" : "apify_no_active_items",
+    context: {
+      ...source,
+      itemsSeen: items.length,
+      total: apifyTotal(items),
+      samplePageName: samplePageName(items[0])
+    }
+  });
+}
+
+function matchApifyBusinessItem({ item, business }) {
+  const fields = [];
+  const domain = extractDomain(business.website);
+  const facebook = firstValue(business.facebook, business.custom_fields?.facebook, business.custom_fields?.facebook_url, business.custom_fields?.fb);
+  const instagram = firstValue(business.instagram, business.custom_fields?.instagram, business.custom_fields?.instagram_url, business.custom_fields?.ig);
+  const facebookHandle = extractSocialHandle(facebook, "facebook");
+  const instagramHandle = extractSocialHandle(instagram, "instagram");
+  const pageName = samplePageName(item);
+  const text = collectApifyItemStrings(item).join("\n");
+  const normalized = normalizeText(text);
+
+  if (domain && normalized.includes(normalizeText(domain))) fields.push("domain");
+  if (business.name && strongNameMatch(pageName, business.name)) fields.push("page_name");
+  if (instagramHandle && normalized.includes(normalizeText(`@${instagramHandle}`))) fields.push("instagram_handle");
+  if (instagramHandle && normalized.includes(normalizeText(`instagram.com/${instagramHandle}`))) fields.push("instagram_url");
+  if (facebookHandle && normalized.includes(normalizeText(facebookHandle))) fields.push("facebook_handle");
+
+  const confidence = fields.includes("domain") && fields.includes("page_name")
+    ? 0.96
+    : fields.includes("domain")
+      ? 0.92
+      : fields.includes("page_name")
+        ? 0.9
+        : fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"))
+          ? 0.84
+          : 0;
+
+  return {
+    matched: confidence >= 0.84,
+    confidence,
+    fields
+  };
+}
+
+function collectApifyItemStrings(item = {}) {
+  const snapshot = item.snapshot || {};
+  const cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
+  const body = typeof snapshot.body === "string" ? snapshot.body : snapshot.body?.text;
+  return [
+    item.page_name,
+    item.ad_archive_id,
+    item.ad_library_url,
+    item.url,
+    snapshot.page_name,
+    snapshot.page_profile_uri,
+    snapshot.caption,
+    snapshot.cta_text,
+    snapshot.link_url,
+    snapshot.link_description,
+    snapshot.title,
+    body,
+    ...cards.flatMap((card) => [
+      card.body,
+      card.caption,
+      card.link_description,
+      card.link_url,
+      card.title,
+      card.cta_text
+    ])
+  ].filter(Boolean).map((value) => String(value));
+}
+
+function collectApifyLandingUrls(item, business) {
+  return extractLandingUrlsFromText(collectApifyItemStrings(item).join("\n"), { business }).slice(0, 8);
+}
+
+function strongNameMatch(pageName, businessName) {
+  const page = normalizeText(pageName);
+  const tokens = significantTokens(businessName);
+  if (!page || !tokens.length) return false;
+  if (tokens.length === 1) return page === tokens[0] || page.split(" ").includes(tokens[0]);
+  return tokens.every((token) => page.includes(token));
+}
+
+function significantTokens(value) {
+  const blocked = new Set(["the", "and", "de", "del", "la", "las", "los", "el", "y", "sl", "sll", "sa"]);
+  return normalizeText(value)
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 3 && !blocked.has(token));
+}
+
+function apifyTotal(items = []) {
+  const totals = items.map((item) => Number(item?.total)).filter((value) => Number.isFinite(value));
+  return totals.length ? Math.max(...totals) : items.length;
+}
+
+function samplePageName(item = {}) {
+  return item?.page_name || item?.snapshot?.page_name || null;
+}
+
+function apifyItemDate(item = {}, now) {
+  const raw = item.start_date || item.end_date;
+  const number = Number(raw);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  const date = new Date(number > 10_000_000_000 ? number : number * 1000);
+  if (Number.isNaN(date.getTime())) return null;
+  if (date.getTime() > now.getTime() + 86400_000 * 2) return null;
+  return date.toISOString().slice(0, 10);
 }
 
 function latestDateWithin(text, now, days) {

@@ -109,7 +109,12 @@ CREATE TABLE IF NOT EXISTS businesses (
   ads_google_active BOOLEAN,
   ads_last_checked_at TIMESTAMPTZ,
   ads_enrichment JSONB NOT NULL DEFAULT '{}'::jsonb,
+  ads_funnel_type TEXT,
+  ads_funnel_confidence DOUBLE PRECISION,
+  ads_funnel_landing_url TEXT,
+  ads_funnel_last_checked_at TIMESTAMPTZ,
   score INTEGER NOT NULL DEFAULT 0,
+  scoring_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb,
   scoring_notes TEXT,
   niche TEXT,
   status lead_status NOT NULL DEFAULT 'new',
@@ -131,6 +136,31 @@ CREATE TABLE IF NOT EXISTS business_contacts (
   verified_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   UNIQUE (business_id, kind, value)
+);
+
+CREATE TABLE IF NOT EXISTS tenant_scoring_rules (
+  tenant_id UUID PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+  rules JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS lead_lists (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  description TEXT,
+  color TEXT NOT NULL DEFAULT 'gold',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (tenant_id, name)
+);
+
+CREATE TABLE IF NOT EXISTS lead_list_members (
+  lead_list_id UUID NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE,
+  business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (lead_list_id, business_id)
 );
 
 CREATE TABLE IF NOT EXISTS extraction_jobs (
@@ -286,6 +316,9 @@ CREATE INDEX IF NOT EXISTS idx_businesses_score
 CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_checked
   ON businesses(tenant_id, ads_last_checked_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_funnel
+  ON businesses(tenant_id, ads_funnel_type, ads_funnel_last_checked_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_tenants_google_domain
   ON tenants(google_domain)
   WHERE google_domain IS NOT NULL;
@@ -298,6 +331,12 @@ CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash
 
 CREATE INDEX IF NOT EXISTS idx_tenant_integrations_provider
   ON tenant_integrations(provider);
+
+CREATE INDEX IF NOT EXISTS idx_lead_lists_tenant_created
+  ON lead_lists(tenant_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_lead_list_members_business
+  ON lead_list_members(business_id);
 
 CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job
   ON businesses(tenant_id, extraction_job_id);
