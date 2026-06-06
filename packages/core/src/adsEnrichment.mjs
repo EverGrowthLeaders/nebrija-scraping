@@ -98,15 +98,28 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
   const hasCreativeId = /\bCR\d{8,}\b/.test(text);
 
   if (provider === "google" && (recentDate || hasCreativeId)) {
+    const identity = googleIdentityMatch({ text, context });
+    if (!identity.matched) {
+      return evidence({
+        provider,
+        status: "unknown",
+        active: null,
+        confidence: 0.32,
+        sourceUrl,
+        reason: "google_identity_not_matched",
+        latestDetectedDate: recentDate,
+        context: { ...context, matchedFields: identity.fields }
+      });
+    }
     return evidence({
       provider,
       status: "active",
       active: true,
-      confidence: recentDate ? 0.84 : 0.68,
+      confidence: Math.min(recentDate ? 0.84 : 0.68, identity.confidence),
       sourceUrl,
       reason: recentDate ? "recent_last_shown_date" : "creative_id_found",
       latestDetectedDate: recentDate,
-      context
+      context: { ...context, matchedFields: identity.fields }
     });
   }
   if (provider === "meta" && (hasActiveCopy || hasMetaLibraryId) && !normalized.includes("0 results")) {
@@ -234,6 +247,8 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
     const context = {
       strategy: url === primaryUrl ? "direct_transparency" : "search_transparency",
       query: domain,
+      domain,
+      businessName: business.name,
       country,
       sourceProvider: "firecrawl"
     };
@@ -606,6 +621,35 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
   });
 }
 
+function googleIdentityMatch({ text, context = {} }) {
+  const normalized = normalizeText(text);
+  const domain = extractDomain(context.domain || context.query || context.business?.website);
+  const rootDomain = rootDomainToken(domain);
+  const businessName = context.businessName || context.business?.name;
+  const landingUrls = Array.isArray(context.landingUrls) ? context.landingUrls : [];
+  const fields = [];
+
+  if (domain && normalized.includes(normalizeText(domain))) fields.push("domain");
+  if (rootDomain && rootDomain.length >= 5 && normalized.includes(normalizeText(rootDomain))) fields.push("brand_domain");
+  if (businessName && textIncludesBusinessName(normalized, businessName)) fields.push("business_name");
+  if (domain && landingUrls.some((url) => extractDomain(url) === domain)) fields.push("landing_domain");
+
+  const hasStrongDomain = fields.includes("domain") || fields.includes("landing_domain");
+  const hasBusinessName = fields.includes("business_name");
+  const confidence = hasStrongDomain && hasBusinessName
+    ? 0.88
+    : hasStrongDomain
+      ? 0.78
+      : hasBusinessName
+        ? 0.72
+        : 0;
+  return {
+    matched: hasStrongDomain || hasBusinessName,
+    confidence,
+    fields
+  };
+}
+
 function matchApifyBusinessItem({ item, business }) {
   const fields = [];
   const domain = extractDomain(business.website);
@@ -623,21 +667,35 @@ function matchApifyBusinessItem({ item, business }) {
   if (instagramHandle && normalized.includes(normalizeText(`instagram.com/${instagramHandle}`))) fields.push("instagram_url");
   if (facebookHandle && normalized.includes(normalizeText(facebookHandle))) fields.push("facebook_handle");
 
-  const confidence = fields.includes("domain") && fields.includes("page_name")
+  const hasDomain = fields.includes("domain");
+  const hasPageName = fields.includes("page_name");
+  const hasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
+  const confidence = hasDomain && hasPageName
     ? 0.96
-    : fields.includes("domain")
-      ? 0.92
-      : fields.includes("page_name")
-        ? 0.9
-        : fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"))
-          ? 0.84
-          : 0;
+    : hasDomain && hasSocial
+      ? 0.94
+      : hasPageName && hasSocial
+        ? 0.93
+        : hasSocial
+          ? 0.88
+          : hasPageName
+            ? 0.72
+            : hasDomain
+              ? 0.62
+              : 0;
 
   return {
     matched: confidence >= 0.84,
     confidence,
     fields
   };
+}
+
+function textIncludesBusinessName(normalizedText, businessName) {
+  const tokens = significantTokens(businessName);
+  if (!normalizedText || !tokens.length) return false;
+  const required = tokens.length <= 2 ? tokens : tokens.slice(0, Math.min(tokens.length, 3));
+  return required.every((token) => normalizedText.includes(token));
 }
 
 function collectApifyItemStrings(item = {}) {

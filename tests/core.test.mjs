@@ -329,10 +329,22 @@ test("infers active ads from public transparency page signals", () => {
     provider: "google",
     now: new Date("2026-06-05T00:00:00Z"),
     sourceUrl: "https://adstransparency.google.com/advertiser/AR123?region=ES",
+    context: { domain: "tesla.com", businessName: "Tesla España" },
     text: "CR123456789 first shown 2026-05-30 last shown 2026-06-04 total days shown 5"
   });
-  assert.equal(google.active, true);
-  assert.equal(google.latestDetectedDate, "2026-06-04");
+  assert.equal(google.active, null);
+  assert.equal(google.reason, "google_identity_not_matched");
+
+  const matchedGoogle = inferAdsActivity({
+    provider: "google",
+    now: new Date("2026-06-05T00:00:00Z"),
+    sourceUrl: "https://adstransparency.google.com/advertiser/AR123?region=ES",
+    context: { domain: "tesla.com", businessName: "Tesla España" },
+    text: "Tesla España CR123456789 www.tesla.com first shown 2026-05-30 last shown 2026-06-04 total days shown 5"
+  });
+  assert.equal(matchedGoogle.active, true);
+  assert.equal(matchedGoogle.latestDetectedDate, "2026-06-04");
+  assert.deepEqual(matchedGoogle.matchedFields, ["domain", "brand_domain", "business_name"]);
 });
 
 test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {
@@ -696,6 +708,40 @@ test("falls back to Apify for matched active Meta ads only", async () => {
   assert.ok(enrichment.google.attempts.length >= 1);
 });
 
+test("does not verify Google ads from unrelated transparency advertisers", async () => {
+  const firecrawl = {
+    async search() {
+      return [{ url: "https://adstransparency.google.com/advertiser/AR17189016863045058561?region=US" }];
+    },
+    async scrape(url) {
+      if (url === "https://boudevin-abogadoslogrono.com") return { markdown: "", html: "", links: [] };
+      if (url.includes("domain=boudevin-abogadoslogrono.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      if (url.includes("AR17189016863045058561")) {
+        return {
+          markdown: "Slotted, Inc www.slotted.com CR123456789 first shown 2026-05-30 last shown 2026-06-04 total days shown 5",
+          html: ""
+        };
+      }
+      return { markdown: "No ads found", html: "" };
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: {
+      name: "Boudevin Abogados",
+      website: "https://boudevin-abogadoslogrono.com",
+      city: "Logroño",
+      niche: "Abogados"
+    },
+    firecrawl,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.notEqual(enrichment.google.active, true);
+  assert.ok(enrichment.google.attempts.some((attempt) => attempt.reason === "google_identity_not_matched"));
+});
+
 test("continues Apify sources when the first active match has no landing URL", async () => {
   const apifyCalls = [];
   const firecrawl = {
@@ -798,4 +844,52 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
   assert.equal(enrichment.meta.itemsSeen, 1);
   assert.equal(enrichment.meta.samplePageName, "DT Lite");
   assert.equal(enrichment.meta.spendEstimate, null);
+});
+
+test("does not verify Meta ads from Apify domain-only matches", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://boudevin-abogadoslogrono.com") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          ad_archive_id: "111222333444555",
+          is_active: true,
+          page_name: "Slotted",
+          total: 1,
+          ad_library_url: "https://www.facebook.com/ads/library/?id=111222333444555",
+          snapshot: {
+            page_name: "Slotted",
+            caption: "https://boudevin-abogadoslogrono.com",
+            body: { text: "Directory mention for boudevin-abogadoslogrono.com" }
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: {
+      name: "Boudevin Abogados",
+      website: "https://boudevin-abogadoslogrono.com",
+      city: "Logroño",
+      niche: "Abogados"
+    },
+    firecrawl,
+    apify,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.notEqual(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.reason, "apify_active_items_not_matched");
 });
