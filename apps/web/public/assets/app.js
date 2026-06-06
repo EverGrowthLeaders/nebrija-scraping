@@ -1212,8 +1212,8 @@ async function renderLeadDetail({ params }) {
       </div>
     </div>
 
-    <div class="detail-grid">
-      <div class="card">
+    <div class="detail-grid detail-grid--lead">
+      <div class="card lead-identity-card">
         <h3>Identidad</h3>
         <dl class="kv">
           <dt>Nombre</dt><dd>${escape(b.name)}</dd>
