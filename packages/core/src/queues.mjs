@@ -8,6 +8,7 @@ export const QUEUE_NAMES = {
   businessCrawl: "business-crawl",
   scoring: "scoring",
   adsEnrichment: "ads-enrichment",
+  decisionMakerEnrichment: "decision-maker-enrichment",
   voiceCall: "voice-call"
 };
 

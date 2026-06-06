@@ -646,6 +646,27 @@ export async function updateBusinessEnrichment({ businessId, patch }) {
   return result.rows[0] || null;
 }
 
+export async function updateBusinessDecisionMaker({ businessId, tenantId = DEFAULT_TENANT_ID, enrichment }) {
+  const result = await query(
+    `UPDATE businesses
+        SET custom_fields = jsonb_set(
+              COALESCE(custom_fields, '{}'::jsonb),
+              '{decision_maker}',
+              $3::jsonb,
+              true
+            ),
+            status = CASE
+              WHEN status IN ('new', 'scraped', 'enrichment_pending') THEN 'enriched'::lead_status
+              ELSE status
+            END,
+            updated_at = NOW()
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [businessId, tenantId, enrichment || {}]
+  );
+  return result.rows[0] || null;
+}
+
 export async function createManualBusiness({
   tenantId = DEFAULT_TENANT_ID,
   extractionJobId,

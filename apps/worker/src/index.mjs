@@ -10,6 +10,7 @@ import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
 import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
+import { enrichDecisionMaker } from "../../../packages/core/src/decisionMakerEnrichment.mjs";
 import { explainLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
 import {
   createCrawlerRun,
@@ -25,6 +26,7 @@ import {
   recordProvenance,
   updateBusinessEnrichment,
   updateBusinessAdsEnrichment,
+  updateBusinessDecisionMaker,
   updateBusinessScore,
   updateCrawlerRun,
   updateExtractionJob,
@@ -43,6 +45,7 @@ const queues = {
   businessCrawl: createQueue(QUEUE_NAMES.businessCrawl),
   scoring: createQueue(QUEUE_NAMES.scoring),
   adsEnrichment: createQueue(QUEUE_NAMES.adsEnrichment),
+  decisionMakerEnrichment: createQueue(QUEUE_NAMES.decisionMakerEnrichment),
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
@@ -52,6 +55,7 @@ const workers = [
   createWorker(QUEUE_NAMES.businessCrawl, runBusinessCrawl),
   createWorker(QUEUE_NAMES.scoring, runScoring),
   createWorker(QUEUE_NAMES.adsEnrichment, runAdsEnrichment, { concurrency: 2 }),
+  createWorker(QUEUE_NAMES.decisionMakerEnrichment, runDecisionMakerEnrichment, { concurrency: 2 }),
   createWorker(QUEUE_NAMES.voiceCall, runVoiceCall, { concurrency: 2 })
 ];
 
@@ -143,6 +147,12 @@ async function runGoogleDiscovery(job) {
           businessId: business.id,
           extractionJobId,
           enrichAds
+        });
+        await queues.decisionMakerEnrichment.add("enrich", {
+          tenantId,
+          businessId: business.id,
+          extractionJobId,
+          source: "google_places"
         });
       }
     }
@@ -415,6 +425,69 @@ async function runAdsEnrichment(job) {
     google: enrichment.google?.status,
     funnel: enrichment.classification?.type,
     checkedAt: enrichment.checkedAt
+  };
+}
+
+async function runDecisionMakerEnrichment(job) {
+  const business = await findBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
+  if (!business) throw new Error(`business not found: ${job.data.businessId}`);
+
+  const enrichment = await enrichDecisionMaker({ business, searchClient: firecrawl });
+  const updated = await updateBusinessDecisionMaker({
+    tenantId: business.tenant_id,
+    businessId: business.id,
+    enrichment
+  });
+  if (!updated) throw new Error(`business decision maker update failed: ${business.id}`);
+
+  const decisionMaker = enrichment.decisionMaker || {};
+  if (enrichment.found && decisionMaker.linkedinUrl) {
+    await upsertContact({
+      businessId: business.id,
+      kind: "linkedin_decision_maker",
+      value: decisionMaker.linkedinUrl,
+      confidence: decisionMaker.confidence || 0.75,
+      sourceUrl: decisionMaker.linkedinUrl
+    });
+    if (decisionMaker.fullName) {
+      await upsertContact({
+        businessId: business.id,
+        kind: "decision_maker_name",
+        value: decisionMaker.fullName,
+        confidence: decisionMaker.confidence || 0.75,
+        sourceUrl: decisionMaker.linkedinUrl
+      });
+    }
+    if (decisionMaker.role) {
+      await upsertContact({
+        businessId: business.id,
+        kind: "decision_maker_role",
+        value: decisionMaker.role,
+        confidence: decisionMaker.confidence || 0.75,
+        sourceUrl: decisionMaker.linkedinUrl
+      });
+    }
+    await recordProvenance({
+      businessId: business.id,
+      fieldName: "linkedin_decision_maker",
+      sourceType: "google_dork_linkedin",
+      sourceUrl: decisionMaker.linkedinUrl,
+      observedValue: JSON.stringify({
+        query: enrichment.query,
+        fullName: decisionMaker.fullName,
+        role: decisionMaker.role,
+        linkedinUrl: decisionMaker.linkedinUrl,
+        confidence: decisionMaker.confidence
+      })
+    });
+  }
+
+  return {
+    found: enrichment.found,
+    reason: enrichment.reason,
+    linkedinUrl: decisionMaker.linkedinUrl,
+    fullName: decisionMaker.fullName,
+    confidence: decisionMaker.confidence
   };
 }
 

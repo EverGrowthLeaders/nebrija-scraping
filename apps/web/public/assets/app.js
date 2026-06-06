@@ -1828,8 +1828,40 @@ function renderCustomFields(fields = {}) {
     <div class="custom-fields">
       <div class="custom-fields__title">Campos personalizados</div>
       <dl class="kv">
-        ${entries.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${escape(value)}</dd>`).join("")}
+        ${entries.map(([key, value]) => `<dt>${escape(key)}</dt><dd>${renderCustomFieldValue(key, value)}</dd>`).join("")}
       </dl>
+    </div>
+  `;
+}
+
+function renderCustomFieldValue(key, value) {
+  if (key === "decision_maker" && value && typeof value === "object") {
+    return renderDecisionMakerCustomField(value);
+  }
+  if (value && typeof value === "object") {
+    return `<pre class="json-field">${escape(JSON.stringify(value, null, 2))}</pre>`;
+  }
+  return escape(value);
+}
+
+function renderDecisionMakerCustomField(value) {
+  const decisionMaker = value.decisionMaker || value.decision_maker || {};
+  const confidence = decisionMaker.confidence != null ? `${Math.round(Number(decisionMaker.confidence) * 100)}%` : "—";
+  if (!value.found) {
+    return `
+      <div class="decision-maker-field">
+        <span class="muted">Sin decisor encontrado</span>
+        ${value.query ? `<span class="decision-maker-field__query">${escape(value.query)}</span>` : ""}
+      </div>
+    `;
+  }
+  return `
+    <div class="decision-maker-field">
+      <strong>${escape(decisionMaker.fullName || "Decisor detectado")}</strong>
+      ${decisionMaker.role ? `<span>${escape(decisionMaker.role)}</span>` : ""}
+      ${decisionMaker.linkedinUrl ? `<a href="${escape(decisionMaker.linkedinUrl)}" target="_blank" rel="noopener">Perfil de LinkedIn</a>` : ""}
+      <span class="muted">Confianza ${escape(confidence)}</span>
+      ${value.query ? `<span class="decision-maker-field__query">${escape(value.query)}</span>` : ""}
     </div>
   `;
 }

@@ -95,6 +95,7 @@ const queues = {
   businessCrawl: createQueue(QUEUE_NAMES.businessCrawl),
   scoring: createQueue(QUEUE_NAMES.scoring),
   adsEnrichment: createQueue(QUEUE_NAMES.adsEnrichment),
+  decisionMakerEnrichment: createQueue(QUEUE_NAMES.decisionMakerEnrichment),
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
@@ -649,6 +650,37 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        if (type === "decision_maker") {
+          validateRequired(json, ["name", "city"]);
+          const business = await createManualBusiness({
+            tenantId: auth.tenantId,
+            name: json.name,
+            website: json.website,
+            phone: json.phone,
+            phoneE164: json.phoneE164 || json.phone_e164 || normalizeSpanishPhone(json.phone),
+            city: json.city,
+            niche: json.niche || "decision maker smoke test",
+            category: json.category || "test",
+            sourceUrl: json.sourceUrl || json.source_url || json.website,
+            rawPayload: { testJob: true, testId, type }
+          });
+          const queueJob = await queues.decisionMakerEnrichment.add("enrich", {
+            tenantId: auth.tenantId,
+            businessId: business.id,
+            testId
+          });
+          return sendJson(res, 202, {
+            testJob: {
+              id: business.id,
+              type,
+              testId,
+              statusUrl: `/api/test-jobs/businesses/${business.id}`,
+              queue: { name: QUEUE_NAMES.decisionMakerEnrichment, id: queueJob.id }
+            },
+            business
+          });
+        }
+
         if (type === "lead_import") {
           const filename = json.filename || "codex-import.csv";
           const contentBase64 = json.contentBase64 || json.content_base64 || Buffer.from(
@@ -740,7 +772,7 @@ const server = http.createServer(async (req, res) => {
 
         return sendJson(res, 400, {
           error: "unsupported_test_job_type",
-          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "lead_import", "campaign"]
+          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign"]
         });
       }
 
