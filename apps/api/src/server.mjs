@@ -1024,17 +1024,26 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
   const fields = Array.isArray(detail?.matchedFields) ? detail.matchedFields : [];
   const active = storedActive === true || detail?.active === true;
   const reasons = [];
-  const strongFields = provider === "google"
-    ? fields.filter((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field))
-    : fields.filter((field) => ["page_name", "instagram_handle", "instagram_url", "facebook_handle", "facebook_url"].includes(field));
+  const googleHasIdentity = fields.some((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field));
+  const metaHasDomain = fields.includes("domain");
+  const metaHasPageName = fields.includes("page_name");
+  const metaHasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
+  const metaHasStrongIdentity = (metaHasDomain && (metaHasPageName || metaHasSocial)) || (metaHasPageName && metaHasSocial);
 
-  if (active && provider === "google" && !strongFields.length) {
+  if (active && provider === "google" && !googleHasIdentity) {
     reasons.push("google_active_without_identity_match");
+  }
+  if (active && provider === "google" && !auditGoogleSourceIsVerified(detail)) {
+    reasons.push("google_search_source_not_verified");
   }
   if (active && provider === "meta") {
     const apifyDomainOnly = detail?.sourceProvider === "apify" && fields.length === 1 && fields[0] === "domain";
+    const apifySocialOnly = detail?.sourceProvider === "apify" && metaHasSocial && !metaHasDomain && !metaHasPageName;
     const firecrawlNoIdentity = detail?.sourceProvider === "firecrawl" && !fields.length && !detail?.adArchiveId;
     if (apifyDomainOnly) reasons.push("meta_apify_domain_only_match");
+    if (apifySocialOnly || (detail?.sourceProvider === "apify" && !metaHasStrongIdentity)) {
+      reasons.push("meta_apify_without_strong_identity_match");
+    }
     if (firecrawlNoIdentity) reasons.push("meta_firecrawl_active_without_identity_match");
   }
   if (active && detail?.reason === "generic_ad_library_copy") reasons.push("generic_ad_library_copy");
@@ -1073,13 +1082,24 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
 function isWeakAttempt(provider, attempt = {}) {
   const fields = Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [];
   if (provider === "google") {
-    return !fields.some((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field));
+    const hasIdentity = fields.some((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field));
+    return !hasIdentity || !auditGoogleSourceIsVerified(attempt);
   }
   if (provider === "meta") {
+    const hasDomain = fields.includes("domain");
+    const hasPageName = fields.includes("page_name");
+    const hasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
     if (attempt.sourceProvider === "apify" && fields.length === 1 && fields[0] === "domain") return true;
+    if (attempt.sourceProvider === "apify" && !((hasDomain && (hasPageName || hasSocial)) || (hasPageName && hasSocial))) return true;
     if (attempt.sourceProvider === "firecrawl" && !fields.length && !attempt.adArchiveId) return true;
   }
   return false;
+}
+
+function auditGoogleSourceIsVerified(detail = {}) {
+  const fields = Array.isArray(detail?.matchedFields) ? detail.matchedFields : [];
+  if (fields.includes("landing_domain")) return true;
+  return /adstransparency\.google\.com\/advertiser\//i.test(String(detail?.sourceUrl || ""));
 }
 
 function compactAdAttempt(attempt = {}) {

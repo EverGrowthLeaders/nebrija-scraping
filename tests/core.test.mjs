@@ -345,6 +345,16 @@ test("infers active ads from public transparency page signals", () => {
   assert.equal(matchedGoogle.active, true);
   assert.equal(matchedGoogle.latestDetectedDate, "2026-06-04");
   assert.deepEqual(matchedGoogle.matchedFields, ["domain", "brand_domain", "business_name"]);
+
+  const unverifiedGoogleSearch = inferAdsActivity({
+    provider: "google",
+    now: new Date("2026-06-05T00:00:00Z"),
+    sourceUrl: "https://adstransparency.google.com/?region=ES&domain=tesla.com",
+    context: { domain: "tesla.com", businessName: "Tesla España" },
+    text: "Tesla España CR123456789 www.tesla.com first shown 2026-05-30 last shown 2026-06-04"
+  });
+  assert.equal(unverifiedGoogleSearch.active, null);
+  assert.equal(unverifiedGoogleSearch.reason, "google_search_source_not_verified");
 });
 
 test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {
@@ -362,6 +372,19 @@ test("builds Meta ad probes from domain, Facebook and Instagram identifiers", ()
   assert.equal(byStrategy.facebook_handle.query, "bufetedemo");
   assert.equal(byStrategy.facebook_page.searchType, "page");
   assert.equal(byStrategy.instagram_handle.query, "@bufete_demo");
+});
+
+test("ignores generic Facebook share URLs as Meta ad probes", () => {
+  const probes = buildMetaAdProbes({
+    name: "Climargas",
+    website: "https://climargas.es",
+    facebook: "https://www.facebook.com/sharer.php?u=https%3A%2F%2Fclimargas.es"
+  });
+  const byStrategy = Object.fromEntries(probes.map((probe) => [probe.strategy, probe]));
+
+  assert.equal(byStrategy.facebook_handle, undefined);
+  assert.equal(byStrategy.facebook_page, undefined);
+  assert.equal(byStrategy.website_domain.query, "climargas.es");
 });
 
 test("Meta active inference stores matching strategy and query evidence", () => {
@@ -844,6 +867,53 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
   assert.equal(enrichment.meta.itemsSeen, 1);
   assert.equal(enrichment.meta.samplePageName, "DT Lite");
   assert.equal(enrichment.meta.spendEstimate, null);
+});
+
+test("does not verify Meta ads from Apify social-only matches", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://ionproyectos.com") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          ad_archive_id: "1899459720673591",
+          is_active: true,
+          page_name: "Utel Universidad",
+          total: 417,
+          ad_library_url: "https://www.facebook.com/ads/library/?id=1899459720673591",
+          snapshot: {
+            page_name: "Utel Universidad",
+            body: { text: "Síguenos en facebook.com/ion.proyectos" },
+            caption: "https://utel.edu.mx"
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: {
+      name: "ION Proyectos",
+      website: "https://ionproyectos.com",
+      facebook: "https://facebook.com/ion.proyectos"
+    },
+    firecrawl,
+    apify,
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.notEqual(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.reason, "apify_active_items_not_matched");
 });
 
 test("does not verify Meta ads from Apify domain-only matches", async () => {

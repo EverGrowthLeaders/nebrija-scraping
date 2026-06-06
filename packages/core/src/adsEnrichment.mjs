@@ -111,6 +111,18 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
         context: { ...context, matchedFields: identity.fields }
       });
     }
+    if (!googleSourceIsVerified({ sourceUrl, identity })) {
+      return evidence({
+        provider,
+        status: "unknown",
+        active: null,
+        confidence: 0.34,
+        sourceUrl,
+        reason: "google_search_source_not_verified",
+        latestDetectedDate: recentDate,
+        context: { ...context, matchedFields: identity.fields }
+      });
+    }
     return evidence({
       provider,
       status: "active",
@@ -680,15 +692,22 @@ function matchApifyBusinessItem({ item, business }) {
           ? 0.88
           : hasPageName
             ? 0.72
-            : hasDomain
+          : hasDomain
               ? 0.62
               : 0;
+  const matched = (hasDomain && (hasPageName || hasSocial)) || (hasPageName && hasSocial);
 
   return {
-    matched: confidence >= 0.84,
+    matched,
     confidence,
     fields
   };
+}
+
+function googleSourceIsVerified({ sourceUrl, identity }) {
+  const fields = identity?.fields || [];
+  if (fields.includes("landing_domain")) return true;
+  return /adstransparency\.google\.com\/advertiser\//i.test(String(sourceUrl || ""));
 }
 
 function textIncludesBusinessName(normalizedText, businessName) {
@@ -960,6 +979,7 @@ function cleanSocialUrl(value) {
       "reels",
       "share.php",
       "sharer",
+      "sharer.php",
       "stories",
       "tr",
       "tr.php",
@@ -1037,7 +1057,28 @@ function extractSocialHandle(value, provider) {
     if (provider === "instagram" && !instagramHosts.some((item) => host.endsWith(item))) return sanitizeHandle(raw);
     if (provider === "facebook" && parsed.pathname === "/profile.php") return sanitizeHandle(parsed.searchParams.get("id") || "");
     const parts = parsed.pathname.split("/").map((part) => part.trim()).filter(Boolean);
-    const blocked = new Set(["ads", "business", "dialog", "events", "groups", "marketplace", "pages", "people", "plugins", "reel", "share", "stories"]);
+    const blocked = new Set([
+      "ads",
+      "business",
+      "dialog",
+      "events",
+      "groups",
+      "l.php",
+      "login",
+      "marketplace",
+      "pages",
+      "people",
+      "plugins",
+      "profile.php",
+      "reel",
+      "share",
+      "share.php",
+      "sharer",
+      "sharer.php",
+      "stories",
+      "tr",
+      "tr.php"
+    ]);
     return sanitizeHandle(parts.find((part) => !blocked.has(part.toLowerCase())) || "");
   } catch {
     return sanitizeHandle(raw);
@@ -1045,11 +1086,37 @@ function extractSocialHandle(value, provider) {
 }
 
 function sanitizeHandle(value) {
-  return String(value || "")
+  const cleaned = String(value || "")
     .replace(/^@/, "")
     .replace(/[?#].*$/, "")
     .replace(/[^a-zA-Z0-9._-]/g, "")
     .slice(0, 80);
+  return isBlockedSocialHandle(cleaned) ? "" : cleaned;
+}
+
+function isBlockedSocialHandle(value) {
+  const normalized = String(value || "").toLowerCase();
+  return new Set([
+    "ads",
+    "business",
+    "dialog",
+    "events",
+    "l.php",
+    "login",
+    "marketplace",
+    "pages",
+    "people",
+    "plugins",
+    "profile.php",
+    "share",
+    "share.php",
+    "sharer",
+    "sharer.php",
+    "stories",
+    "tr",
+    "tr.php",
+    "watch"
+  ]).has(normalized);
 }
 
 function rootDomainToken(domain) {
