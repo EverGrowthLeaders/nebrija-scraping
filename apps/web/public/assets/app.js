@@ -725,16 +725,22 @@ async function renderLeadsList({ search }) {
   const adsInvestmentMin = search.get("adsInvestmentMin") || "";
   const adsInvestmentMax = search.get("adsInvestmentMax") || "";
   const term = search.get("search") || "";
-  const [leadLists, campaigns] = await Promise.all([
+  const [leadLists, campaigns, selectedCampaignResult] = await Promise.all([
     api("/api/lead-lists"),
-    api("/api/campaigns?limit=100")
+    api("/api/campaigns?limit=200"),
+    campaignId ? api(`/api/campaigns/${encodeURIComponent(campaignId)}`).catch(() => null) : null
   ]);
+  const campaignRows = [...(campaigns.rows || [])];
+  if (selectedCampaignResult?.job && !campaignRows.some((job) => job.id === selectedCampaignResult.job.id)) {
+    campaignRows.unshift(selectedCampaignResult.job);
+  }
+  const selectedCampaign = campaignRows.find((job) => job.id === campaignId);
 
   view.innerHTML = `
     <div class="row" style="margin-bottom:14px">
       <div class="grow">
         <h1 class="headline">Leads</h1>
-        <p class="subhead">Negocios capturados, enriquecidos y cualificados.</p>
+        <p class="subhead">Negocios capturados, enriquecidos y cualificados.${selectedCampaign ? ` · Campaña: ${escape(formatCampaignLabel(selectedCampaign))}` : ""}</p>
       </div>
       <button class="btn btn--primary" data-action="new-lead" type="button">
         <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
@@ -760,12 +766,13 @@ async function renderLeadsList({ search }) {
         </select>
         <input class="input" name="niche" placeholder="Nicho" value="${escape(niche)}" style="max-width:160px" />
         <input class="input" name="city" placeholder="Ciudad" value="${escape(city)}" style="max-width:140px" />
-        <select class="select" name="campaignId" style="max-width:220px">
-          <option value="">Todas las campañas</option>
-          ${(campaigns.rows || [])
-            .map((j) => `<option value="${escape(j.id)}" ${j.id === campaignId ? "selected" : ""}>${escape(j.niche)} · ${escape(j.city)}</option>`)
-            .join("")}
-        </select>
+        <label class="lead-filter">
+          <span>Campaña</span>
+          <select class="select" name="campaignId">
+            <option value="">Todas las campañas</option>
+            ${campaignRows.map((j) => renderCampaignOption(j, campaignId)).join("")}
+          </select>
+        </label>
         <select class="select" name="listId" style="max-width:200px">
           <option value="">Todas las listas</option>
           ${(leadLists.rows || [])
@@ -816,6 +823,7 @@ async function renderLeadsList({ search }) {
             </th>
             <th>Lead</th>
             <th>Ciudad / Nicho</th>
+            <th>Campaña</th>
             <th>Web</th>
             <th>Teléfono</th>
             <th class="col-num">Score</th>
@@ -827,7 +835,7 @@ async function renderLeadsList({ search }) {
             <th class="col-actions">Acciones</th>
           </tr>
         </thead>
-        <tbody data-bind="rows"><tr><td colspan="12" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
+        <tbody data-bind="rows"><tr><td colspan="13" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
       </table>
     </div>
   `;
@@ -858,7 +866,7 @@ async function renderLeadsList({ search }) {
   const data = await api(`/api/businesses?${params.toString()}`);
   const tbody = $("[data-bind='rows']");
   if (!data.rows.length) {
-    tbody.innerHTML = `<tr><td colspan="12">${emptyState(
+    tbody.innerHTML = `<tr><td colspan="13">${emptyState(
       "Sin resultados",
       "Ajusta los filtros o lanza una campaña."
     )}</td></tr>`;
@@ -873,6 +881,7 @@ async function renderLeadsList({ search }) {
         </td>
         <td class="cell-primary">${escape(b.name)}</td>
         <td>${escape(b.city || "—")} <span class="muted">·</span> ${escape(b.niche || "—")}</td>
+        <td>${renderLeadCampaignCell(b)}</td>
         <td>${b.website ? `<span class="mono ellipsis" style="display:inline-block;max-width:220px">${escape(stripScheme(b.website))}</span>` : "<span class='faint'>—</span>"}</td>
         <td class="mono">${escape(b.phone_e164 || "—")}</td>
         <td class="col-num">${renderScore(b.score)}</td>
@@ -898,6 +907,26 @@ async function renderLeadsList({ search }) {
       confirmDeleteLead({ id: button.dataset.leadId, name: button.dataset.leadName }, { afterDelete: router });
     })
   );
+}
+
+function renderCampaignOption(job, selectedId = "") {
+  const count = job.leads_count != null ? ` · ${fmtNumber(job.leads_count)} leads` : "";
+  return `<option value="${escape(job.id)}" ${job.id === selectedId ? "selected" : ""}>${escape(formatCampaignLabel(job))}${escape(count)}</option>`;
+}
+
+function formatCampaignLabel(job = {}) {
+  const main = [job.niche, job.city].filter(Boolean).join(" · ");
+  return main || job.name || `Campaña ${String(job.id || "").slice(0, 8)}`;
+}
+
+function renderLeadCampaignCell(business = {}) {
+  if (!business.extraction_job_id) return `<span class="faint">Sin campaña</span>`;
+  const label = formatCampaignLabel({ niche: business.campaign_niche, city: business.campaign_city, id: business.extraction_job_id });
+  return `
+    <a class="campaign-mini" href="#/leads?campaignId=${encodeURIComponent(business.extraction_job_id)}" title="Filtrar por esta campaña">
+      <span>${escape(label)}</span>
+    </a>
+  `;
 }
 
 function bindLeadSelection(rows) {
