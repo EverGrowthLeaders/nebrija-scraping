@@ -785,6 +785,54 @@ test("does not verify Google ads from unrelated transparency advertisers", async
   assert.ok(enrichment.google.attempts.some((attempt) => attempt.reason === "google_identity_not_matched"));
 });
 
+test("uses Apify Google Transparency fallback for recent domain ads", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://climatron.net") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    enabled: true,
+    maxChargedResults: 3,
+    async runFacebookAdsLibrary() {
+      return [];
+    },
+    async runGoogleAdsTransparency(input) {
+      assert.deepEqual(input.searchTerms, ["climatron.net"]);
+      assert.equal(input.region, "ES");
+      assert.equal(input.resultsLimit, 3);
+      assert.equal(input.skipDetails, true);
+      return [
+        {
+          advertiserName: "Rodrigo Carpio Serrano",
+          creativeId: "CR01919845296070721537",
+          adLibraryUrl: "https://adstransparency.google.com/advertiser/AR123/creative/CR01919845296070721537",
+          searchTerm: "climatron.net",
+          lastShown: "2026-06-06"
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Climatron", website: "https://climatron.net", city: "Valencia" },
+    firecrawl,
+    apify,
+    country: "ES",
+    now: new Date("2026-06-06T00:00:00Z")
+  });
+
+  assert.equal(enrichment.google.active, true);
+  assert.equal(enrichment.google.reason, "apify_google_recent_domain_ad");
+  assert.deepEqual(enrichment.google.matchedFields, ["domain"]);
+  assert.equal(enrichment.google.latestDetectedDate, "2026-06-06");
+});
+
 test("continues Apify sources when the first active match has no landing URL", async () => {
   const apifyCalls = [];
   const firecrawl = {

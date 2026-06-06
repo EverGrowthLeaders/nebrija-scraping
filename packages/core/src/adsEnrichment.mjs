@@ -23,7 +23,7 @@ export async function enrichBusinessAds({ business, firecrawl, apify, country = 
         firecrawlMeta,
         await inspectMetaAdsWithApify({ business: enrichedBusiness, apify, country, now, socialDiscovery })
       );
-  const google = await inspectGoogleAds({ business, firecrawl, country, now });
+  const google = await inspectGoogleAds({ business, firecrawl, apify, country, now });
   const classification = await classifyAdsLandingIntent({
     business: enrichedBusiness,
     enrichment: { meta, google },
@@ -237,7 +237,7 @@ async function inspectMetaAds({ business, firecrawl, country, now, socialDiscove
   );
 }
 
-async function inspectGoogleAds({ business, firecrawl, country, now }) {
+async function inspectGoogleAds({ business, firecrawl, apify, country, now }) {
   const domain = extractDomain(business.website);
   const primaryUrl = buildGoogleAdsTransparencyUrl({ domain, country });
   const candidates = [primaryUrl];
@@ -309,6 +309,57 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
     }
   }
 
+  if (apify?.enabled && domain) {
+    try {
+      const items = await apify.runGoogleAdsTransparency({
+        searchTerms: [domain],
+        region: country,
+        resultsLimit: Math.min(3, Math.max(1, Number(apify.maxChargedResults || 3))),
+        skipDetails: true
+      });
+      const apifyResult = inferApifyGoogleActivity({ items, business, domain, country, now });
+      attempts.push(adAttempt(
+        {
+          provider: "google",
+          strategy: "domain_apify",
+          query: domain,
+          domain,
+          businessName: business.name,
+          country,
+          sourceProvider: "apify",
+          datePreset: GOOGLE_RECENT_DATE_PRESET
+        },
+        apifyResult,
+        apifyResult.sourceUrl || primaryUrl
+      ));
+      if (apifyResult.active === true || apifyResult.status === "inactive") return withAttempts(apifyResult, attempts);
+    } catch (error) {
+      attempts.push(adAttempt(
+        {
+          provider: "google",
+          strategy: "domain_apify",
+          query: domain,
+          domain,
+          businessName: business.name,
+          country,
+          sourceProvider: "apify",
+          datePreset: GOOGLE_RECENT_DATE_PRESET
+        },
+        evidence({
+          provider: "google",
+          status: "error",
+          active: null,
+          confidence: 0,
+          sourceUrl: primaryUrl,
+          reason: "apify_google_error",
+          error: error.message,
+          context: { strategy: "domain_apify", query: domain, domain, businessName: business.name, country, sourceProvider: "apify" }
+        }),
+        primaryUrl
+      ));
+    }
+  }
+
   return withAttempts(
     evidence({
       provider: "google",
@@ -321,6 +372,56 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
     }),
     attempts
   );
+}
+
+function inferApifyGoogleActivity({ items = [], business = {}, domain, country, now }) {
+  const recentItems = items
+    .filter((item) => String(item?.searchTerm || "").toLowerCase() === String(domain || "").toLowerCase())
+    .filter((item) => apifyGoogleDateWithin(item?.lastShown || item?.last_shown_datetime, now, GOOGLE_RECENT_DAYS));
+  if (!recentItems.length) {
+    return evidence({
+      provider: "google",
+      status: "unknown",
+      active: null,
+      confidence: items.length ? 0.35 : 0.2,
+      sourceUrl: buildGoogleAdsTransparencyUrl({ domain, country }),
+      reason: items.length ? "apify_google_items_not_recent" : "apify_google_no_items",
+      context: {
+        strategy: "domain_apify",
+        query: domain,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "apify",
+        matchedFields: ["domain"],
+        itemsSeen: items.length,
+        total: items.length
+      }
+    });
+  }
+  const first = recentItems[0];
+  return evidence({
+    provider: "google",
+    status: "active",
+    active: true,
+    confidence: 0.82,
+    sourceUrl: first.adLibraryUrl || buildGoogleAdsTransparencyUrl({ domain, country }),
+    reason: "apify_google_recent_domain_ad",
+    latestDetectedDate: normalizeApifyGoogleDate(first.lastShown || first.last_shown_datetime),
+    context: {
+      strategy: "domain_apify",
+      query: domain,
+      domain,
+      businessName: business.name,
+      country,
+      sourceProvider: "apify",
+      matchedFields: ["domain"],
+      itemsSeen: recentItems.length,
+      total: items.length,
+      samplePageName: first.advertiserName || null,
+      adArchiveId: first.creativeId || null
+    }
+  });
 }
 
 async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery }) {
@@ -942,6 +1043,23 @@ function latestDateWithin(text, now, days) {
     .sort((a, b) => b.getTime() - a.getTime());
   const latest = dates.find((date) => date.getTime() >= cutoff && date.getTime() <= now.getTime() + 86400_000);
   return latest ? latest.toISOString().slice(0, 10) : null;
+}
+
+function apifyGoogleDateWithin(value, now, days) {
+  const normalized = normalizeApifyGoogleDate(value);
+  if (!normalized) return false;
+  const date = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(date.getTime())) return false;
+  const cutoff = now.getTime() - days * 86400_000;
+  return date.getTime() >= cutoff && date.getTime() <= now.getTime() + 86400_000;
+}
+
+function normalizeApifyGoogleDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const match = raw.match(/\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b/);
+  if (!match) return null;
+  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
 }
 
 function pageText(page) {
