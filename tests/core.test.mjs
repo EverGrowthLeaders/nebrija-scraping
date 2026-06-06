@@ -356,16 +356,25 @@ test("infers active ads from public transparency page signals", () => {
   assert.equal(unverifiedGoogleSearch.active, null);
   assert.equal(unverifiedGoogleSearch.reason, "google_search_source_not_verified");
 
+  const staleCreativeGoogle = inferAdsActivity({
+    provider: "google",
+    now: new Date("2026-06-05T00:00:00Z"),
+    sourceUrl: "https://adstransparency.google.com/advertiser/AR123?region=ES",
+    context: { domain: "tesla.com", businessName: "Tesla España" },
+    text: "Tesla España CR123456789 www.tesla.com first shown 2026-01-30 last shown 2026-02-04 total days shown 5"
+  });
+  assert.notEqual(staleCreativeGoogle.active, true);
+
   const directDomainGoogle = inferAdsActivity({
     provider: "google",
     now: new Date("2026-06-06T00:00:00Z"),
-    sourceUrl: "https://adstransparency.google.com/?region=ES&domain=climatron.net",
-    context: { domain: "climatron.net", businessName: "Climatron" },
-    text: "climatron.net Este dominio incluye resultados de varias cuentas de anunciante con anuncios que se orientan a este dominio. 28 anuncios"
+    sourceUrl: "https://adstransparency.google.com/?region=ES&domain=climatron.net&preset-date=%C3%9Altimos+30%C2%A0d%C3%ADas",
+    context: { domain: "climatron.net", businessName: "Climatron", datePreset: "Últimos 30 días" },
+    text: "climatron.net Este dominio incluye resultados de varias cuentas de anunciante con anuncios que se orientan a este dominio. 12 anuncios Últimos 30 días"
   });
   assert.equal(directDomainGoogle.active, true);
   assert.equal(directDomainGoogle.reason, "google_domain_ads_found");
-  assert.equal(directDomainGoogle.itemsSeen, 28);
+  assert.equal(directDomainGoogle.itemsSeen, 12);
 });
 
 test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {

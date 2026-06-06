@@ -1,6 +1,8 @@
 import { classifyAdsLandingIntent, extractLandingUrlsFromText } from "./adsLandingClassifier.mjs";
 
 const DEFAULT_COUNTRY = "ES";
+const GOOGLE_RECENT_DAYS = 30;
+const GOOGLE_RECENT_DATE_PRESET = "Últimos 30 días";
 const DEFAULT_META_CPM_EUR = 8;
 const META_CPM_BY_NICHE = [
   [/abogad|legal|jurid|bufete/i, 18],
@@ -48,10 +50,11 @@ export function buildMetaAdsLibraryUrl({ query, country = DEFAULT_COUNTRY, searc
   return url.toString();
 }
 
-export function buildGoogleAdsTransparencyUrl({ domain, country = DEFAULT_COUNTRY }) {
+export function buildGoogleAdsTransparencyUrl({ domain, country = DEFAULT_COUNTRY, datePreset = GOOGLE_RECENT_DATE_PRESET } = {}) {
   const url = new URL("https://adstransparency.google.com/");
   url.searchParams.set("region", country);
   if (domain) url.searchParams.set("domain", domain);
+  if (datePreset) url.searchParams.set("preset-date", datePreset);
   return url.toString();
 }
 
@@ -70,7 +73,7 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
   ].some((phrase) => normalized.includes(normalizeText(phrase)));
   if (negative) return evidence({ provider, status: "inactive", active: false, confidence: 0.72, sourceUrl, reason: "negative_copy", context });
 
-  const recentDate = latestDateWithin(text, now, 45);
+  const recentDate = latestDateWithin(text, now, GOOGLE_RECENT_DAYS);
   const hasMetaLibraryId = /\blibrary\s+id\s*[:#]?\s*\d{6,}\b/i.test(text) || /"ad_archive_id"\s*:\s*"?\d{6,}"?/i.test(text);
   const activePhrases = provider === "meta"
     ? [
@@ -98,7 +101,7 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
   const hasCreativeId = /\bCR\d{8,}\b/.test(text);
   const googleDomainAds = provider === "google" ? googleDomainAdsSignal({ text, context }) : null;
 
-  if (provider === "google" && (recentDate || hasCreativeId || googleDomainAds?.matched)) {
+  if (provider === "google" && (recentDate || googleDomainAds?.matched)) {
     const identity = googleIdentityMatch({ text, context });
     if (!identity.matched) {
       return evidence({
@@ -269,6 +272,7 @@ async function inspectGoogleAds({ business, firecrawl, country, now }) {
       domain,
       businessName: business.name,
       country,
+      datePreset: url === primaryUrl ? GOOGLE_RECENT_DATE_PRESET : null,
       sourceProvider: "firecrawl"
     };
     try {
@@ -722,6 +726,9 @@ function googleDomainAdsSignal({ text, context = {} }) {
   const normalized = normalizeText(text);
   const domain = extractDomain(context.domain || context.query || context.business?.website);
   if (!domain || !normalized.includes(normalizeText(domain))) return null;
+  const hasRecentFilter = normalizeText(context.datePreset).includes(normalizeText(GOOGLE_RECENT_DATE_PRESET)) ||
+    normalized.includes(normalizeText(GOOGLE_RECENT_DATE_PRESET));
+  if (!hasRecentFilter) return null;
   const hasDomainResultsCopy = [
     "este dominio incluye resultados",
     "this domain includes results",
