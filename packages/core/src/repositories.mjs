@@ -1300,12 +1300,15 @@ const CRM_ROW_SELECT = `
     b.address,
     b.city,
     b.niche,
+    b.category,
     b.status AS lead_status,
     b.score,
     b.ads_meta_active,
     b.ads_google_active,
     b.ads_funnel_type,
     b.ads_funnel_confidence,
+    b.ads_funnel_landing_url,
+    b.custom_fields->>'ads_investment' AS ads_investment,
     email_contact.value AS fallback_email
   FROM lead_list_members lm
   JOIN lead_lists ll ON ll.id = lm.lead_list_id

@@ -122,6 +122,32 @@ const renderAdsFunnelBadge = (type, confidence) => {
   return `<span class="badge badge--${tone}">${escape(label)}${escape(suffix)}</span>`;
 };
 
+const CRM_PAGE_SIZE = 120;
+const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v1";
+const CRM_DEFAULT_COLUMNS = [
+  "first_contact_at",
+  "business",
+  "decision_maker_name",
+  "phone",
+  "decision_maker_email",
+  "website",
+  "answered_by",
+  "crm_status",
+  "checkpoint",
+  "objection",
+  "follow_up_date",
+  "follow_up_time",
+  "next_action",
+  "observations",
+  "city",
+  "niche",
+  "category",
+  "ads_investment",
+  "ads_funnel_type",
+  "ads_meta_active",
+  "ads_google_active"
+];
+
 const renderListBadges = (lists = []) =>
   lists?.length
     ? `<div class="list-badges">${lists
@@ -1624,121 +1650,672 @@ async function renderListDetail({ params }) {
         ${(options.objections || []).map((option) => `<option value="${escape(option)}"></option>`).join("")}
       </datalist>
 
+      ${renderCrmFilterBar(rows)}
+
       <div class="crm-section-head">
         <div>
           <h2>Prospectos</h2>
-          <p>${fmtNumber(activeRows.length)} contactos activos</p>
+          <p data-bind="crm-active-count">${fmtNumber(activeRows.length)} contactos activos</p>
         </div>
         <span class="crm-save-state" data-bind="crm-save-state">Listo</span>
       </div>
-      ${renderCrmProspectsTable(activeRows, options)}
+      <div data-bind="crm-active-table"></div>
 
       <div class="crm-section-head crm-section-head--secondary">
         <div>
           <h2>No Interesados</h2>
-          <p>${fmtNumber(discardedRows.length)} descartados para evitar rellamadas</p>
+          <p data-bind="crm-discarded-count">${fmtNumber(discardedRows.length)} descartados para evitar rellamadas</p>
         </div>
       </div>
-      ${renderCrmDiscardedTable(discardedRows, options)}
+      <div data-bind="crm-discarded-table"></div>
     </div>
   `;
-  bindCrmBoard(view);
+  hydrateCrmBoard(view, { rows, options });
 }
 
-function renderCrmProspectsTable(rows, options) {
+function renderCrmFilterBar(rows = []) {
+  return `
+    <div class="crm-filter-bar" data-bind="crm-filters">
+      <label class="crm-filter crm-filter--wide">
+        <span>Buscar</span>
+        <input class="input" data-crm-quick-filter="search" type="search" placeholder="Negocio, decisor, notas..." />
+      </label>
+      <label class="crm-filter">
+        <span>Teléfono</span>
+        <select class="select" data-crm-quick-filter="phoneType">
+          <option value="">Todos</option>
+          <option value="mobile">Solo móviles</option>
+          <option value="fixed">Solo fijos</option>
+          <option value="with_phone">Con teléfono</option>
+          <option value="without_phone">Sin teléfono</option>
+        </select>
+      </label>
+      <label class="crm-filter">
+        <span>Ciudad</span>
+        <select class="select" data-crm-quick-filter="city">
+          <option value="">Todas</option>
+          ${renderOptions(uniqueCrmValues(rows, "city"))}
+        </select>
+      </label>
+      <label class="crm-filter">
+        <span>Nicho</span>
+        <select class="select" data-crm-quick-filter="niche">
+          <option value="">Todos</option>
+          ${renderOptions(uniqueCrmValues(rows, "niche"))}
+        </select>
+      </label>
+      <label class="crm-filter">
+        <span>Funnel</span>
+        <select class="select" data-crm-quick-filter="adsFunnelType">
+          <option value="">Todos</option>
+          ${Object.entries(ADS_FUNNEL_LABELS).map(([value, [, label]]) => `<option value="${escape(value)}">${escape(label)}</option>`).join("")}
+        </select>
+      </label>
+      <label class="crm-filter crm-filter--mini">
+        <span>Ads min</span>
+        <input class="input" data-crm-quick-filter="adsInvestmentMin" type="number" min="0" step="1" placeholder="€" />
+      </label>
+      <label class="crm-filter crm-filter--mini">
+        <span>Ads max</span>
+        <input class="input" data-crm-quick-filter="adsInvestmentMax" type="number" min="0" step="1" placeholder="€" />
+      </label>
+      <button class="btn btn--ghost" data-action="crm-reset-filters" type="button">Limpiar</button>
+      <span class="crm-filter-count" data-bind="crm-filter-count">${fmtNumber(rows.length)} filas</span>
+    </div>
+  `;
+}
+
+function hydrateCrmBoard(scope, { rows, options }) {
+  const board = $(".crm-board", scope);
+  if (!board) return;
+  const state = {
+    quick: {},
+    filters: {},
+    sortKey: "",
+    sortDir: "asc",
+    limits: { active: CRM_PAGE_SIZE, discarded: CRM_PAGE_SIZE },
+    columnOrder: loadCrmColumnOrder()
+  };
+  board.__crmRows = rows;
+  board.__crmRender = render;
+  board.__crmState = state;
+
+  bindCrmQuickFilters(board, state, render);
+  render();
+
+  function render() {
+    const columns = orderedCrmColumns(createCrmColumns(options, rows), state.columnOrder);
+    const activeRows = rows.filter((row) => row.crm_status !== "Descartado");
+    const discardedRows = rows.filter((row) => row.crm_status === "Descartado");
+    const active = applyCrmTableState(activeRows, columns, state);
+    const discarded = applyCrmTableState(discardedRows, columns, state);
+    const activeVisible = active.slice(0, state.limits.active);
+    const discardedVisible = discarded.slice(0, state.limits.discarded);
+
+    $("[data-bind='crm-active-count']", board).textContent = `${fmtNumber(active.length)} de ${fmtNumber(activeRows.length)} contactos activos`;
+    $("[data-bind='crm-discarded-count']", board).textContent = `${fmtNumber(discarded.length)} de ${fmtNumber(discardedRows.length)} descartados`;
+    $("[data-bind='crm-filter-count']", board).textContent = `${fmtNumber(active.length + discarded.length)} de ${fmtNumber(rows.length)} filas`;
+    $("[data-bind='crm-active-table']", board).innerHTML = renderCrmTable({
+      rows: activeVisible,
+      total: active.length,
+      rendered: activeVisible.length,
+      columns,
+      options,
+      state,
+      kind: "active",
+      emptyTitle: "Lista vacía",
+      emptyCopy: "Añade leads desde la ficha de cada lead o importa un CSV/Excel."
+    });
+    $("[data-bind='crm-discarded-table']", board).innerHTML = renderCrmTable({
+      rows: discardedVisible,
+      total: discarded.length,
+      rendered: discardedVisible.length,
+      columns,
+      options,
+      state,
+      kind: "discarded",
+      emptyTitle: "Sin descartados",
+      emptyCopy: "Los leads marcados como Descartado aparecerán aquí."
+    });
+    bindCrmTableControls(board, state, render);
+    bindCrmEditableControls(board);
+  }
+}
+
+function createCrmColumns(options = {}, rows = []) {
+  const rowOptions = (key) => uniqueCrmValues(rows, key);
+  const statusOptions = uniqueStrings([...(options.statuses || []), ...rows.map((row) => row.crm_status)]);
+  const checkpointOptions = uniqueStrings([...(options.checkpoints || []), ...rows.map((row) => row.checkpoint)]);
+  const objectionOptions = uniqueStrings([...(options.objections || []), ...rows.map((row) => row.objection)]);
+  return [
+    {
+      key: "first_contact_at",
+      label: "Primer contacto",
+      width: 148,
+      filter: "date",
+      value: (row) => row.first_contact_at,
+      render: (row) => crmInput("firstContactAt", row.first_contact_at, "date", "crm-input--date")
+    },
+    {
+      key: "business",
+      label: "Negocio",
+      width: 240,
+      filter: "text",
+      value: (row) => row.name,
+      render: renderCrmBusinessCell
+    },
+    {
+      key: "decision_maker_name",
+      label: "Nombre Decisor",
+      width: 190,
+      filter: "text",
+      value: (row) => row.decision_maker_name,
+      render: (row) => crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name")
+    },
+    {
+      key: "phone",
+      label: "Teléfono",
+      width: 160,
+      filter: "text",
+      value: (row) => row.phone_e164 || row.phone,
+      render: renderCrmPhone
+    },
+    {
+      key: "decision_maker_email",
+      label: "Email Decisor",
+      width: 210,
+      filter: "text",
+      value: (row) => row.decision_maker_email || row.fallback_email,
+      render: (row) => crmInput("decisionMakerEmail", row.decision_maker_email, "email", "crm-input--email", row.fallback_email || "")
+    },
+    {
+      key: "website",
+      label: "URL Web",
+      width: 190,
+      filter: "text",
+      value: (row) => row.website,
+      render: renderCrmWebsite
+    },
+    {
+      key: "answered_by",
+      label: "¿Quién atendió?",
+      width: 170,
+      filter: "text",
+      value: (row) => row.answered_by,
+      render: (row) => crmInput("answeredBy", row.answered_by, "text", "crm-input--name")
+    },
+    {
+      key: "crm_status",
+      label: "Estado",
+      width: 180,
+      filter: "select",
+      options: statusOptions,
+      value: (row) => row.crm_status,
+      render: (row) => crmSelect("crmStatus", row.crm_status, options.statuses || [])
+    },
+    {
+      key: "checkpoint",
+      label: "Checkpoint",
+      width: 180,
+      filter: "select",
+      options: checkpointOptions,
+      value: (row) => row.checkpoint,
+      render: (row) => crmSelect("checkpoint", row.checkpoint, options.checkpoints || [], true)
+    },
+    {
+      key: "objection",
+      label: "Objeción inicial",
+      width: 210,
+      filter: "select",
+      options: objectionOptions,
+      value: (row) => row.objection,
+      render: (row) => crmObjectionInput(row.objection)
+    },
+    {
+      key: "follow_up_date",
+      label: "Día (Seguimiento)",
+      width: 155,
+      filter: "date",
+      value: (row) => row.follow_up_date,
+      render: (row) => crmInput("followUpDate", row.follow_up_date, "date", "crm-input--date")
+    },
+    {
+      key: "follow_up_time",
+      label: "Hora (Seguimiento)",
+      width: 135,
+      filter: "text",
+      value: (row) => row.follow_up_time,
+      render: (row) => crmInput("followUpTime", row.follow_up_time, "time", "crm-input--time")
+    },
+    {
+      key: "next_action",
+      label: "Próxima acción",
+      width: 250,
+      filter: "text",
+      value: (row) => row.next_action,
+      render: (row) => crmTextarea("nextAction", row.next_action, "crm-textarea--action")
+    },
+    {
+      key: "observations",
+      label: "Observaciones",
+      width: 280,
+      filter: "text",
+      value: (row) => row.observations,
+      render: (row) => crmTextarea("observations", row.observations, "crm-textarea--notes")
+    },
+    {
+      key: "city",
+      label: "Ciudad",
+      width: 150,
+      filter: "select",
+      options: rowOptions("city"),
+      value: (row) => row.city,
+      render: (row) => crmReadonly(row.city)
+    },
+    {
+      key: "niche",
+      label: "Nicho",
+      width: 180,
+      filter: "select",
+      options: rowOptions("niche"),
+      value: (row) => row.niche,
+      render: (row) => crmReadonly(row.niche)
+    },
+    {
+      key: "category",
+      label: "Categoría",
+      width: 170,
+      filter: "select",
+      options: rowOptions("category"),
+      value: (row) => row.category,
+      render: (row) => crmReadonly(row.category)
+    },
+    {
+      key: "ads_investment",
+      label: "Inversión en Ads",
+      width: 155,
+      filter: "number",
+      value: (row) => row.ads_investment,
+      sortValue: (row) => parseCrmNumber(row.ads_investment),
+      render: (row) => renderCrmMoney(row.ads_investment)
+    },
+    {
+      key: "ads_funnel_type",
+      label: "Tipo funnel",
+      width: 165,
+      filter: "select",
+      options: Object.keys(ADS_FUNNEL_LABELS),
+      labels: Object.fromEntries(Object.entries(ADS_FUNNEL_LABELS).map(([key, [, label]]) => [key, label])),
+      value: (row) => row.ads_funnel_type || "unknown",
+      render: (row) => renderAdsFunnelBadge(row.ads_funnel_type || "unknown", row.ads_funnel_confidence)
+    },
+    {
+      key: "ads_meta_active",
+      label: "Meta Ads",
+      width: 135,
+      filter: "boolean",
+      value: (row) => crmBoolValue(row.ads_meta_active),
+      render: (row) => renderAdsBadge(row.ads_meta_active, "Meta")
+    },
+    {
+      key: "ads_google_active",
+      label: "Google Ads",
+      width: 140,
+      filter: "boolean",
+      value: (row) => crmBoolValue(row.ads_google_active),
+      render: (row) => renderAdsBadge(row.ads_google_active, "Google")
+    }
+  ];
+}
+
+function renderCrmTable({ rows, total, rendered, columns, options, state, kind, emptyTitle, emptyCopy }) {
+  const tableWidth = columns.reduce((sum, column) => sum + column.width, 0);
   return `
     <div class="table-wrap crm-table-wrap">
-      <table class="table crm-table crm-table--prospects">
+      <table class="table crm-table crm-table--${escape(kind)}" style="min-width:${tableWidth}px">
+        <colgroup>
+          ${columns.map((column) => `<col style="width:${Number(column.width) || 160}px" />`).join("")}
+        </colgroup>
         <thead>
-          <tr>
-            <th>Primer contacto</th>
-            <th>Negocio</th>
-            <th>Nombre Decisor</th>
-            <th>Teléfono</th>
-            <th>Email Decisor</th>
-            <th>URL Web</th>
-            <th>¿Quién atendió?</th>
-            <th>Estado</th>
-            <th>Checkpoint</th>
-            <th>Objeción</th>
-            <th>Día (Seguimiento)</th>
-            <th>Hora (Seguimiento)</th>
-            <th>Próxima acción</th>
-            <th>Observaciones</th>
-          </tr>
+          <tr>${columns.map((column) => renderCrmHeaderCell(column, state)).join("")}</tr>
         </thead>
         <tbody>
           ${
             rows.length
-              ? rows.map((row) => renderCrmProspectRow(row, options)).join("")
-              : `<tr><td colspan="14">${emptyState("Lista vacía", "Añade leads desde la ficha de cada lead.")}</td></tr>`
+              ? rows.map((row) => renderCrmRow(row, columns, options)).join("")
+              : `<tr><td colspan="${columns.length}">${emptyState(emptyTitle, emptyCopy)}</td></tr>`
           }
         </tbody>
       </table>
+      <div class="crm-table-footer">
+        <span>Mostrando ${fmtNumber(rendered)} de ${fmtNumber(total)}</span>
+        ${
+          rendered < total
+            ? `<button class="btn btn--sm btn--ghost" data-action="crm-load-more" data-crm-kind="${escape(kind)}" type="button">Cargar ${fmtNumber(Math.min(CRM_PAGE_SIZE, total - rendered))} más</button>`
+            : ""
+        }
+      </div>
     </div>
   `;
 }
 
-function renderCrmProspectRow(row, options) {
+function renderCrmHeaderCell(column, state) {
+  const sorted = state.sortKey === column.key;
+  const sortMark = sorted ? (state.sortDir === "asc" ? "↑" : "↓") : "↕";
+  return `
+    <th draggable="true" data-crm-column="${escape(column.key)}">
+      <div class="crm-th">
+        <button class="crm-th__sort" data-action="crm-sort" data-column-key="${escape(column.key)}" type="button" title="Ordenar por ${escape(column.label)}">
+          <span>${escape(column.label)}</span>
+          <i aria-hidden="true">${sortMark}</i>
+        </button>
+        <span class="crm-th__drag" title="Arrastrar columna">⋮⋮</span>
+      </div>
+      ${renderCrmColumnFilter(column, state.filters[column.key] || "")}
+    </th>
+  `;
+}
+
+function renderCrmColumnFilter(column, selected) {
+  if (column.filter === "select") {
+    return `
+      <select class="crm-column-filter" data-crm-column-filter="${escape(column.key)}">
+        <option value="">Todos</option>
+        ${renderOptions(column.options || [], selected, column.labels || {})}
+      </select>
+    `;
+  }
+  if (column.filter === "boolean") {
+    return `
+      <select class="crm-column-filter" data-crm-column-filter="${escape(column.key)}">
+        <option value="">Todos</option>
+        <option value="true" ${selected === "true" ? "selected" : ""}>Activo</option>
+        <option value="false" ${selected === "false" ? "selected" : ""}>Sin señal</option>
+        <option value="unknown" ${selected === "unknown" ? "selected" : ""}>Sin revisar</option>
+      </select>
+    `;
+  }
+  const type = column.filter === "date" ? "date" : "search";
+  const placeholder = column.filter === "number" ? ">=100 / 100-500" : "Filtrar";
+  return `<input class="crm-column-filter" data-crm-column-filter="${escape(column.key)}" type="${type}" value="${escape(selected)}" placeholder="${escape(placeholder)}" />`;
+}
+
+function renderCrmRow(row, columns, options) {
   return `
     <tr data-business-id="${escape(row.business_id)}">
-      <td>${crmInput("firstContactAt", row.first_contact_at, "date", "crm-input--date")}</td>
-      <td>${renderCrmBusinessCell(row)}</td>
-      <td>${crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name")}</td>
-      <td>${renderCrmPhone(row)}</td>
-      <td>${crmInput("decisionMakerEmail", row.decision_maker_email, "email", "crm-input--email", row.fallback_email || "")}</td>
-      <td>${renderCrmWebsite(row)}</td>
-      <td>${crmInput("answeredBy", row.answered_by, "text", "crm-input--name")}</td>
-      <td>${crmSelect("crmStatus", row.crm_status, options.statuses || [])}</td>
-      <td>${crmSelect("checkpoint", row.checkpoint, options.checkpoints || [], true)}</td>
-      <td>${crmObjectionInput(row.objection)}</td>
-      <td>${crmInput("followUpDate", row.follow_up_date, "date", "crm-input--date")}</td>
-      <td>${crmInput("followUpTime", row.follow_up_time, "time", "crm-input--time")}</td>
-      <td>${crmTextarea("nextAction", row.next_action, "crm-textarea--action")}</td>
-      <td>${crmTextarea("observations", row.observations, "crm-textarea--notes")}</td>
+      ${columns.map((column) => `<td data-column-key="${escape(column.key)}">${column.render(row, options)}</td>`).join("")}
     </tr>
   `;
 }
 
-function renderCrmDiscardedTable(rows, options) {
-  return `
-    <div class="table-wrap crm-table-wrap">
-      <table class="table crm-table crm-table--discarded">
-        <thead>
-          <tr>
-            <th>Primer contacto</th>
-            <th>Negocio</th>
-            <th>Nombre Decisor</th>
-            <th>Teléfono</th>
-            <th>Estado</th>
-            <th>Objeción</th>
-            <th>Observaciones</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${
-            rows.length
-              ? rows.map((row) => renderCrmDiscardedRow(row, options)).join("")
-              : `<tr><td colspan="7">${emptyState("Sin descartados", "Los leads marcados como Descartado aparecerán aquí.")}</td></tr>`
-          }
-        </tbody>
-      </table>
-    </div>
-  `;
+function bindCrmQuickFilters(board, state, render) {
+  const update = (immediate = false) => {
+    state.limits = { active: CRM_PAGE_SIZE, discarded: CRM_PAGE_SIZE };
+    if (immediate) return render();
+    window.clearTimeout(board.__crmFilterTimer);
+    board.__crmFilterTimer = window.setTimeout(render, 120);
+  };
+  $$("[data-crm-quick-filter]", board).forEach((control) => {
+    const key = control.dataset.crmQuickFilter;
+    const eventName = control.tagName === "SELECT" ? "change" : "input";
+    control.addEventListener(eventName, () => {
+      state.quick[key] = control.value;
+      update(control.tagName === "SELECT");
+    });
+  });
+  $("[data-action='crm-reset-filters']", board)?.addEventListener("click", () => {
+    state.quick = {};
+    state.filters = {};
+    state.sortKey = "";
+    state.sortDir = "asc";
+    state.limits = { active: CRM_PAGE_SIZE, discarded: CRM_PAGE_SIZE };
+    $$("[data-crm-quick-filter]", board).forEach((control) => {
+      control.value = "";
+    });
+    render();
+  });
 }
 
-function renderCrmDiscardedRow(row, options) {
-  return `
-    <tr data-business-id="${escape(row.business_id)}">
-      <td>${crmInput("firstContactAt", row.first_contact_at, "date", "crm-input--date")}</td>
-      <td>${renderCrmBusinessCell(row)}</td>
-      <td>${crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name")}</td>
-      <td>${renderCrmPhone(row)}</td>
-      <td>${crmSelect("crmStatus", row.crm_status, options.statuses || [])}</td>
-      <td>${crmObjectionInput(row.objection)}</td>
-      <td>${crmTextarea("observations", row.observations, "crm-textarea--notes")}</td>
-    </tr>
-  `;
+function bindCrmTableControls(board, state, render) {
+  $$("[data-action='crm-sort']", board).forEach((button) => {
+    button.addEventListener("click", () => {
+      const key = button.dataset.columnKey;
+      if (state.sortKey === key) {
+        state.sortDir = state.sortDir === "asc" ? "desc" : "asc";
+      } else {
+        state.sortKey = key;
+        state.sortDir = "asc";
+      }
+      render();
+    });
+  });
+
+  $$("[data-crm-column-filter]", board).forEach((control) => {
+    const apply = () => {
+      const key = control.dataset.crmColumnFilter;
+      if (control.value) state.filters[key] = control.value;
+      else delete state.filters[key];
+      state.limits = { active: CRM_PAGE_SIZE, discarded: CRM_PAGE_SIZE };
+      render();
+    };
+    control.addEventListener("change", apply);
+    control.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") control.blur();
+    });
+  });
+
+  $$("[data-action='crm-load-more']", board).forEach((button) => {
+    button.addEventListener("click", () => {
+      const kind = button.dataset.crmKind === "discarded" ? "discarded" : "active";
+      state.limits[kind] += CRM_PAGE_SIZE;
+      render();
+    });
+  });
+
+  $$("th[data-crm-column]", board).forEach((header) => {
+    header.addEventListener("dragstart", (event) => {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", header.dataset.crmColumn);
+      header.classList.add("is-dragging");
+    });
+    header.addEventListener("dragend", () => {
+      header.classList.remove("is-dragging");
+    });
+    header.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+    });
+    header.addEventListener("drop", (event) => {
+      event.preventDefault();
+      const from = event.dataTransfer.getData("text/plain");
+      const to = header.dataset.crmColumn;
+      if (!from || !to || from === to) return;
+      state.columnOrder = moveCrmColumn(state.columnOrder, from, to);
+      saveCrmColumnOrder(state.columnOrder);
+      render();
+    });
+  });
+}
+
+function applyCrmTableState(rows, columns, state) {
+  const filtered = rows.filter((row) => crmMatchesQuickFilters(row, columns, state.quick) && crmMatchesColumnFilters(row, columns, state.filters));
+  if (!state.sortKey) return filtered;
+  const column = columns.find((item) => item.key === state.sortKey);
+  if (!column) return filtered;
+  const dir = state.sortDir === "desc" ? -1 : 1;
+  return [...filtered].sort((a, b) => compareCrmValues(getCrmSortValue(column, a), getCrmSortValue(column, b)) * dir);
+}
+
+function crmMatchesQuickFilters(row, columns, quick = {}) {
+  const search = normalizeCrmText(quick.search);
+  if (search) {
+    const haystack = normalizeCrmText(columns.map((column) => column.value(row)).join(" "));
+    if (!haystack.includes(search)) return false;
+  }
+  if (quick.phoneType) {
+    const type = crmPhoneType(row);
+    if (quick.phoneType === "with_phone" && type === "none") return false;
+    else if (quick.phoneType === "without_phone" && type !== "none") return false;
+    else if (!["with_phone", "without_phone"].includes(quick.phoneType) && type !== quick.phoneType) return false;
+  }
+  if (quick.city && row.city !== quick.city) return false;
+  if (quick.niche && row.niche !== quick.niche) return false;
+  if (quick.adsFunnelType && (row.ads_funnel_type || "unknown") !== quick.adsFunnelType) return false;
+  const investment = parseCrmNumber(row.ads_investment);
+  if (quick.adsInvestmentMin && (investment == null || investment < Number(quick.adsInvestmentMin))) return false;
+  if (quick.adsInvestmentMax && (investment == null || investment > Number(quick.adsInvestmentMax))) return false;
+  return true;
+}
+
+function crmMatchesColumnFilters(row, columns, filters = {}) {
+  return Object.entries(filters).every(([key, filter]) => {
+    if (!filter) return true;
+    const column = columns.find((item) => item.key === key);
+    if (!column) return true;
+    const value = column.value(row);
+    if (column.filter === "select" || column.filter === "boolean") return String(value ?? "") === String(filter);
+    if (column.filter === "date") return String(value || "") === String(filter);
+    if (column.filter === "number") return matchCrmNumberFilter(value, filter);
+    return normalizeCrmText(value).includes(normalizeCrmText(filter));
+  });
+}
+
+function getCrmSortValue(column, row) {
+  if (column.sortValue) return column.sortValue(row);
+  return column.value(row);
+}
+
+function compareCrmValues(a, b) {
+  const emptyA = a == null || a === "";
+  const emptyB = b == null || b === "";
+  if (emptyA && emptyB) return 0;
+  if (emptyA) return 1;
+  if (emptyB) return -1;
+  const numberA = typeof a === "number" ? a : Number.NaN;
+  const numberB = typeof b === "number" ? b : Number.NaN;
+  if (!Number.isNaN(numberA) && !Number.isNaN(numberB)) return numberA - numberB;
+  return String(a).localeCompare(String(b), "es", { numeric: true, sensitivity: "base" });
+}
+
+function orderedCrmColumns(columns, order) {
+  const byKey = new Map(columns.map((column) => [column.key, column]));
+  const ordered = (order || []).map((key) => byKey.get(key)).filter(Boolean);
+  const missing = columns.filter((column) => !ordered.some((item) => item.key === column.key));
+  return [...ordered, ...missing];
+}
+
+function loadCrmColumnOrder() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(CRM_COLUMN_ORDER_KEY) || "[]");
+    if (Array.isArray(parsed) && parsed.length) return parsed;
+  } catch {}
+  return [...CRM_DEFAULT_COLUMNS];
+}
+
+function saveCrmColumnOrder(order) {
+  try {
+    localStorage.setItem(CRM_COLUMN_ORDER_KEY, JSON.stringify(order));
+  } catch {}
+}
+
+function moveCrmColumn(order, from, to) {
+  const current = [...new Set([...(order || CRM_DEFAULT_COLUMNS), ...CRM_DEFAULT_COLUMNS])];
+  const fromIndex = current.indexOf(from);
+  const toIndex = current.indexOf(to);
+  if (fromIndex < 0 || toIndex < 0) return current;
+  const [item] = current.splice(fromIndex, 1);
+  current.splice(toIndex, 0, item);
+  return current;
+}
+
+function renderOptions(values = [], selected = "", labels = {}) {
+  return uniqueStrings(values)
+    .map((value) => {
+      const label = labels[value] || value;
+      return `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`;
+    })
+    .join("");
+}
+
+function uniqueCrmValues(rows, key) {
+  return uniqueStrings(rows.map((row) => row?.[key]));
+}
+
+function uniqueStrings(values = []) {
+  return Array.from(new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b, "es", { sensitivity: "base", numeric: true })
+  );
+}
+
+function normalizeCrmText(value) {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .trim();
+}
+
+function crmPhoneType(row) {
+  const raw = String(row.phone_e164 || row.phone || "").trim();
+  if (!raw) return "none";
+  const digits = raw.replace(/\D/g, "");
+  let local = digits;
+  if (local.startsWith("0034")) local = local.slice(4);
+  else if (local.startsWith("34") && local.length === 11) local = local.slice(2);
+  const first = local[0];
+  if (first === "6" || first === "7") return "mobile";
+  if (first === "8" || first === "9") return "fixed";
+  return "unknown";
+}
+
+function crmPhoneLabel(type) {
+  return { mobile: "Móvil", fixed: "Fijo", unknown: "Otro" }[type] || "";
+}
+
+function parseCrmNumber(value) {
+  if (value == null || value === "") return null;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const raw = String(value).replace(/[€\s]/g, "");
+  if (!raw) return null;
+  const normalized = raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, "");
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function matchCrmNumberFilter(value, filter) {
+  const number = parseCrmNumber(value);
+  if (number == null) return false;
+  const text = String(filter || "").trim();
+  if (!text) return true;
+  const range = text.match(/^(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)$/);
+  if (range) return number >= Number(range[1].replace(",", ".")) && number <= Number(range[2].replace(",", "."));
+  const op = text.match(/^(>=|<=|>|<)\s*(\d+(?:[.,]\d+)?)$/);
+  if (op) {
+    const target = Number(op[2].replace(",", "."));
+    if (op[1] === ">=") return number >= target;
+    if (op[1] === "<=") return number <= target;
+    if (op[1] === ">") return number > target;
+    if (op[1] === "<") return number < target;
+  }
+  const exact = parseCrmNumber(text);
+  return exact == null ? String(value ?? "").includes(text) : number === exact;
+}
+
+function crmBoolValue(value) {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return "unknown";
+}
+
+function crmReadonly(value) {
+  return value ? `<span class="crm-readonly">${escape(value)}</span>` : `<span class="faint">—</span>`;
+}
+
+function renderCrmMoney(value) {
+  const number = parseCrmNumber(value);
+  return number == null
+    ? `<span class="faint">—</span>`
+    : `<span class="mono crm-money">${escape(new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(number))}</span>`;
 }
 
 function renderCrmBusinessCell(row) {
@@ -1752,8 +2329,9 @@ function renderCrmBusinessCell(row) {
 
 function renderCrmPhone(row) {
   const phone = row.phone_e164 || row.phone;
+  const type = crmPhoneType(row);
   return phone
-    ? `<a class="mono crm-phone" href="tel:${escape(phone)}">${escape(phone)}</a>`
+    ? `<div class="crm-phone-cell"><a class="mono crm-phone" href="tel:${escape(phone)}">${escape(phone)}</a>${type !== "none" ? `<span class="crm-phone-type crm-phone-type--${escape(type)}">${escape(crmPhoneLabel(type))}</span>` : ""}</div>`
     : `<span class="faint">—</span>`;
 }
 
@@ -1787,9 +2365,7 @@ function crmObjectionInput(value) {
   return `<input class="crm-input crm-input--objection" data-crm-field="objection" list="crm-objection-options" value="${escape(value || "")}" />`;
 }
 
-function bindCrmBoard(scope) {
-  const board = $(".crm-board", scope);
-  if (!board) return;
+function bindCrmEditableControls(board) {
   const saveState = $("[data-bind='crm-save-state']", board);
   $$("[data-crm-field]", board).forEach((control) => {
     control.dataset.lastValue = control.value;
@@ -1821,16 +2397,47 @@ async function saveCrmControl(control, board, saveState) {
     control.dataset.lastValue = control.value;
     control.classList.remove("is-saving");
     control.classList.add("is-saved");
+    const changedKey = updateCrmLocalRow(board, businessId, field, control.value);
     if (field === "objection" && control.value) appendCrmObjectionOption(board, control.value);
     if (saveState) saveState.textContent = "Guardado";
     setTimeout(() => control.classList.remove("is-saved"), 900);
-    if (field === "crmStatus") setTimeout(router, 120);
+    if (shouldRerenderCrmAfterSave(board, field, changedKey)) window.setTimeout(() => board.__crmRender?.(), 120);
   } catch (err) {
     control.classList.remove("is-saving");
     control.classList.add("is-error");
     if (saveState) saveState.textContent = "Error al guardar";
     toast(`No se pudo guardar (${err.message})`, "error");
   }
+}
+
+function updateCrmLocalRow(board, businessId, field, value) {
+  const row = board.__crmRows?.find((item) => item.business_id === businessId);
+  if (!row) return "";
+  const key = {
+    firstContactAt: "first_contact_at",
+    decisionMakerName: "decision_maker_name",
+    decisionMakerEmail: "decision_maker_email",
+    answeredBy: "answered_by",
+    crmStatus: "crm_status",
+    checkpoint: "checkpoint",
+    objection: "objection",
+    followUpDate: "follow_up_date",
+    followUpTime: "follow_up_time",
+    nextAction: "next_action",
+    observations: "observations"
+  }[field];
+  if (!key) return "";
+  row[key] = value || (key === "crm_status" ? "Nuevo" : null);
+  return key;
+}
+
+function shouldRerenderCrmAfterSave(board, field, changedKey) {
+  if (field === "crmStatus") return true;
+  const state = board.__crmState;
+  if (!state || !changedKey) return false;
+  if (state.sortKey === changedKey) return true;
+  if (state.filters?.[changedKey]) return true;
+  return Boolean(state.quick?.search);
 }
 
 function appendCrmObjectionOption(board, value) {
