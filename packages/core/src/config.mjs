@@ -54,6 +54,16 @@ export const config = {
     runTimeoutSecs: intFromEnv("APIFY_RUN_TIMEOUT_SECS", 90),
     maxChargedResults: intFromEnv("APIFY_MAX_CHARGED_RESULTS", 10)
   },
+  adsFunnelAi: {
+    provider: process.env.ADS_FUNNEL_AI_PROVIDER || "deepinfra",
+    mode: process.env.ADS_FUNNEL_AI_MODE || "always",
+    apiKey: process.env.DEEPINFRA_API_KEY || "",
+    baseUrl: trimTrailingSlash(process.env.DEEPINFRA_BASE_URL || "https://api.deepinfra.com/v1/openai"),
+    model: process.env.ADS_FUNNEL_AI_MODEL || "deepseek-ai/DeepSeek-V4-Flash",
+    requestTimeoutMs: intFromEnv("ADS_FUNNEL_AI_REQUEST_TIMEOUT_MS", 45000),
+    maxEvidenceChars: intFromEnv("ADS_FUNNEL_AI_MAX_EVIDENCE_CHARS", 18000),
+    maxVisibleTextChars: intFromEnv("ADS_FUNNEL_AI_MAX_VISIBLE_TEXT_CHARS", 9000)
+  },
   google: {
     apiKey: process.env.GOOGLE_MAPS_API_KEY || "",
     placesBaseUrl: trimTrailingSlash(

@@ -1,4 +1,10 @@
+import { config } from "./config.mjs";
+
 const DEFAULT_MAX_PAGES = 2;
+const DEFAULT_MAX_VISIBLE_TEXT_CHARS = 9000;
+const DEFAULT_MAX_EVIDENCE_CHARS = 18000;
+
+const AI_TYPES = new Set(["lead_generation", "ecommerce", "other"]);
 
 const BLOCKED_LANDING_HOSTS = [
   "facebook.com",
@@ -41,6 +47,8 @@ export async function classifyAdsLandingIntent({
   business = {},
   enrichment = {},
   firecrawl,
+  aiClassifier,
+  aiConfig = config.adsFunnelAi,
   now = new Date(),
   maxPages = DEFAULT_MAX_PAGES
 } = {}) {
@@ -88,7 +96,7 @@ export async function classifyAdsLandingIntent({
         onlyMainContent: false,
         waitFor: 2500
       });
-      evaluated.push(classifyLandingPage({ url, page, business, candidate }));
+      evaluated.push(await classifyLandingPageForAds({ url, page, business, candidate, aiClassifier, aiConfig }));
     } catch (error) {
       rejected.push({
         url,
@@ -121,6 +129,7 @@ export async function classifyAdsLandingIntent({
     source: best.source || null,
     scores: best.scores,
     signals: best.signals.slice(0, 10),
+    ai: best.ai || null,
     rejected,
     evaluated: evaluated.map((item) => ({
       type: item.type,
@@ -130,7 +139,8 @@ export async function classifyAdsLandingIntent({
       reason: item.reason,
       scores: item.scores,
       signals: item.signals.slice(0, 6),
-      genericContactPage: item.genericContactPage
+      genericContactPage: item.genericContactPage,
+      ai: item.ai || null
     })),
     candidates: crawlCandidates.slice(0, 8)
   };
@@ -418,6 +428,297 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
   };
 }
 
+async function classifyLandingPageForAds({ url, page = {}, business = {}, candidate = {}, aiClassifier, aiConfig = config.adsFunnelAi } = {}) {
+  const deterministic = classifyLandingPage({ url, page, business, candidate });
+  if (!shouldUseAiClassifier({ deterministic, aiClassifier, aiConfig })) return deterministic;
+
+  const evidence = buildLandingEvidencePack({
+    url,
+    page,
+    business,
+    candidate,
+    deterministic,
+    maxVisibleTextChars: aiConfig?.maxVisibleTextChars || DEFAULT_MAX_VISIBLE_TEXT_CHARS,
+    maxEvidenceChars: aiConfig?.maxEvidenceChars || DEFAULT_MAX_EVIDENCE_CHARS
+  });
+
+  try {
+    const rawResult = aiClassifier
+      ? await aiClassifier({ evidence, deterministic, aiConfig })
+      : await classifyLandingWithDeepInfra({ evidence, aiConfig });
+    return mergeAiClassification({ deterministic, rawResult, evidence, aiConfig });
+  } catch (error) {
+    return {
+      ...deterministic,
+      ai: {
+        status: "failed",
+        provider: aiConfig?.provider || "deepinfra",
+        model: aiConfig?.model || null,
+        error: error.message,
+        evidenceChars: JSON.stringify(evidence).length
+      }
+    };
+  }
+}
+
+function shouldUseAiClassifier({ deterministic, aiClassifier, aiConfig }) {
+  if (aiClassifier) return true;
+  if (!aiConfig || aiConfig.mode === "never" || aiConfig.provider !== "deepinfra" || !aiConfig.apiKey) return false;
+  if (aiConfig.mode === "always") return true;
+  const scores = deterministic?.scores || {};
+  const values = [scores.lead_generation || 0, scores.ecommerce || 0, scores.other || 0].sort((a, b) => b - a);
+  const gap = (values[0] || 0) - (values[1] || 0);
+  return deterministic?.type === "other" || deterministic?.confidence < 0.82 || gap < 2.2;
+}
+
+export function buildLandingEvidencePack({
+  url,
+  page = {},
+  business = {},
+  candidate = {},
+  deterministic = {},
+  maxVisibleTextChars = DEFAULT_MAX_VISIBLE_TEXT_CHARS,
+  maxEvidenceChars = DEFAULT_MAX_EVIDENCE_CHARS
+} = {}) {
+  const html = String(page.html || "");
+  const links = normalizeEvidenceLinks(page.links);
+  const ctas = extractCtas(html, links);
+  const forms = extractForms(html);
+  const visibleText = compactEvidenceText([
+    page?.metadata?.title,
+    page?.markdown,
+    cleanLandingHtml(html, { maxChars: maxVisibleTextChars }),
+    links.map((link) => `${link.text} ${link.url}`).join("\n")
+  ], maxVisibleTextChars);
+  const evidence = {
+    task: "ads_landing_funnel_classification",
+    schemaVersion: 1,
+    allowedTypes: ["lead_generation", "ecommerce", "other"],
+    business: compactObject({
+      name: business.name,
+      website: business.website,
+      city: business.city,
+      niche: business.niche || business.category
+    }),
+    landing: compactObject({
+      url,
+      path: urlPath(url),
+      provider: candidate.provider || null,
+      source: candidate.source || null,
+      sameDomain: candidate.sameDomain ?? null,
+      genericContactPage: deterministic.genericContactPage === true
+    }),
+    deterministic: {
+      type: deterministic.type,
+      confidence: deterministic.confidence,
+      reason: deterministic.reason,
+      scores: deterministic.scores,
+      signals: compactSignals(deterministic.signals)
+    },
+    extracted: {
+      visibleText,
+      ctas,
+      forms,
+      keyLinks: extractKeyLinks(links, ctas),
+      technologySignals: extractTechnologySignals({ html, text: visibleText, links }),
+      structuredDataTypes: extractJsonLdTypes(html)
+    },
+    decisionRules: [
+      "Classify ecommerce when the landing lets the user directly buy, add products to cart, checkout, browse a catalog, pick variants, see stock, or complete payment.",
+      "Classify lead_generation when the primary objective is quote/demo/consultation/call/appointment capture through a form, phone, WhatsApp, calendar, CRM form, or explicit sales contact CTA.",
+      "Do not classify a generic contact page or newsletter as lead_generation unless the ad landing has specific quote/demo/appointment intent.",
+      "If WooCommerce/Shopify exists but the landing is a custom quote funnel without direct checkout, prefer lead_generation.",
+      "If both appear, decide by the primary CTA and the final user action on this exact landing."
+    ]
+  };
+  return enforceEvidenceBudget(evidence, maxEvidenceChars, maxVisibleTextChars);
+}
+
+export function cleanLandingHtml(html, { maxChars = DEFAULT_MAX_VISIBLE_TEXT_CHARS } = {}) {
+  if (!html) return "";
+  const text = decodeEntities(String(html)
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript\b[^>]*>[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg\b[^>]*>[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<canvas\b[^>]*>[\s\S]*?<\/canvas>/gi, " ")
+    .replace(/<iframe\b[^>]*>[\s\S]*?<\/iframe>/gi, " ")
+    .replace(/<template\b[^>]*>[\s\S]*?<\/template>/gi, " ")
+    .replace(/<(?:br|hr)\s*\/?>/gi, "\n")
+    .replace(/<\/(?:p|div|section|article|header|footer|main|aside|li|ul|ol|h[1-6]|tr|td|th|form|button|a)>/gi, "\n")
+    .replace(/<[^>]+>/g, " "));
+  return compactEvidenceText([text], maxChars);
+}
+
+async function classifyLandingWithDeepInfra({ evidence, aiConfig = config.adsFunnelAi } = {}) {
+  const baseUrl = String(aiConfig?.baseUrl || "https://api.deepinfra.com/v1/openai").replace(/\/+$/, "");
+  const model = aiConfig?.model || "deepseek-ai/DeepSeek-V4-Flash";
+  const body = {
+    model,
+    temperature: 0,
+    max_tokens: 700,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You classify the business objective of an ads landing page.",
+          "Return only valid JSON. Do not include markdown.",
+          "Allowed type values: lead_generation, ecommerce, other.",
+          "Be strict: a CRM/form/CTA must be tied to quote/demo/call/appointment intent for lead_generation.",
+          "Direct cart, checkout, product catalog, stock, variants, prices and payment flow usually mean ecommerce."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          outputSchema: {
+            type: "lead_generation|ecommerce|other",
+            confidence: "number 0..1",
+            reason: "short snake_case reason",
+            scores: { lead_generation: "0..10", ecommerce: "0..10", other: "0..10" },
+            winningSignals: ["short evidence strings"],
+            rejectedSignals: ["short evidence strings"],
+            landingSummary: "one short sentence"
+          },
+          evidence
+        })
+      }
+    ]
+  };
+
+  let json;
+  try {
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+  } catch (error) {
+    if (!/response_format|json_object|unsupported/i.test(error.message)) throw error;
+    const fallbackBody = { ...body };
+    delete fallbackBody.response_format;
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+  }
+  return {
+    ...parseAiJson(json?.choices?.[0]?.message?.content),
+    usage: json?.usage || null
+  };
+}
+
+async function postDeepInfraJson({ baseUrl, apiKey, body, timeoutMs }) {
+  if (!apiKey) throw new Error("deepinfra_api_key_missing");
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${apiKey}`,
+        "content-type": "application/json"
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal
+    });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`deepinfra_http_${response.status}:${text.slice(0, 300)}`);
+    }
+    return JSON.parse(text);
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function mergeAiClassification({ deterministic, rawResult, evidence, aiConfig }) {
+  const result = normalizeAiClassification(rawResult);
+  if (!result) {
+    return {
+      ...deterministic,
+      ai: {
+        status: "invalid_response",
+        provider: aiConfig?.provider || "deepinfra",
+        model: aiConfig?.model || null,
+        evidenceChars: JSON.stringify(evidence).length
+      }
+    };
+  }
+  const primarySignal = {
+    target: result.type,
+    id: "ai_landing_classifier",
+    label: "Clasificador DeepSeek",
+    weight: 5,
+    snippet: result.summary || result.reason
+  };
+  const aiSignals = result.winningSignals.slice(0, 5).map((snippet, index) => ({
+    target: result.type,
+    id: `ai_winning_signal_${index + 1}`,
+    label: "Señal validada por DeepSeek",
+    weight: Math.max(1, 3 - index * 0.3),
+    snippet: compactSnippet(snippet)
+  }));
+  const rejectedSignals = result.rejectedSignals.slice(0, 5).map((snippet, index) => ({
+    target: "other",
+    id: `ai_rejected_signal_${index + 1}`,
+    label: "Señal descartada por DeepSeek",
+    weight: 0,
+    snippet: compactSnippet(snippet)
+  }));
+  return {
+    ...deterministic,
+    type: result.type,
+    confidence: result.confidence,
+    reason: result.reason || "ai_landing_classification",
+    scores: result.scores || deterministic.scores,
+    signals: [primarySignal, ...aiSignals, ...deterministic.signals, ...rejectedSignals]
+      .filter(Boolean)
+      .slice(0, 16),
+    ai: {
+      status: "classified",
+      provider: aiConfig?.provider || "deepinfra",
+      model: aiConfig?.model || null,
+      evidenceChars: JSON.stringify(evidence).length,
+      deterministicType: deterministic.type,
+      deterministicConfidence: deterministic.confidence,
+      summary: result.summary || null,
+      usage: rawResult?.usage || null
+    }
+  };
+}
+
+function normalizeAiClassification(rawResult) {
+  if (!rawResult || typeof rawResult !== "object") return null;
+  const type = AI_TYPES.has(rawResult.type) ? rawResult.type : null;
+  if (!type) return null;
+  const scores = rawResult.scores && typeof rawResult.scores === "object"
+    ? {
+        lead_generation: roundScore(rawResult.scores.lead_generation),
+        ecommerce: roundScore(rawResult.scores.ecommerce),
+        other: roundScore(rawResult.scores.other)
+      }
+    : null;
+  return {
+    type,
+    confidence: clampConfidence(rawResult.confidence, type),
+    reason: normalizeReason(rawResult.reason) || "ai_landing_classification",
+    scores,
+    winningSignals: normalizeStringArray(rawResult.winningSignals || rawResult.winning_signals),
+    rejectedSignals: normalizeStringArray(rawResult.rejectedSignals || rawResult.rejected_signals),
+    summary: compactSnippet(rawResult.landingSummary || rawResult.summary || rawResult.explanation)
+  };
+}
+
+function parseAiJson(content) {
+  const raw = String(content || "").trim()
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    return match ? JSON.parse(match[0]) : null;
+  }
+}
+
 export function extractLandingUrlsFromText(text, { business = {} } = {}) {
   const prepared = decodeEntities(String(text || ""))
     .replace(/\\\//g, "/")
@@ -515,6 +816,197 @@ function pageText(page) {
   return `${page?.metadata?.title || ""}\n${page?.markdown || ""}\n${page?.html || ""}\n${links}`.slice(0, 280000);
 }
 
+function normalizeEvidenceLinks(links) {
+  return (Array.isArray(links) ? links : [])
+    .map((link) => ({
+      text: compactSnippet(link?.text || link?.title || ""),
+      url: normalizeLandingUrl(link?.url || link?.href || "")
+    }))
+    .filter((link) => link.url || link.text)
+    .slice(0, 80);
+}
+
+function extractCtas(html, links = []) {
+  const items = [];
+  const source = String(html || "");
+  for (const match of source.matchAll(/<(a|button)\b([^>]*)>([\s\S]*?)<\/\1>/gi)) {
+    const text = cleanLandingHtml(match[3], { maxChars: 160 });
+    const href = normalizeLandingUrl(attr(match[2], "href"));
+    const classes = compactSnippet([attr(match[2], "class"), attr(match[2], "id"), attr(match[2], "name")].filter(Boolean).join(" "));
+    if (!text && !href && !classes) continue;
+    items.push(compactObject({
+      kind: match[1].toLowerCase(),
+      text,
+      href,
+      classes,
+      intent: classifyCtaIntent(`${text} ${href} ${classes}`)
+    }));
+  }
+  for (const match of source.matchAll(/<input\b([^>]*?)>/gi)) {
+    const type = attr(match[1], "type").toLowerCase();
+    if (!["submit", "button"].includes(type)) continue;
+    const text = attr(match[1], "value") || attr(match[1], "aria-label") || type;
+    items.push(compactObject({
+      kind: "input",
+      text: compactSnippet(text),
+      classes: compactSnippet([attr(match[1], "class"), attr(match[1], "id"), attr(match[1], "name")].filter(Boolean).join(" ")),
+      intent: classifyCtaIntent(text)
+    }));
+  }
+  for (const link of links.slice(0, 40)) {
+    const intent = classifyCtaIntent(`${link.text} ${link.url}`);
+    if (intent !== "other") {
+      items.push(compactObject({ kind: "link", text: link.text, href: link.url, intent }));
+    }
+  }
+  return dedupeObjects(items, (item) => `${item.kind}:${item.text}:${item.href || ""}`)
+    .filter((item) => item.text || item.href)
+    .slice(0, 28);
+}
+
+function extractForms(html) {
+  const forms = [];
+  const source = String(html || "");
+  for (const match of source.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/gi)) {
+    const attrs = match[1] || "";
+    const body = match[2] || "";
+    const haystack = normalizeText(`${attrs} ${body}`);
+    const fields = [];
+    for (const field of body.matchAll(/<(input|textarea|select)\b([^>]*)>/gi)) {
+      fields.push(compactObject({
+        tag: field[1].toLowerCase(),
+        type: attr(field[2], "type") || (field[1].toLowerCase() === "textarea" ? "textarea" : ""),
+        name: attr(field[2], "name") || attr(field[2], "id"),
+        placeholder: compactSnippet(attr(field[2], "placeholder") || attr(field[2], "aria-label"))
+      }));
+    }
+    const submitText = Array.from(body.matchAll(/<(?:button|input)\b([^>]*)>([\s\S]*?)<\/button>|<input\b([^>]*?)>/gi))
+      .map((button) => cleanLandingHtml(button[2] || attr(button[1] || button[3], "value"), { maxChars: 80 }))
+      .filter(Boolean)
+      .slice(0, 4);
+    forms.push(compactObject({
+      action: normalizeLandingUrl(attr(attrs, "action")),
+      classes: compactSnippet([attr(attrs, "class"), attr(attrs, "id"), attr(attrs, "name")].filter(Boolean).join(" ")),
+      fields: fields.slice(0, 14),
+      submitText,
+      transactional: /product-form|cart|checkout|add-to-cart|woocommerce|shopify|quantity|variation|coupon/.test(haystack),
+      leadIntent: /email|e-mail|telefono|teléfono|phone|nombre|name|empresa|company|mensaje|message|presupuesto|consulta|demo|cita|quote|cotizacion|cotización/.test(haystack)
+    }));
+  }
+  return forms.slice(0, 8);
+}
+
+function extractKeyLinks(links, ctas = []) {
+  const all = [
+    ...links,
+    ...ctas.map((cta) => ({ text: cta.text, url: cta.href })).filter((link) => link.url)
+  ];
+  return dedupeObjects(all, (link) => link.url)
+    .filter((link) => {
+      const haystack = normalizeText(`${link.text} ${link.url}`);
+      return /cart|carrito|checkout|finalizar|comprar|product|producto|shop|tienda|catalog|categoria|collection|contact|contacto|presupuesto|demo|cita|consulta|quote|whatsapp|wa\.me|calendly|typeform|hubspot|mailto:|tel:/.test(haystack);
+    })
+    .map((link) => compactObject({
+      text: link.text,
+      url: link.url,
+      intent: classifyCtaIntent(`${link.text} ${link.url}`)
+    }))
+    .slice(0, 35);
+}
+
+function extractTechnologySignals({ html, text, links = [] }) {
+  const haystack = `${html || ""}\n${text || ""}\n${links.map((link) => `${link.text} ${link.url}`).join("\n")}`;
+  const checks = [
+    ["ecommerce", "shopify", /shopify|cdn\.shopify|ShopifyAnalytics/i],
+    ["ecommerce", "woocommerce", /woocommerce|wc-ajax|wp-content\/plugins\/woocommerce/i],
+    ["ecommerce", "prestashop", /prestashop/i],
+    ["ecommerce", "magento", /magento/i],
+    ["ecommerce", "bigcommerce", /bigcommerce/i],
+    ["ecommerce", "stripe_or_paypal", /stripe|paypal|klarna|redsys|mercadopago/i],
+    ["lead_generation", "hubspot", /hubspot|hbspt\.forms|hsforms/i],
+    ["lead_generation", "calendly", /calendly/i],
+    ["lead_generation", "typeform_or_jotform", /typeform|jotform/i],
+    ["lead_generation", "crm_or_marketing_form", /marketo|pardot|salesforce|pipedrive|zoho|activecampaign/i],
+    ["lead_generation", "wordpress_form_plugin", /gravityforms|gform_|wpforms|wpcf7|contact-form-7|elementor-form/i],
+    ["lead_generation", "whatsapp", /wa\.me|api\.whatsapp\.com|whatsapp/i]
+  ];
+  return checks
+    .filter(([, , pattern]) => pattern.test(haystack))
+    .map(([target, value]) => ({ target, value }))
+    .slice(0, 18);
+}
+
+function extractJsonLdTypes(html) {
+  const types = [];
+  for (const match of String(html || "").matchAll(/<script\b[^>]+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    const json = decodeEntities(match[1]).trim();
+    for (const typeMatch of json.matchAll(/"@type"\s*:\s*"?([A-Za-z0-9_-]+)/g)) {
+      if (!types.includes(typeMatch[1])) types.push(typeMatch[1]);
+    }
+    if (/"offers?"\s*:/i.test(json) && !types.includes("Offer")) types.push("Offer");
+    if (/"price"\s*:/i.test(json) && !types.includes("Price")) types.push("Price");
+  }
+  return types.slice(0, 12);
+}
+
+function compactEvidenceText(parts, maxChars) {
+  const seen = new Set();
+  const chunks = [];
+  for (const part of parts.flatMap((item) => String(item || "").split(/\n+/))) {
+    const compact = decodeEntities(part)
+      .replace(/https?:\/\/\S+/gi, (url) => normalizeLandingUrl(url) || " ")
+      .replace(/[ \t\r\f\v]+/g, " ")
+      .replace(/\s+([,.;:!?])/g, "$1")
+      .trim();
+    if (!compact || compact.length < 2) continue;
+    const key = normalizeText(compact).slice(0, 160);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    chunks.push(compact);
+  }
+  return chunks.join("\n").replace(/\n{3,}/g, "\n\n").slice(0, maxChars).trim();
+}
+
+function compactSignals(signals = []) {
+  return (Array.isArray(signals) ? signals : [])
+    .map((signal) => compactObject({
+      target: signal.target,
+      id: signal.id,
+      label: signal.label,
+      weight: signal.weight,
+      snippet: signal.snippet
+    }))
+    .slice(0, 12);
+}
+
+function enforceEvidenceBudget(evidence, maxEvidenceChars, maxVisibleTextChars) {
+  let result = evidence;
+  let serialized = JSON.stringify(result);
+  if (serialized.length <= maxEvidenceChars) return result;
+  result = {
+    ...result,
+    extracted: {
+      ...result.extracted,
+      visibleText: result.extracted.visibleText.slice(0, Math.max(1500, Math.floor(maxVisibleTextChars * 0.55))),
+      ctas: result.extracted.ctas.slice(0, 18),
+      forms: result.extracted.forms.slice(0, 5),
+      keyLinks: result.extracted.keyLinks.slice(0, 18)
+    }
+  };
+  serialized = JSON.stringify(result);
+  if (serialized.length <= maxEvidenceChars) return result;
+  return {
+    ...result,
+    extracted: {
+      ...result.extracted,
+      visibleText: result.extracted.visibleText.slice(0, 2500),
+      ctas: result.extracted.ctas.slice(0, 10),
+      forms: result.extracted.forms.slice(0, 3),
+      keyLinks: result.extracted.keyLinks.slice(0, 10)
+    }
+  };
+}
+
 function normalizeLandingUrl(value) {
   if (!value) return "";
   let raw = String(value).trim().replace(/[.,;)\]}"']+$/g, "");
@@ -602,6 +1094,72 @@ function compactSnippet(value) {
   return String(value || "").replace(/\s+/g, " ").trim().slice(0, 120);
 }
 
+function attr(attrs, name) {
+  const pattern = new RegExp(`${name}\\s*=\\s*(["'])(.*?)\\1`, "i");
+  const quoted = String(attrs || "").match(pattern);
+  if (quoted?.[2]) return decodeEntities(quoted[2]).trim();
+  const unquoted = String(attrs || "").match(new RegExp(`${name}\\s*=\\s*([^\\s>]+)`, "i"));
+  return unquoted?.[1] ? decodeEntities(unquoted[1]).trim() : "";
+}
+
+function classifyCtaIntent(value) {
+  const text = normalizeText(value);
+  if (/add-to-cart|agregar al carrito|anadir al carrito|añadir al carrito|comprar|checkout|finalizar compra|carrito|cesta|shop|tienda|producto|catalogo|catálogo|collection|stock|precio|oferta/.test(text)) {
+    return "ecommerce";
+  }
+  if (/presupuesto|cotizacion|cotización|consulta|demo|cita|llamada|te llamamos|contacta|contacto|habla con|quote|calendly|typeform|hubspot|whatsapp|wa\.me|mailto:|tel:|agenda/.test(text)) {
+    return "lead_generation";
+  }
+  return "other";
+}
+
+function compactObject(object) {
+  return Object.fromEntries(
+    Object.entries(object || {}).filter(([, value]) => {
+      if (value == null || value === "") return false;
+      if (Array.isArray(value)) return value.length > 0;
+      if (typeof value === "object") return Object.keys(value).length > 0;
+      return true;
+    })
+  );
+}
+
+function dedupeObjects(items, keyFn) {
+  const seen = new Set();
+  const result = [];
+  for (const item of items) {
+    const key = keyFn(item);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+  return result;
+}
+
+function clampConfidence(value, type) {
+  const parsed = Number(value);
+  const fallback = type === "other" ? 0.55 : 0.78;
+  if (!Number.isFinite(parsed)) return fallback;
+  return roundScore(Math.min(0.97, Math.max(0.35, parsed)), 2);
+}
+
+function normalizeReason(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 80);
+}
+
+function normalizeStringArray(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => compactSnippet(typeof item === "string" ? item : JSON.stringify(item)))
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 function normalizeText(value) {
   return String(value || "")
     .normalize("NFD")
@@ -612,11 +1170,27 @@ function normalizeText(value) {
 
 function decodeEntities(value) {
   return String(value || "")
+    .replace(/&#(\d+);/g, (_, code) => {
+      const parsed = Number.parseInt(code, 10);
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : " ";
+    })
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => {
+      const parsed = Number.parseInt(code, 16);
+      return Number.isFinite(parsed) ? String.fromCodePoint(parsed) : " ";
+    })
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
     .replace(/&#39;/g, "'")
     .replace(/&lt;/gi, "<")
-    .replace(/&gt;/gi, ">");
+    .replace(/&gt;/gi, ">")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&aacute;/gi, "á")
+    .replace(/&eacute;/gi, "é")
+    .replace(/&iacute;/gi, "í")
+    .replace(/&oacute;/gi, "ó")
+    .replace(/&uacute;/gi, "ú")
+    .replace(/&ntilde;/gi, "ñ")
+    .replace(/&[a-z0-9#]+;/gi, " ");
 }
 
 function unique(items) {

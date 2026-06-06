@@ -17,7 +17,13 @@ import { buildVariableValues, defaultVariableMap } from "../packages/core/src/le
 import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../packages/core/src/leadImport.mjs";
 import { buildMetaAdProbes, buildMetaAdsLibraryUrl, discoverSocialsForAds, enrichBusinessAds, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
-import { classifyAdsLandingIntent, classifyLandingPage, extractLandingUrlsFromText } from "../packages/core/src/adsLandingClassifier.mjs";
+import {
+  buildLandingEvidencePack,
+  classifyAdsLandingIntent,
+  classifyLandingPage,
+  cleanLandingHtml,
+  extractLandingUrlsFromText
+} from "../packages/core/src/adsLandingClassifier.mjs";
 
 test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("600 111 222"), "+34600111222");
@@ -430,6 +436,67 @@ test("classifies ecommerce stores as ecommerce despite account forms and registe
   assert.equal(result.type, "ecommerce");
   assert.ok(result.scores.ecommerce > result.scores.lead_generation);
   assert.ok(result.signals.some((signal) => signal.id === "catalog_runtime_copy"));
+});
+
+test("cleans landing HTML into compact visible text and evidence", () => {
+  const html = `
+    <style>.hidden{display:none}</style>
+    <script>window.analytics = { price: "$999999" };</script>
+    <section><h1>Reserva una demo</h1><p>Te llamamos hoy &amp; preparamos presupuesto.</p></section>
+    <form class="elementor-form"><input name="email"><button>Solicitar presupuesto</button></form>
+  `;
+  const cleaned = cleanLandingHtml(html);
+  assert.match(cleaned, /Reserva una demo/);
+  assert.match(cleaned, /Te llamamos hoy & preparamos presupuesto/);
+  assert.doesNotMatch(cleaned, /analytics/);
+  assert.doesNotMatch(cleaned, /display:none/);
+
+  const evidence = buildLandingEvidencePack({
+    url: "https://demo.example/landing",
+    page: { html, markdown: "", links: [{ text: "Comprar", url: "https://demo.example/checkout" }] },
+    business: { name: "Demo", website: "https://demo.example" },
+    deterministic: classifyLandingPage({ url: "https://demo.example/landing", page: { html, markdown: "", links: [] } })
+  });
+  assert.ok(evidence.extracted.visibleText.length < html.length);
+  assert.ok(evidence.extracted.forms[0].leadIntent);
+  assert.ok(evidence.extracted.ctas.some((cta) => cta.intent === "lead_generation"));
+});
+
+test("uses AI landing classification when configured and stores auditable signals", async () => {
+  const firecrawl = {
+    async scrape() {
+      return {
+        markdown: "Precio $15.000. Agregar al carrito. Carrito de compras. Finalizar compra.",
+        html: '<form class="elementor-form"><input name="email"></form><button class="add-to-cart">Agregar al carrito</button>',
+        links: [{ text: "Checkout", url: "https://shop.example/checkout" }]
+      };
+    }
+  };
+  const classification = await classifyAdsLandingIntent({
+    business: { website: "https://shop.example" },
+    enrichment: { meta: { active: true, landingUrls: ["https://shop.example/"] } },
+    firecrawl,
+    aiConfig: { provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4-Flash", mode: "always" },
+    aiClassifier: async ({ evidence }) => {
+      assert.equal(evidence.extracted.forms[0].leadIntent, true);
+      assert.ok(evidence.extracted.keyLinks.some((link) => link.intent === "ecommerce"));
+      return {
+        type: "ecommerce",
+        confidence: 0.94,
+        reason: "ai_direct_checkout_and_cart",
+        scores: { lead_generation: 2, ecommerce: 9, other: 0 },
+        winningSignals: ["add-to-cart button", "checkout link", "cart copy"],
+        rejectedSignals: ["generic email form without quote/demo intent"],
+        landingSummary: "Direct ecommerce checkout landing."
+      };
+    },
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(classification.type, "ecommerce");
+  assert.equal(classification.reason, "ai_direct_checkout_and_cart");
+  assert.equal(classification.ai.status, "classified");
+  assert.ok(classification.signals.some((signal) => signal.id === "ai_landing_classifier"));
 });
 
 test("classifies custom quote apparel landing as lead generation despite WooCommerce", () => {

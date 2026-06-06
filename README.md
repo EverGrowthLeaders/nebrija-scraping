@@ -52,6 +52,26 @@ CRAWLER_PROVIDER=firecrawl
 
 Si tu despliegue expone Firecrawl sin `/v2`, cambia `FIRECRAWL_BASE_URL` al path real que acepte `/map`, `/scrape` y `/search`.
 
+## Clasificacion de funnel Ads con IA
+
+El enriquecimiento de Ads limpia la landing con Firecrawl y genera un paquete
+compacto de evidencias: texto visible, CTAs, formularios, links clave,
+tecnologias detectadas y senales deterministas. Ese JSON se envia a DeepInfra
+con DeepSeek V4 Flash para decidir si el trafico apunta a captacion de leads,
+ecommerce u otro objetivo.
+
+```env
+DEEPINFRA_API_KEY=...
+ADS_FUNNEL_AI_PROVIDER=deepinfra
+ADS_FUNNEL_AI_MODEL=deepseek-ai/DeepSeek-V4-Flash
+ADS_FUNNEL_AI_MODE=always
+ADS_FUNNEL_AI_MAX_EVIDENCE_CHARS=18000
+ADS_FUNNEL_AI_MAX_VISIBLE_TEXT_CHARS=9000
+```
+
+Si `DEEPINFRA_API_KEY` no esta configurada, el sistema mantiene el clasificador
+determinista local como fallback para no bloquear el enriquecimiento.
+
 ## Flujo principal
 
 1. `POST /campaigns` crea un job de descubrimiento.
@@ -116,6 +136,7 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `FIRECRAWL_BASE_URL`
 - `FIRECRAWL_API_KEY`
 - `APIFY_API_KEY` opcional; fallback de bajo consumo para validar Meta Ads cuando la Ad Library bloquea Firecrawl
+- `DEEPINFRA_API_KEY` para clasificar landings Ads con DeepSeek V4 Flash
 - `GOOGLE_MAPS_API_KEY`
 - `NEBRIJA_API_KEY`
 - `NEBRIJA_ASSISTANT_ID`

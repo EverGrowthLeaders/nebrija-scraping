@@ -1602,7 +1602,9 @@ function adsFunnelLabel(type) {
 }
 
 function adsFunnelReasonLabel(reason) {
+  if (String(reason || "").startsWith("ai_")) return "Clasificación DeepSeek";
   return {
+    ai_landing_classification: "Clasificación DeepSeek",
     ecommerce_signals_won: "Señales de compra y catálogo",
     firecrawl_client_missing: "Firecrawl no disponible",
     insufficient_campaign_intent_signal: "Señal insuficiente",
