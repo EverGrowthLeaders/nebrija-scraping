@@ -493,6 +493,35 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    if (req.method === "POST" && url.pathname === "/api/businesses/ads-enrichment") {
+      const { json } = await readJson(req);
+      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 1000);
+      if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
+
+      const queueJobs = [];
+      let skipped = 0;
+      for (const businessId of businessIds) {
+        const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
+        if (!business) {
+          skipped += 1;
+          continue;
+        }
+        queueJobs.push(
+          await queues.adsEnrichment.add("enrich", {
+            tenantId: auth.tenantId,
+            businessId: business.id,
+            bulk: true
+          })
+        );
+      }
+      return sendJson(res, 202, {
+        queued: queueJobs.length,
+        skipped,
+        queue: QUEUE_NAMES.adsEnrichment,
+        jobIds: queueJobs.map((queueJob) => queueJob.id)
+      });
+    }
+
     const businessDetailMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)$/);
     if (req.method === "GET" && businessDetailMatch) {
       const detail = await findBusinessDetail(businessDetailMatch[1], { tenantId: auth.tenantId });
@@ -678,6 +707,7 @@ const server = http.createServer(async (req, res) => {
 
         if (type === "campaign") {
           validateRequired(json, ["niche", "city"]);
+          const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
           const job = await createExtractionJob({
             tenantId: auth.tenantId,
             niche: json.niche,
@@ -691,6 +721,7 @@ const server = http.createServer(async (req, res) => {
           const queueJob = await queues.googleDiscovery.add("run", {
             tenantId: auth.tenantId,
             extractionJobId: job.id,
+            enrichAds,
             testId
           });
           return sendJson(res, 202, {
@@ -760,6 +791,7 @@ const server = http.createServer(async (req, res) => {
       validateRequired(json, ["niche", "city"]);
 
       const sourceType = json.sourceType || json.source_type || "google_places_api";
+      const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
       const job = await createExtractionJob({
         tenantId: auth.tenantId,
         niche: json.niche,
@@ -774,11 +806,12 @@ const server = http.createServer(async (req, res) => {
       if (sourceType === "google_places_api") {
         await queues.googleDiscovery.add("run", {
           tenantId: auth.tenantId,
-          extractionJobId: job.id
+          extractionJobId: job.id,
+          enrichAds
         });
       }
 
-      return sendJson(res, 201, { job });
+      return sendJson(res, 201, { job, enrichAds });
     }
 
     if (req.method === "POST" && url.pathname === "/businesses") {
@@ -1194,6 +1227,18 @@ function buildImportCrmPatch(row) {
 function matchPath(pathname, regex) {
   const match = pathname.match(regex);
   return match || null;
+}
+
+function uniqueStringIds(value) {
+  const items = Array.isArray(value) ? value : [];
+  return Array.from(new Set(items.map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+function parseBoolean(value) {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") return ["1", "true", "yes", "on", "si", "sí"].includes(value.trim().toLowerCase());
+  return false;
 }
 
 function verifyWebhookSignature(raw, headers, secret) {

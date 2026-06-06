@@ -919,6 +919,10 @@ async function renderLeadsList({ search }) {
       </div>
       <div class="bulk-actions__controls">
         <button class="btn btn--ghost btn--sm" data-action="clear-lead-selection" type="button">Limpiar</button>
+        <button class="btn btn--gold btn--sm" data-action="enrich-selected-ads" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M4 4h16v3H4V4Zm0 5h10v3H4V9Zm0 5h16v3H4v-3Zm0 5h10v2H4v-2Zm13.5-9 1.6 3.2 3.4.5-2.5 2.4.6 3.4-3.1-1.6-3 1.6.6-3.4-2.5-2.4 3.4-.5L17.5 10Z"/></svg>
+          Enriquecer Ads/Funnel
+        </button>
         <button class="btn btn--danger btn--sm" data-action="delete-selected-leads" type="button">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
           Eliminar
@@ -1123,6 +1127,7 @@ function bindLeadSelection(rows) {
   const selectedCount = $("[data-bind='lead-selected-count']", view);
   const selectAll = $("[data-action='toggle-all-leads']", view);
   const clearButton = $("[data-action='clear-lead-selection']", view);
+  const enrichAdsButton = $("[data-action='enrich-selected-ads']", view);
   const deleteButton = $("[data-action='delete-selected-leads']", view);
   const checks = $$("[data-action='toggle-lead']", view);
 
@@ -1156,6 +1161,13 @@ function bindLeadSelection(rows) {
   clearButton.addEventListener("click", () => {
     selected.clear();
     sync();
+  });
+
+  enrichAdsButton.addEventListener("click", () => {
+    const leads = Array.from(selected)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+    if (leads.length) bulkLeadAdsAction(leads, enrichAdsButton);
   });
 
   deleteButton.addEventListener("click", () => {
@@ -1526,6 +1538,24 @@ async function campaignAdsAction(campaignId) {
     toast(`No se pudo enriquecer la campaña (${err.message})`, "error");
   } finally {
     button.disabled = false;
+  }
+}
+
+async function bulkLeadAdsAction(leads, button) {
+  const businessIds = leads.map((lead) => lead.id).filter(Boolean);
+  if (!businessIds.length) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await api("/api/businesses/ads-enrichment", {
+      method: "POST",
+      body: JSON.stringify({ businessIds })
+    });
+    const skipped = result.skipped ? ` · ${fmtNumber(result.skipped)} omitidos` : "";
+    toast(`${fmtNumber(result.queued)} leads enviados a Ads/Funnel${skipped}`, result.queued ? "ok" : "error");
+  } catch (err) {
+    toast(`No se pudo lanzar Ads/Funnel (${err.message})`, "error");
+  } finally {
+    if (button) button.disabled = false;
   }
 }
 
@@ -3515,6 +3545,10 @@ async function openCampaignModal() {
       </div>
       <div class="field"><label>Límite solicitado</label><input class="input" name="requestedLimit" type="number" min="1" placeholder="1000" /></div>
     </div>
+    <label class="check-row">
+      <input type="checkbox" name="enrichAds" checked />
+      <span>Enriquecer Ads/Funnel automáticamente al descubrir leads</span>
+    </label>
     <div class="divider"></div>
     <div class="field">
       <label>Asistente NebrijaAI</label>

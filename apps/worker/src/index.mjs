@@ -77,6 +77,7 @@ async function runGoogleDiscovery(job) {
   const extractionJob = await findExtractionJob(extractionJobId, { tenantId: job.data.tenantId });
   if (!extractionJob) throw new Error(`extraction job not found: ${extractionJobId}`);
   const tenantId = extractionJob.tenant_id;
+  const enrichAds = Boolean(job.data.enrichAds);
 
   await updateExtractionJob(extractionJobId, {
     status: "running",
@@ -139,7 +140,9 @@ async function runGoogleDiscovery(job) {
         }
         await queues.webDiscovery.add("discover", {
           tenantId,
-          businessId: business.id
+          businessId: business.id,
+          extractionJobId,
+          enrichAds
         });
       }
     }
@@ -150,7 +153,8 @@ async function runGoogleDiscovery(job) {
       metrics: {
         queries: queries.length,
         candidateCount,
-        businessCount
+        businessCount,
+        enrichAdsQueued: enrichAds
       }
     });
     return { queries: queries.length, candidateCount, businessCount };
@@ -174,9 +178,16 @@ async function runWebDiscovery(job) {
   const business = await findBusinessById(businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${businessId}`);
   const tenantId = business.tenant_id;
+  const enrichAds = Boolean(job.data.enrichAds);
 
   if (business.website) {
-    await queues.businessCrawl.add("crawl", { tenantId, businessId, rootUrl: business.website });
+    await queues.businessCrawl.add("crawl", {
+      tenantId,
+      businessId,
+      rootUrl: business.website,
+      extractionJobId: job.data.extractionJobId,
+      enrichAds
+    });
     return { website: business.website, source: "existing" };
   }
 
@@ -185,6 +196,15 @@ async function runWebDiscovery(job) {
   const website = chooseOfficialWebsite(results, business);
   if (!website) {
     if (business.phone_e164) await queues.scoring.add("score", { tenantId, businessId: business.id });
+    if (enrichAds) {
+      await queues.adsEnrichment.add("enrich", {
+        tenantId,
+        businessId: business.id,
+        campaignId: job.data.extractionJobId,
+        autoFromCampaign: true,
+        skippedWebDiscovery: true
+      });
+    }
     return { website: null, results: results.length };
   }
 
@@ -201,7 +221,13 @@ async function runWebDiscovery(job) {
     sourceUrl: website,
     observedValue: website
   });
-  await queues.businessCrawl.add("crawl", { tenantId, businessId, rootUrl: website });
+  await queues.businessCrawl.add("crawl", {
+    tenantId,
+    businessId,
+    rootUrl: website,
+    extractionJobId: job.data.extractionJobId,
+    enrichAds
+  });
   return { website, results: results.length };
 }
 
@@ -341,6 +367,15 @@ async function runBusinessCrawl(job) {
       signals: aggregate.signals
     }
   });
+
+  if (business?.id && job.data.enrichAds) {
+    await queues.adsEnrichment.add("enrich", {
+      tenantId,
+      businessId: business.id,
+      campaignId: job.data.extractionJobId,
+      autoFromCampaign: true
+    });
+  }
 
   return { pagesSucceeded, pagesFailed };
 }
