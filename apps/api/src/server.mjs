@@ -800,7 +800,7 @@ const server = http.createServer(async (req, res) => {
         const campaignId = testCampaignAdsMatch[1];
         const job = await findExtractionJobDetail(campaignId, { tenantId: auth.tenantId });
         if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
-        const businessIds = await listBusinessIdsForCampaign(campaignId, { tenantId: auth.tenantId });
+        const businessIds = await listBusinessIdsForCampaign({ tenantId: auth.tenantId, campaignId });
         const queueJobs = [];
         for (const businessId of businessIds) {
           queueJobs.push(
