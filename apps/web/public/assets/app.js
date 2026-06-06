@@ -123,7 +123,7 @@ const renderAdsFunnelBadge = (type, confidence) => {
 };
 
 const CRM_PAGE_SIZE = 120;
-const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v2";
+const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v3";
 const CRM_DEFAULT_COLUMNS = [
   "decision_maker_name",
   "first_contact_at",
@@ -1934,11 +1934,11 @@ function createCrmColumns(options = {}, rows = [], { editable = true } = {}) {
     {
       key: "first_contact_at",
       label: "Primer contacto",
-      width: 118,
+      width: 132,
       filter: "date",
       value: (row) => row.first_contact_at,
       render: (row) => editable
-        ? crmInput("firstContactAt", row.first_contact_at, "date", `crm-input--date ${row.first_contact_at ? "crm-input--called" : ""}`)
+        ? renderEditableCrmFirstContact(row)
         : renderCrmFirstContact(row)
     },
     {
@@ -2364,9 +2364,20 @@ function orderedCrmColumns(columns, order) {
 function loadCrmColumnOrder() {
   try {
     const parsed = JSON.parse(localStorage.getItem(CRM_COLUMN_ORDER_KEY) || "[]");
-    if (Array.isArray(parsed) && parsed.length) return parsed;
-  } catch {}
+    if (Array.isArray(parsed) && isValidCrmColumnOrder(parsed)) return parsed;
+    localStorage.removeItem(CRM_COLUMN_ORDER_KEY);
+  } catch {
+    try {
+      localStorage.removeItem(CRM_COLUMN_ORDER_KEY);
+    } catch {}
+  }
   return [...CRM_DEFAULT_COLUMNS];
+}
+
+function isValidCrmColumnOrder(order) {
+  if (!Array.isArray(order) || !order.length) return false;
+  const allowed = new Set(CRM_DEFAULT_COLUMNS);
+  return order.every((key) => allowed.has(key));
 }
 
 function saveCrmColumnOrder(order) {
@@ -2437,6 +2448,15 @@ function crmBoolValue(value) {
 
 function crmReadonly(value) {
   return value ? `<span class="crm-readonly">${escape(value)}</span>` : `<span class="faint">—</span>`;
+}
+
+function renderEditableCrmFirstContact(row = {}) {
+  return `
+    <div class="crm-called-date ${row.first_contact_at ? "is-called" : ""}">
+      ${crmInput("firstContactAt", row.first_contact_at, "date", `crm-input--date ${row.first_contact_at ? "crm-input--called" : ""}`)}
+      ${row.first_contact_at ? `<span>Llamado</span>` : ""}
+    </div>
+  `;
 }
 
 function renderCrmFirstContact(row = {}) {

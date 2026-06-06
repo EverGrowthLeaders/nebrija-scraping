@@ -874,13 +874,13 @@ a {
   cursor: default;
 }
 .crm-table tbody tr.is-called {
-  background: linear-gradient(90deg, rgba(74, 222, 160, 0.075), rgba(255, 255, 255, 0.018) 34%, transparent 78%);
+  background: linear-gradient(90deg, rgba(74, 222, 160, 0.18), rgba(74, 222, 160, 0.07) 34%, rgba(255, 255, 255, 0.018) 82%);
 }
 .crm-table tbody tr.is-called td:first-child {
-  box-shadow: inset 3px 0 0 rgba(74, 222, 160, 0.7);
+  box-shadow: inset 6px 0 0 rgba(74, 222, 160, 0.95);
 }
 .crm-table tbody tr.is-called:hover {
-  background: linear-gradient(90deg, rgba(74, 222, 160, 0.11), rgba(255, 255, 255, 0.035) 38%, rgba(255, 255, 255, 0.02));
+  background: linear-gradient(90deg, rgba(74, 222, 160, 0.24), rgba(74, 222, 160, 0.1) 38%, rgba(255, 255, 255, 0.03));
 }
 .crm-table th {
   position: sticky;
@@ -1001,7 +1001,26 @@ a {
 }
 .crm-input--called {
   border-color: rgba(74, 222, 160, 0.42);
-  background: rgba(74, 222, 160, 0.08);
+  background: rgba(74, 222, 160, 0.12);
+  color: #d7ffe8;
+}
+.crm-called-date {
+  display: grid;
+  gap: 5px;
+}
+.crm-called-date.is-called span {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 17px;
+  padding: 0 7px;
+  border-radius: 999px;
+  color: #02180d;
+  background: #4adea0;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 .crm-select {
   appearance: none;
