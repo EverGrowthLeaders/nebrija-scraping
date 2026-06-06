@@ -23,7 +23,6 @@ export const LEAD_IMPORT_FIELDS = [
   { key: "postal_code", label: "Codigo postal", group: "Empresa", aliases: ["codigo postal", "código postal", "cp", "postal code", "zip"] },
   { key: "niche", label: "Nicho", group: "Empresa", aliases: ["nicho", "sector", "industria", "actividad"] },
   { key: "category", label: "Categoria", group: "Empresa", aliases: ["categoria", "categoría", "category", "tipo"] },
-  { key: "ads_investment", label: "Inversión en Ads", group: "Empresa", aliases: ["inversion en ads", "inversión en ads", "gasto ads", "ad spend", "ads spend", "budget ads", "presupuesto ads"] },
   { key: "instagram", label: "Instagram", group: "Empresa", aliases: ["instagram", "ig"] },
   { key: "facebook", label: "Facebook", group: "Empresa", aliases: ["facebook", "fb", "meta"] },
   { key: "source_url", label: "URL fuente", group: "Empresa", aliases: ["source", "fuente", "source_url", "url fuente"] },
@@ -31,6 +30,15 @@ export const LEAD_IMPORT_FIELDS = [
 ];
 
 const FIELD_BY_KEY = Object.fromEntries(LEAD_IMPORT_FIELDS.map((field) => [field.key, field]));
+const IGNORED_IMPORT_HEADERS = new Set([
+  "inversion en ads",
+  "gasto ads",
+  "ad spend",
+  "ads spend",
+  "budget ads",
+  "presupuesto ads",
+  "cuanto invierten en ads"
+]);
 const BUSINESS_FIELD_KEYS = new Set([
   "name",
   "website",
@@ -57,7 +65,7 @@ const CRM_FIELD_KEYS = new Set([
   "checkpoint",
   "objection"
 ]);
-const COMPANY_CUSTOM_FIELD_KEYS = new Set(["ads_investment"]);
+const COMPANY_CUSTOM_FIELD_KEYS = new Set();
 const MAX_IMPORT_ROWS = 5000;
 
 export function previewLeadImport({ filename, contentBase64, buffer, maxSampleRows = 5 }) {
@@ -100,6 +108,10 @@ export function suggestLeadMapping(headers) {
   const suggestions = {};
   for (const header of headers) {
     const normalized = normalizeHeader(header);
+    if (IGNORED_IMPORT_HEADERS.has(normalized)) {
+      suggestions[header] = "ignore";
+      continue;
+    }
     const field = LEAD_IMPORT_FIELDS.find((candidate) =>
       [candidate.key, candidate.label, ...(candidate.aliases || [])].some((alias) => normalizeHeader(alias) === normalized)
     );
@@ -147,7 +159,7 @@ export function buildImportedLeadRows(rows, mapping) {
       } else if (CRM_FIELD_KEYS.has(rawMapping)) {
         crm[toCrmInputKey(rawMapping)] = normalizeCrmImportValue(rawMapping, value);
       } else if (COMPANY_CUSTOM_FIELD_KEYS.has(rawMapping)) {
-        customFields[rawMapping] = normalizeCompanyCustomValue(rawMapping, value);
+        customFields[rawMapping] = value;
       } else if (BUSINESS_FIELD_KEYS.has(rawMapping)) {
         business[toBusinessInputKey(rawMapping)] = value;
       }
@@ -432,11 +444,6 @@ function normalizeCrmImportValue(field, value) {
   return value;
 }
 
-function normalizeCompanyCustomValue(field, value) {
-  if (field === "ads_investment") return normalizeMoneyValue(value);
-  return value;
-}
-
 function normalizeImportDate(value) {
   const text = cleanCell(value);
   if (!text || text === "0") return "";
@@ -480,18 +487,6 @@ function normalizeImportTime(value) {
   return "";
 }
 
-function normalizeMoneyValue(value) {
-  const text = cleanCell(value);
-  if (!text) return "";
-  const cleaned = text.replace(/[^0-9,.-]/g, "");
-  if (!cleaned) return "";
-  const decimalComma = cleaned.includes(",") && (!cleaned.includes(".") || cleaned.lastIndexOf(",") > cleaned.lastIndexOf("."));
-  const normalized = decimalComma
-    ? cleaned.replace(/\./g, "").replace(",", ".")
-    : cleaned.replace(/,/g, "");
-  const number = Number(normalized);
-  return Number.isFinite(number) ? String(number) : text;
-}
 
 function columnIndexFromCellRef(ref) {
   const letters = String(ref || "").match(/^[A-Z]+/i)?.[0] || "";

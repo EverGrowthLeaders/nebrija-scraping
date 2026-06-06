@@ -269,7 +269,7 @@ test("previews and maps CSV lead imports with contact and CRM fields", () => {
   assert.equal(preview.suggestedMapping["Fecha Reintento"], "follow_up_date");
   assert.equal(preview.suggestedMapping.Checkpoint, "checkpoint");
   assert.equal(preview.suggestedMapping["Objeción inicial"], "objection");
-  assert.equal(preview.suggestedMapping["Inversión en Ads"], "ads_investment");
+  assert.equal(preview.suggestedMapping["Inversión en Ads"], "ignore");
   assert.equal(preview.suggestedMapping.Presupuesto, "custom:presupuesto");
 
   const parsed = parseLeadFile({ filename: "leads.csv", contentBase64: csv.toString("base64") });
@@ -289,7 +289,6 @@ test("previews and maps CSV lead imports with contact and CRM fields", () => {
   });
   assert.deepEqual(imported.rows[0].contacts, [{ kind: "email", value: "hola@bufete.example", confidence: 0.75 }]);
   assert.deepEqual(imported.rows[0].customFields, {
-    ads_investment: "1250.5",
     contact_first_name: "Juan",
     contact_last_name: "Moreno",
     contact_full_name: "Juan Moreno",

@@ -1061,9 +1061,7 @@ export async function listBusinesses({
   listId,
   phoneType,
   adsActive,
-  adsFunnelType,
-  adsInvestmentMin,
-  adsInvestmentMax
+  adsFunnelType
 } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
@@ -1125,23 +1123,11 @@ export async function listBusinesses({
     }
   }
   if (adsFunnelType) {
-    params.push(adsFunnelType);
-    where.push(`b.ads_funnel_type = $${params.length}`);
-  }
-  const adsInvestmentExpr = `(b.custom_fields->>'ads_investment')`;
-  const adsInvestmentNumber = `(CASE WHEN ${adsInvestmentExpr} ~ '^[0-9]+(\\.[0-9]+)?$' THEN ${adsInvestmentExpr}::numeric ELSE NULL END)`;
-  if (adsInvestmentMin !== undefined && adsInvestmentMin !== null && adsInvestmentMin !== "") {
-    const value = Number(adsInvestmentMin);
-    if (Number.isFinite(value)) {
-      params.push(value);
-      where.push(`${adsInvestmentNumber} >= $${params.length}`);
-    }
-  }
-  if (adsInvestmentMax !== undefined && adsInvestmentMax !== null && adsInvestmentMax !== "") {
-    const value = Number(adsInvestmentMax);
-    if (Number.isFinite(value)) {
-      params.push(value);
-      where.push(`${adsInvestmentNumber} <= $${params.length}`);
+    if (adsFunnelType === "not_ecommerce") {
+      where.push(`COALESCE(b.ads_funnel_type, 'unknown') <> 'ecommerce'`);
+    } else {
+      params.push(adsFunnelType);
+      where.push(`COALESCE(b.ads_funnel_type, 'unknown') = $${params.length}`);
     }
   }
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
@@ -1322,7 +1308,6 @@ const CRM_ROW_SELECT = `
     b.ads_funnel_type,
     b.ads_funnel_confidence,
     b.ads_funnel_landing_url,
-    b.custom_fields->>'ads_investment' AS ads_investment,
     email_contact.value AS fallback_email
   FROM lead_list_members lm
   JOIN lead_lists ll ON ll.id = lm.lead_list_id
@@ -1346,6 +1331,70 @@ export async function listLeadListCrmEntries({ tenantId = DEFAULT_TENANT_ID, lis
         lm.crm_updated_at DESC,
         lm.added_at DESC`,
     [listId, tenantId]
+  );
+  return result.rows;
+}
+
+export async function listCampaignCrmEntries({ tenantId = DEFAULT_TENANT_ID, campaignId }) {
+  const result = await query(
+    `SELECT
+        lm.lead_list_id,
+        b.id AS business_id,
+        COALESCE(lm.added_at, b.created_at) AS added_at,
+        to_char(lm.first_contact_at, 'YYYY-MM-DD') AS first_contact_at,
+        lm.decision_maker_name,
+        lm.decision_maker_email,
+        lm.answered_by,
+        COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') AS crm_status,
+        to_char(lm.follow_up_date, 'YYYY-MM-DD') AS follow_up_date,
+        to_char(lm.follow_up_time, 'HH24:MI') AS follow_up_time,
+        lm.next_action,
+        lm.observations,
+        CASE WHEN lm.checkpoint = 'Objeción' THEN 'Objeción inicial' ELSE lm.checkpoint END AS checkpoint,
+        lm.objection,
+        lm.crm_updated_at,
+        b.id,
+        b.name,
+        b.website,
+        b.phone,
+        b.phone_e164,
+        b.address,
+        b.city,
+        b.niche,
+        b.category,
+        b.status AS lead_status,
+        b.score,
+        b.ads_meta_active,
+        b.ads_google_active,
+        b.ads_funnel_type,
+        b.ads_funnel_confidence,
+        b.ads_funnel_landing_url,
+        email_contact.value AS fallback_email
+       FROM businesses b
+       LEFT JOIN LATERAL (
+         SELECT lm.*
+           FROM lead_list_members lm
+           JOIN lead_lists ll ON ll.id = lm.lead_list_id
+          WHERE lm.business_id = b.id
+            AND ll.tenant_id = b.tenant_id
+          ORDER BY lm.crm_updated_at DESC, lm.added_at DESC
+          LIMIT 1
+       ) lm ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT c.value
+           FROM business_contacts c
+          WHERE c.business_id = b.id
+            AND c.kind = 'email'
+          ORDER BY c.confidence DESC, c.created_at DESC
+          LIMIT 1
+       ) email_contact ON TRUE
+      WHERE b.tenant_id = $1
+        AND b.extraction_job_id = $2
+      ORDER BY
+        CASE WHEN COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') = 'Descartado' THEN 1 ELSE 0 END,
+        lm.crm_updated_at DESC NULLS LAST,
+        b.updated_at DESC`,
+    [tenantId, campaignId]
   );
   return result.rows;
 }

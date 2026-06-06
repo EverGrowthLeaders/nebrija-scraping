@@ -123,29 +123,28 @@ const renderAdsFunnelBadge = (type, confidence) => {
 };
 
 const CRM_PAGE_SIZE = 120;
-const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v1";
+const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v2";
 const CRM_DEFAULT_COLUMNS = [
+  "decision_maker_name",
   "first_contact_at",
   "business",
-  "decision_maker_name",
+  "crm_status",
+  "checkpoint",
+  "answered_by",
+  "category",
+  "ads_meta_active",
+  "ads_google_active",
+  "ads_funnel_type",
   "phone",
   "decision_maker_email",
   "website",
-  "answered_by",
-  "crm_status",
-  "checkpoint",
   "objection",
   "follow_up_date",
   "follow_up_time",
   "next_action",
   "observations",
   "city",
-  "niche",
-  "category",
-  "ads_investment",
-  "ads_funnel_type",
-  "ads_meta_active",
-  "ads_google_active"
+  "niche"
 ];
 
 const renderListBadges = (lists = []) =>
@@ -623,7 +622,8 @@ async function renderCampaignsList() {
 async function renderCampaignDetail({ params }) {
   const id = params[0];
   setCurrentCrumb(id.slice(0, 8));
-  const { job } = await api(`/api/campaigns/${id}`);
+  const { job, rows = [], options = {} } = await api(`/api/campaigns/${id}/crm`);
+  const calledRows = rows.filter((row) => row.first_contact_at).length;
   view.innerHTML = `
     <a class="back-link" href="#/campaigns">← Volver a campañas</a>
     <div class="row">
@@ -651,7 +651,24 @@ async function renderCampaignDetail({ params }) {
     <div class="kpi-grid" style="margin-top:8px">
       ${kpiCard("Candidatos", fmtNumber(job.candidates_count), "Lugares descubiertos")}
       ${kpiCard("Leads creados", fmtNumber(job.leads_count), "Negocios en pipeline", "accent")}
+      ${kpiCard("Llamados", fmtNumber(calledRows), "Con primer contacto registrado")}
       ${kpiCard("Solicitados", fmtNumber(job.requested_limit) || "—", "Límite de la campaña")}
+    </div>
+
+    <div class="crm-board crm-board--campaign" data-campaign-id="${escape(job.id)}" style="margin-top:18px">
+      <datalist id="crm-objection-options">
+        ${(options.objections || []).map((option) => `<option value="${escape(option)}"></option>`).join("")}
+      </datalist>
+
+      ${renderCrmFilterBar(rows)}
+
+      <div class="crm-section-head">
+        <div>
+          <h2>Leads de campaña</h2>
+          <p data-bind="crm-active-count">${fmtNumber(rows.length)} leads</p>
+        </div>
+      </div>
+      <div data-bind="crm-active-table"></div>
     </div>
 
     <div class="card" style="margin-top:18px">
@@ -710,6 +727,14 @@ async function renderCampaignDetail({ params }) {
   });
   voiceForm.addEventListener("submit", (event) => saveCampaignVoiceSettings(event, job.id));
   $("[data-action='campaign-ads']", view).addEventListener("click", () => campaignAdsAction(job.id));
+  hydrateCrmBoard(view, {
+    rows,
+    options,
+    editable: false,
+    showDiscarded: false,
+    title: "Leads",
+    emptyCopy: "Esta campaña todavía no tiene leads."
+  });
 }
 
 // ── Leads list ────────────────────────────────────────────
@@ -724,8 +749,6 @@ async function renderLeadsList({ search }) {
   const phoneType = search.get("phoneType") || "";
   const adsActive = search.get("adsActive") || "";
   const adsFunnelType = search.get("adsFunnelType") || "";
-  const adsInvestmentMin = search.get("adsInvestmentMin") || "";
-  const adsInvestmentMax = search.get("adsInvestmentMax") || "";
   const term = search.get("search") || "";
   const [leadLists, campaigns, selectedCampaignResult] = await Promise.all([
     api("/api/lead-lists"),
@@ -796,11 +819,10 @@ async function renderLeadsList({ search }) {
           <option value="">Cualquier funnel</option>
           <option value="lead_generation" ${adsFunnelType === "lead_generation" ? "selected" : ""}>Captación</option>
           <option value="ecommerce" ${adsFunnelType === "ecommerce" ? "selected" : ""}>Ecommerce</option>
+          <option value="not_ecommerce" ${adsFunnelType === "not_ecommerce" ? "selected" : ""}>No Ecommerce</option>
           <option value="other" ${adsFunnelType === "other" ? "selected" : ""}>Otro</option>
           <option value="unknown" ${adsFunnelType === "unknown" ? "selected" : ""}>Sin clasificar</option>
         </select>
-        <input class="input" name="adsInvestmentMin" type="number" min="0" step="1" placeholder="Ads min €" value="${escape(adsInvestmentMin)}" style="max-width:130px" />
-        <input class="input" name="adsInvestmentMax" type="number" min="0" step="1" placeholder="Ads max €" value="${escape(adsInvestmentMax)}" style="max-width:130px" />
         <button class="btn" type="submit">Filtrar</button>
         <a class="btn btn--ghost" href="#/leads">Reset</a>
       </div>
@@ -880,8 +902,6 @@ async function renderLeadsList({ search }) {
   if (phoneType) params.set("phoneType", phoneType);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
-  if (adsInvestmentMin) params.set("adsInvestmentMin", adsInvestmentMin);
-  if (adsInvestmentMax) params.set("adsInvestmentMax", adsInvestmentMax);
   if (term) params.set("search", term);
   params.set("limit", "100");
 
@@ -943,6 +963,28 @@ function renderPhoneTypeOptions(selected = "") {
     ["with_phone", "Con teléfono"],
     ["without_phone", "Sin teléfono"],
     ["unknown", "Otro formato"]
+  ]
+    .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
+    .join("");
+}
+
+function renderBooleanFilterOptions(selected = "") {
+  return [
+    ["true", "Activo"],
+    ["false", "Sin señal"],
+    ["unknown", "Sin revisar"]
+  ]
+    .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
+    .join("");
+}
+
+function renderAdsFunnelFilterOptions(selected = "") {
+  return [
+    ["lead_generation", "Captación"],
+    ["ecommerce", "Ecommerce"],
+    ["not_ecommerce", "No Ecommerce"],
+    ["other", "Otro"],
+    ["unknown", "Sin clasificar"]
   ]
     .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
     .join("");
@@ -1796,16 +1838,22 @@ function renderCrmFilterBar(rows = []) {
         <span>Funnel</span>
         <select class="select" data-crm-quick-filter="adsFunnelType">
           <option value="">Todos</option>
-          ${Object.entries(ADS_FUNNEL_LABELS).map(([value, [, label]]) => `<option value="${escape(value)}">${escape(label)}</option>`).join("")}
+          ${renderAdsFunnelFilterOptions()}
         </select>
       </label>
-      <label class="crm-filter crm-filter--mini">
-        <span>Ads min</span>
-        <input class="input" data-crm-quick-filter="adsInvestmentMin" type="number" min="0" step="1" placeholder="€" />
+      <label class="crm-filter">
+        <span>Meta Ads</span>
+        <select class="select" data-crm-quick-filter="metaAds">
+          <option value="">Todos</option>
+          ${renderBooleanFilterOptions()}
+        </select>
       </label>
-      <label class="crm-filter crm-filter--mini">
-        <span>Ads max</span>
-        <input class="input" data-crm-quick-filter="adsInvestmentMax" type="number" min="0" step="1" placeholder="€" />
+      <label class="crm-filter">
+        <span>Google Ads</span>
+        <select class="select" data-crm-quick-filter="googleAds">
+          <option value="">Todos</option>
+          ${renderBooleanFilterOptions()}
+        </select>
       </label>
       <button class="btn btn--ghost" data-action="crm-reset-filters" type="button">Limpiar</button>
       <span class="crm-filter-count" data-bind="crm-filter-count">${fmtNumber(rows.length)} filas</span>
@@ -1813,7 +1861,7 @@ function renderCrmFilterBar(rows = []) {
   `;
 }
 
-function hydrateCrmBoard(scope, { rows, options }) {
+function hydrateCrmBoard(scope, { rows, options, editable = true, showDiscarded = true, title = "Prospectos", emptyCopy = "Añade leads desde la ficha de cada lead o importa un CSV/Excel." }) {
   const board = $(".crm-board", scope);
   if (!board) return;
   const state = {
@@ -1832,16 +1880,20 @@ function hydrateCrmBoard(scope, { rows, options }) {
   render();
 
   function render() {
-    const columns = orderedCrmColumns(createCrmColumns(options, rows), state.columnOrder);
+    const columns = orderedCrmColumns(createCrmColumns(options, rows, { editable }), state.columnOrder);
     const activeRows = rows.filter((row) => row.crm_status !== "Descartado");
     const discardedRows = rows.filter((row) => row.crm_status === "Descartado");
-    const active = applyCrmTableState(activeRows, columns, state);
-    const discarded = applyCrmTableState(discardedRows, columns, state);
+    const activeSource = showDiscarded ? activeRows : rows;
+    const active = applyCrmTableState(activeSource, columns, state);
+    const discarded = showDiscarded ? applyCrmTableState(discardedRows, columns, state) : [];
     const activeVisible = active.slice(0, state.limits.active);
     const discardedVisible = discarded.slice(0, state.limits.discarded);
 
-    $("[data-bind='crm-active-count']", board).textContent = `${fmtNumber(active.length)} de ${fmtNumber(activeRows.length)} contactos activos`;
-    $("[data-bind='crm-discarded-count']", board).textContent = `${fmtNumber(discarded.length)} de ${fmtNumber(discardedRows.length)} descartados`;
+    $("[data-bind='crm-active-count']", board).textContent = showDiscarded
+      ? `${fmtNumber(active.length)} de ${fmtNumber(activeRows.length)} contactos activos`
+      : `${fmtNumber(active.length)} de ${fmtNumber(rows.length)} leads`;
+    const discardedCount = $("[data-bind='crm-discarded-count']", board);
+    if (discardedCount) discardedCount.textContent = `${fmtNumber(discarded.length)} de ${fmtNumber(discardedRows.length)} descartados`;
     $("[data-bind='crm-filter-count']", board).textContent = `${fmtNumber(active.length + discarded.length)} de ${fmtNumber(rows.length)} filas`;
     $("[data-bind='crm-active-table']", board).innerHTML = renderCrmTable({
       rows: activeVisible,
@@ -1851,26 +1903,29 @@ function hydrateCrmBoard(scope, { rows, options }) {
       options,
       state,
       kind: "active",
-      emptyTitle: "Lista vacía",
-      emptyCopy: "Añade leads desde la ficha de cada lead o importa un CSV/Excel."
+      emptyTitle: `${title} vacíos`,
+      emptyCopy
     });
-    $("[data-bind='crm-discarded-table']", board).innerHTML = renderCrmTable({
-      rows: discardedVisible,
-      total: discarded.length,
-      rendered: discardedVisible.length,
-      columns,
-      options,
-      state,
-      kind: "discarded",
-      emptyTitle: "Sin descartados",
-      emptyCopy: "Los leads marcados como Descartado aparecerán aquí."
-    });
+    const discardedHost = $("[data-bind='crm-discarded-table']", board);
+    if (discardedHost) {
+      discardedHost.innerHTML = renderCrmTable({
+        rows: discardedVisible,
+        total: discarded.length,
+        rendered: discardedVisible.length,
+        columns,
+        options,
+        state,
+        kind: "discarded",
+        emptyTitle: "Sin descartados",
+        emptyCopy: "Los leads marcados como Descartado aparecerán aquí."
+      });
+    }
     bindCrmTableControls(board, state, render);
-    bindCrmEditableControls(board);
+    if (editable) bindCrmEditableControls(board);
   }
 }
 
-function createCrmColumns(options = {}, rows = []) {
+function createCrmColumns(options = {}, rows = [], { editable = true } = {}) {
   const rowOptions = (key) => uniqueCrmValues(rows, key);
   const statusOptions = uniqueStrings([...(options.statuses || []), ...rows.map((row) => row.crm_status)]);
   const checkpointOptions = uniqueStrings([...(options.checkpoints || []), ...rows.map((row) => row.checkpoint)]);
@@ -1879,15 +1934,17 @@ function createCrmColumns(options = {}, rows = []) {
     {
       key: "first_contact_at",
       label: "Primer contacto",
-      width: 148,
+      width: 118,
       filter: "date",
       value: (row) => row.first_contact_at,
-      render: (row) => crmInput("firstContactAt", row.first_contact_at, "date", "crm-input--date")
+      render: (row) => editable
+        ? crmInput("firstContactAt", row.first_contact_at, "date", `crm-input--date ${row.first_contact_at ? "crm-input--called" : ""}`)
+        : renderCrmFirstContact(row)
     },
     {
       key: "business",
       label: "Negocio",
-      width: 240,
+      width: 170,
       filter: "text",
       value: (row) => row.name,
       render: renderCrmBusinessCell
@@ -1895,15 +1952,15 @@ function createCrmColumns(options = {}, rows = []) {
     {
       key: "decision_maker_name",
       label: "Nombre Decisor",
-      width: 190,
+      width: 136,
       filter: "text",
       value: (row) => row.decision_maker_name,
-      render: (row) => crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name")
+      render: (row) => editable ? crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name") : crmReadonly(row.decision_maker_name)
     },
     {
       key: "phone",
       label: "Teléfono",
-      width: 160,
+      width: 130,
       filter: "phone_type",
       value: (row) => row.phone_e164 || row.phone,
       filterValue: (row) => crmPhoneType(row),
@@ -1912,10 +1969,10 @@ function createCrmColumns(options = {}, rows = []) {
     {
       key: "decision_maker_email",
       label: "Email Decisor",
-      width: 210,
+      width: 190,
       filter: "text",
       value: (row) => row.decision_maker_email || row.fallback_email,
-      render: (row) => crmInput("decisionMakerEmail", row.decision_maker_email, "email", "crm-input--email", row.fallback_email || "")
+      render: (row) => editable ? crmInput("decisionMakerEmail", row.decision_maker_email, "email", "crm-input--email", row.fallback_email || "") : crmReadonly(row.decision_maker_email || row.fallback_email)
     },
     {
       key: "website",
@@ -1928,28 +1985,28 @@ function createCrmColumns(options = {}, rows = []) {
     {
       key: "answered_by",
       label: "¿Quién atendió?",
-      width: 170,
+      width: 120,
       filter: "text",
       value: (row) => row.answered_by,
-      render: (row) => crmInput("answeredBy", row.answered_by, "text", "crm-input--name")
+      render: (row) => editable ? crmInput("answeredBy", row.answered_by, "text", "crm-input--name") : crmReadonly(row.answered_by)
     },
     {
       key: "crm_status",
       label: "Estado",
-      width: 180,
+      width: 112,
       filter: "select",
       options: statusOptions,
       value: (row) => row.crm_status,
-      render: (row) => crmSelect("crmStatus", row.crm_status, options.statuses || [])
+      render: (row) => editable ? crmSelect("crmStatus", row.crm_status, options.statuses || []) : crmReadonly(row.crm_status)
     },
     {
       key: "checkpoint",
       label: "Checkpoint",
-      width: 180,
+      width: 118,
       filter: "select",
       options: checkpointOptions,
       value: (row) => row.checkpoint,
-      render: (row) => crmSelect("checkpoint", row.checkpoint, options.checkpoints || [], true)
+      render: (row) => editable ? crmSelect("checkpoint", row.checkpoint, options.checkpoints || [], true) : crmReadonly(row.checkpoint)
     },
     {
       key: "objection",
@@ -1958,7 +2015,7 @@ function createCrmColumns(options = {}, rows = []) {
       filter: "select",
       options: objectionOptions,
       value: (row) => row.objection,
-      render: (row) => crmObjectionInput(row.objection)
+      render: (row) => editable ? crmObjectionInput(row.objection) : crmReadonly(row.objection)
     },
     {
       key: "follow_up_date",
@@ -1966,7 +2023,7 @@ function createCrmColumns(options = {}, rows = []) {
       width: 155,
       filter: "date",
       value: (row) => row.follow_up_date,
-      render: (row) => crmInput("followUpDate", row.follow_up_date, "date", "crm-input--date")
+      render: (row) => editable ? crmInput("followUpDate", row.follow_up_date, "date", "crm-input--date") : crmReadonly(row.follow_up_date)
     },
     {
       key: "follow_up_time",
@@ -1974,7 +2031,7 @@ function createCrmColumns(options = {}, rows = []) {
       width: 135,
       filter: "text",
       value: (row) => row.follow_up_time,
-      render: (row) => crmInput("followUpTime", row.follow_up_time, "time", "crm-input--time")
+      render: (row) => editable ? crmInput("followUpTime", row.follow_up_time, "time", "crm-input--time") : crmReadonly(row.follow_up_time)
     },
     {
       key: "next_action",
@@ -1982,7 +2039,7 @@ function createCrmColumns(options = {}, rows = []) {
       width: 250,
       filter: "text",
       value: (row) => row.next_action,
-      render: (row) => crmTextarea("nextAction", row.next_action, "crm-textarea--action")
+      render: (row) => editable ? crmTextarea("nextAction", row.next_action, "crm-textarea--action") : crmReadonly(row.next_action)
     },
     {
       key: "observations",
@@ -1990,7 +2047,7 @@ function createCrmColumns(options = {}, rows = []) {
       width: 280,
       filter: "text",
       value: (row) => row.observations,
-      render: (row) => crmTextarea("observations", row.observations, "crm-textarea--notes")
+      render: (row) => editable ? crmTextarea("observations", row.observations, "crm-textarea--notes") : crmReadonly(row.observations)
     },
     {
       key: "city",
@@ -2013,35 +2070,27 @@ function createCrmColumns(options = {}, rows = []) {
     {
       key: "category",
       label: "Categoría",
-      width: 170,
+      width: 112,
       filter: "select",
       options: rowOptions("category"),
       value: (row) => row.category,
       render: (row) => crmReadonly(row.category)
     },
     {
-      key: "ads_investment",
-      label: "Inversión en Ads",
-      width: 155,
-      filter: "number",
-      value: (row) => row.ads_investment,
-      sortValue: (row) => parseCrmNumber(row.ads_investment),
-      render: (row) => renderCrmMoney(row.ads_investment)
-    },
-    {
       key: "ads_funnel_type",
       label: "Tipo funnel",
-      width: 165,
+      width: 122,
       filter: "select",
-      options: Object.keys(ADS_FUNNEL_LABELS),
-      labels: Object.fromEntries(Object.entries(ADS_FUNNEL_LABELS).map(([key, [, label]]) => [key, label])),
+      options: ["lead_generation", "ecommerce", "not_ecommerce", "other", "unknown"],
+      labels: { ...Object.fromEntries(Object.entries(ADS_FUNNEL_LABELS).map(([key, [, label]]) => [key, label])), not_ecommerce: "No Ecommerce" },
       value: (row) => row.ads_funnel_type || "unknown",
+      filterValue: (row) => row.ads_funnel_type || "unknown",
       render: (row) => renderAdsFunnelBadge(row.ads_funnel_type || "unknown", row.ads_funnel_confidence)
     },
     {
       key: "ads_meta_active",
       label: "Meta Ads",
-      width: 135,
+      width: 96,
       filter: "boolean",
       value: (row) => crmBoolValue(row.ads_meta_active),
       render: (row) => renderAdsBadge(row.ads_meta_active, "Meta")
@@ -2049,7 +2098,7 @@ function createCrmColumns(options = {}, rows = []) {
     {
       key: "ads_google_active",
       label: "Google Ads",
-      width: 140,
+      width: 102,
       filter: "boolean",
       value: (row) => crmBoolValue(row.ads_google_active),
       render: (row) => renderAdsBadge(row.ads_google_active, "Google")
@@ -2139,7 +2188,7 @@ function renderCrmColumnFilter(column, selected) {
 
 function renderCrmRow(row, columns, options) {
   return `
-    <tr data-business-id="${escape(row.business_id)}">
+    <tr data-business-id="${escape(row.business_id)}" class="${row.first_contact_at ? "is-called" : ""}">
       ${columns.map((column) => `<td data-column-key="${escape(column.key)}">${column.render(row, options)}</td>`).join("")}
     </tr>
   `;
@@ -2257,10 +2306,9 @@ function crmMatchesQuickFilters(row, columns, quick = {}) {
   }
   if (quick.city && row.city !== quick.city) return false;
   if (quick.niche && row.niche !== quick.niche) return false;
-  if (quick.adsFunnelType && (row.ads_funnel_type || "unknown") !== quick.adsFunnelType) return false;
-  const investment = parseCrmNumber(row.ads_investment);
-  if (quick.adsInvestmentMin && (investment == null || investment < Number(quick.adsInvestmentMin))) return false;
-  if (quick.adsInvestmentMax && (investment == null || investment > Number(quick.adsInvestmentMax))) return false;
+  if (quick.adsFunnelType && !crmMatchesFunnelFilter(row.ads_funnel_type || "unknown", quick.adsFunnelType)) return false;
+  if (quick.metaAds && crmBoolValue(row.ads_meta_active) !== quick.metaAds) return false;
+  if (quick.googleAds && crmBoolValue(row.ads_google_active) !== quick.googleAds) return false;
   return true;
 }
 
@@ -2275,11 +2323,18 @@ function crmMatchesColumnFilters(row, columns, filters = {}) {
       if (filter === "without_phone") return value === "none";
       return value === filter;
     }
+    if (key === "ads_funnel_type") return crmMatchesFunnelFilter(value || "unknown", filter);
     if (column.filter === "select" || column.filter === "boolean") return String(value ?? "") === String(filter);
     if (column.filter === "date") return String(value || "") === String(filter);
-    if (column.filter === "number") return matchCrmNumberFilter(value, filter);
     return normalizeCrmText(value).includes(normalizeCrmText(filter));
   });
+}
+
+function crmMatchesFunnelFilter(value, filter) {
+  if (!filter) return true;
+  const normalized = value || "unknown";
+  if (filter === "not_ecommerce") return normalized !== "ecommerce";
+  return normalized === filter;
 }
 
 function getCrmSortValue(column, row) {
@@ -2374,35 +2429,6 @@ function crmPhoneLabel(type) {
   return { mobile: "Móvil", fixed: "Fijo", unknown: "Otro" }[type] || "";
 }
 
-function parseCrmNumber(value) {
-  if (value == null || value === "") return null;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  const raw = String(value).replace(/[€\s]/g, "");
-  if (!raw) return null;
-  const normalized = raw.includes(",") ? raw.replace(/\./g, "").replace(",", ".") : raw.replace(/,/g, "");
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function matchCrmNumberFilter(value, filter) {
-  const number = parseCrmNumber(value);
-  if (number == null) return false;
-  const text = String(filter || "").trim();
-  if (!text) return true;
-  const range = text.match(/^(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)$/);
-  if (range) return number >= Number(range[1].replace(",", ".")) && number <= Number(range[2].replace(",", "."));
-  const op = text.match(/^(>=|<=|>|<)\s*(\d+(?:[.,]\d+)?)$/);
-  if (op) {
-    const target = Number(op[2].replace(",", "."));
-    if (op[1] === ">=") return number >= target;
-    if (op[1] === "<=") return number <= target;
-    if (op[1] === ">") return number > target;
-    if (op[1] === "<") return number < target;
-  }
-  const exact = parseCrmNumber(text);
-  return exact == null ? String(value ?? "").includes(text) : number === exact;
-}
-
 function crmBoolValue(value) {
   if (value === true) return "true";
   if (value === false) return "false";
@@ -2413,11 +2439,10 @@ function crmReadonly(value) {
   return value ? `<span class="crm-readonly">${escape(value)}</span>` : `<span class="faint">—</span>`;
 }
 
-function renderCrmMoney(value) {
-  const number = parseCrmNumber(value);
-  return number == null
-    ? `<span class="faint">—</span>`
-    : `<span class="mono crm-money">${escape(new Intl.NumberFormat("es-ES", { style: "currency", currency: "EUR", maximumFractionDigits: 2 }).format(number))}</span>`;
+function renderCrmFirstContact(row = {}) {
+  return row.first_contact_at
+    ? `<span class="crm-called-pill">${escape(row.first_contact_at)}<small>Llamado</small></span>`
+    : `<span class="faint">—</span>`;
 }
 
 function renderCrmBusinessCell(row) {

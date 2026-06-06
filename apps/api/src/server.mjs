@@ -47,6 +47,7 @@ import {
   listBusinessIdsForTenant,
   listBusinesses,
   listCampaignLeadsForExport,
+  listCampaignCrmEntries,
   listExtractionJobs,
   listLeadListCrmEntries,
   listLeadLists,
@@ -323,17 +324,10 @@ const server = http.createServer(async (req, res) => {
       const list = await findLeadList(leadListCrmMatch[1], { tenantId: auth.tenantId });
       if (!list) return sendJson(res, 404, { error: "lead_list_not_found" });
       const rows = await listLeadListCrmEntries({ tenantId: auth.tenantId, listId: leadListCrmMatch[1] });
-      const objections = Array.from(
-        new Set([...CRM_OBJECTION_OPTIONS, ...rows.map((row) => row.objection).filter(Boolean)])
-      );
       return sendJson(res, 200, {
         list,
         rows,
-        options: {
-          statuses: CRM_STATUS_OPTIONS,
-          checkpoints: CRM_CHECKPOINT_OPTIONS,
-          objections
-        }
+        options: buildCrmOptions(rows)
       });
     }
 
@@ -424,6 +418,18 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    const campaignCrmMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)\/crm$/);
+    if (req.method === "GET" && campaignCrmMatch) {
+      const job = await findExtractionJobDetail(campaignCrmMatch[1], { tenantId: auth.tenantId });
+      if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+      const rows = await listCampaignCrmEntries({ tenantId: auth.tenantId, campaignId: job.id });
+      return sendJson(res, 200, {
+        job,
+        rows,
+        options: buildCrmOptions(rows)
+      });
+    }
+
     const campaignDetailMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)$/);
     if (req.method === "GET" && campaignDetailMatch) {
       const job = await findExtractionJobDetail(campaignDetailMatch[1], { tenantId: auth.tenantId });
@@ -479,9 +485,7 @@ const server = http.createServer(async (req, res) => {
         listId: url.searchParams.get("listId") || undefined,
         phoneType: url.searchParams.get("phoneType") || undefined,
         adsActive: url.searchParams.get("adsActive") || undefined,
-        adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined,
-        adsInvestmentMin: url.searchParams.get("adsInvestmentMin") || undefined,
-        adsInvestmentMax: url.searchParams.get("adsInvestmentMax") || undefined
+        adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined
       });
       return sendJson(res, 200, result);
     }
@@ -1229,6 +1233,14 @@ async function getQueueCounts() {
 function isBusinessTestDone(detail) {
   const latestRun = detail.crawlerRuns?.[0];
   return Boolean(detail.business?.ads_last_checked_at) || Boolean(latestRun && ["completed", "failed"].includes(latestRun.status));
+}
+
+function buildCrmOptions(rows = []) {
+  return {
+    statuses: CRM_STATUS_OPTIONS,
+    checkpoints: CRM_CHECKPOINT_OPTIONS,
+    objections: Array.from(new Set([...CRM_OBJECTION_OPTIONS, ...rows.map((row) => row.objection).filter(Boolean)]))
+  };
 }
 
 function safeEqual(a, b) {
