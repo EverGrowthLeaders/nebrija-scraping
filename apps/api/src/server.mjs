@@ -26,6 +26,8 @@ import {
   CRM_STATUS_OPTIONS,
   DEFAULT_TENANT_ID,
   addBusinessToLeadList,
+  auditAdsCampaignLeads,
+  auditAdsCampaigns,
   createLeadList,
   createExtractionJob,
   createManualBusiness,
@@ -764,6 +766,35 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (req.method === "GET" && url.pathname === "/api/test-jobs/audit/ads") {
+        const campaignId = url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId");
+        const campaigns = campaignId
+          ? [await findExtractionJobDetail(campaignId, { tenantId: auth.tenantId })].filter(Boolean)
+          : await auditAdsCampaigns({
+              tenantId: auth.tenantId,
+              search: url.searchParams.get("search") || url.searchParams.get("q") || "aerotermia aire acondicionado calefaccion",
+              city: url.searchParams.get("city") || undefined,
+              limit: url.searchParams.get("campaignLimit") || 10
+            });
+        if (!campaigns.length) return sendJson(res, 404, { error: "campaign_not_found", campaigns: [] });
+        const selectedCampaign = campaigns[0];
+        const leads = await auditAdsCampaignLeads({
+          tenantId: auth.tenantId,
+          campaignId: selectedCampaign.id,
+          limit: url.searchParams.get("leadLimit") || 1200
+        });
+        const auditedLeads = leads.map(auditLeadAdsEvidence);
+        return sendJson(res, 200, {
+          audit: {
+            generatedAt: new Date().toISOString(),
+            selectedCampaign,
+            campaigns,
+            summary: summarizeAdsAudit(auditedLeads),
+            leads: auditedLeads
+          }
+        });
+      }
+
       const queueMatch = matchPath(url.pathname, /^\/api\/test-jobs\/queues\/([^/]+)\/([^/]+)$/);
       if (req.method === "GET" && queueMatch) {
         const queueName = queueMatch[1];
@@ -962,6 +993,151 @@ function sendAttachment(res, { filename, contentType, body }) {
 function redirect(res, location) {
   res.writeHead(302, { location });
   res.end();
+}
+
+function auditLeadAdsEvidence(lead) {
+  const meta = auditProviderEvidence("meta", lead.ads_meta_active, lead.ads_enrichment?.meta);
+  const google = auditProviderEvidence("google", lead.ads_google_active, lead.ads_enrichment?.google);
+  return {
+    id: lead.id,
+    name: lead.name,
+    website: lead.website,
+    city: lead.city,
+    niche: lead.niche,
+    category: lead.category,
+    phoneE164: lead.phone_e164,
+    adsLastCheckedAt: lead.ads_last_checked_at,
+    funnel: {
+      type: lead.ads_funnel_type || lead.ads_enrichment?.classification?.type || null,
+      confidence: lead.ads_funnel_confidence ?? lead.ads_enrichment?.classification?.confidence ?? null,
+      landingUrl: lead.ads_funnel_landing_url || lead.ads_enrichment?.classification?.landingUrl || null,
+      reason: lead.ads_enrichment?.classification?.reason || null
+    },
+    meta,
+    google,
+    contacts: Array.isArray(lead.contacts) ? lead.contacts : []
+  };
+}
+
+function auditProviderEvidence(provider, storedActive, detail = {}) {
+  const attempts = Array.isArray(detail?.attempts) ? detail.attempts : [];
+  const fields = Array.isArray(detail?.matchedFields) ? detail.matchedFields : [];
+  const active = storedActive === true || detail?.active === true;
+  const reasons = [];
+  const strongFields = provider === "google"
+    ? fields.filter((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field))
+    : fields.filter((field) => ["page_name", "instagram_handle", "instagram_url", "facebook_handle", "facebook_url"].includes(field));
+
+  if (active && provider === "google" && !strongFields.length) {
+    reasons.push("google_active_without_identity_match");
+  }
+  if (active && provider === "meta") {
+    const apifyDomainOnly = detail?.sourceProvider === "apify" && fields.length === 1 && fields[0] === "domain";
+    const firecrawlNoIdentity = detail?.sourceProvider === "firecrawl" && !fields.length && !detail?.adArchiveId;
+    if (apifyDomainOnly) reasons.push("meta_apify_domain_only_match");
+    if (firecrawlNoIdentity) reasons.push("meta_firecrawl_active_without_identity_match");
+  }
+  if (active && detail?.reason === "generic_ad_library_copy") reasons.push("generic_ad_library_copy");
+  if (active && !detail?.sourceUrl) reasons.push("missing_source_url");
+
+  const weakAttempts = attempts.filter((attempt) => attempt?.active === true && isWeakAttempt(provider, attempt));
+  if (weakAttempts.length) reasons.push(`${weakAttempts.length}_weak_active_attempts`);
+
+  return {
+    storedActive: storedActive ?? null,
+    evidenceActive: detail?.active ?? null,
+    status: detail?.status || null,
+    confidence: detail?.confidence ?? null,
+    reason: detail?.reason || null,
+    sourceProvider: detail?.sourceProvider || null,
+    strategy: detail?.strategy || null,
+    query: detail?.query || null,
+    country: detail?.country || null,
+    sourceUrl: detail?.sourceUrl || null,
+    matchedFields: fields,
+    itemsSeen: detail?.itemsSeen ?? null,
+    total: detail?.total ?? null,
+    samplePageName: detail?.samplePageName || null,
+    adArchiveId: detail?.adArchiveId || null,
+    actorId: detail?.actorId || null,
+    landingUrl: detail?.landingUrl || null,
+    spendEstimate: detail?.spendEstimate || null,
+    suspect: reasons.length > 0,
+    suspectReasons: reasons,
+    activeAttempts: attempts.filter((attempt) => attempt?.active === true).slice(0, 5).map(compactAdAttempt),
+    weakActiveAttempts: weakAttempts.slice(0, 5).map(compactAdAttempt),
+    inactiveOrUnknownAttempts: attempts.filter((attempt) => attempt?.active !== true).slice(0, 8).map(compactAdAttempt)
+  };
+}
+
+function isWeakAttempt(provider, attempt = {}) {
+  const fields = Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [];
+  if (provider === "google") {
+    return !fields.some((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field));
+  }
+  if (provider === "meta") {
+    if (attempt.sourceProvider === "apify" && fields.length === 1 && fields[0] === "domain") return true;
+    if (attempt.sourceProvider === "firecrawl" && !fields.length && !attempt.adArchiveId) return true;
+  }
+  return false;
+}
+
+function compactAdAttempt(attempt = {}) {
+  return {
+    sourceProvider: attempt.sourceProvider || null,
+    strategy: attempt.strategy || null,
+    query: attempt.query || null,
+    country: attempt.country || null,
+    status: attempt.status || null,
+    active: attempt.active ?? null,
+    confidence: attempt.confidence ?? null,
+    reason: attempt.reason || null,
+    sourceUrl: attempt.sourceUrl || null,
+    matchedFields: attempt.matchedFields || null,
+    samplePageName: attempt.samplePageName || null,
+    itemsSeen: attempt.itemsSeen ?? null,
+    total: attempt.total ?? null
+  };
+}
+
+function summarizeAdsAudit(leads) {
+  const summary = {
+    totalLeads: leads.length,
+    metaActiveStored: 0,
+    googleActiveStored: 0,
+    bothActiveStored: 0,
+    metaSuspectActive: 0,
+    googleSuspectActive: 0,
+    cleanMetaActive: 0,
+    cleanGoogleActive: 0,
+    unchecked: 0,
+    suspects: []
+  };
+  for (const lead of leads) {
+    const metaActive = lead.meta.storedActive === true;
+    const googleActive = lead.google.storedActive === true;
+    if (!lead.adsLastCheckedAt) summary.unchecked += 1;
+    if (metaActive) summary.metaActiveStored += 1;
+    if (googleActive) summary.googleActiveStored += 1;
+    if (metaActive && googleActive) summary.bothActiveStored += 1;
+    if (metaActive && lead.meta.suspect) summary.metaSuspectActive += 1;
+    if (googleActive && lead.google.suspect) summary.googleSuspectActive += 1;
+    if (metaActive && !lead.meta.suspect) summary.cleanMetaActive += 1;
+    if (googleActive && !lead.google.suspect) summary.cleanGoogleActive += 1;
+    if ((metaActive && lead.meta.suspect) || (googleActive && lead.google.suspect)) {
+      summary.suspects.push({
+        id: lead.id,
+        name: lead.name,
+        website: lead.website,
+        metaReasons: metaActive ? lead.meta.suspectReasons : [],
+        googleReasons: googleActive ? lead.google.suspectReasons : [],
+        metaSourceUrl: lead.meta.sourceUrl,
+        googleSourceUrl: lead.google.sourceUrl
+      });
+    }
+  }
+  summary.suspects = summary.suspects.slice(0, 50);
+  return summary;
 }
 
 async function getRouteAuth(req, url) {

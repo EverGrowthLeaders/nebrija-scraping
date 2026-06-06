@@ -1020,6 +1020,103 @@ export async function findExtractionJobDetail(id, { tenantId = DEFAULT_TENANT_ID
   return { ...job.rows[0], ...stats.rows[0] };
 }
 
+export async function auditAdsCampaigns({
+  tenantId = DEFAULT_TENANT_ID,
+  search,
+  city,
+  limit = 10
+} = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 10, 1), 50);
+  const params = [tenantId];
+  const where = ["j.tenant_id = $1"];
+  const patterns = searchPatterns(search);
+  if (patterns.length) {
+    params.push(patterns);
+    where.push(`(
+      lower(coalesce(j.niche, '')) LIKE ANY($${params.length}::text[])
+      OR lower(coalesce(j.city, '')) LIKE ANY($${params.length}::text[])
+      OR j.id::text LIKE ANY($${params.length}::text[])
+    )`);
+  }
+  if (city) {
+    params.push(`%${String(city).toLowerCase()}%`);
+    where.push(`lower(coalesce(j.city, '')) LIKE $${params.length}`);
+  }
+  params.push(safeLimit);
+  const result = await query(
+    `SELECT j.id,
+            j.niche,
+            j.city,
+            j.source_type,
+            j.status,
+            j.requested_limit,
+            j.created_at,
+            j.started_at,
+            j.finished_at,
+            j.metrics,
+            COUNT(b.id)::int AS leads_count,
+            COUNT(b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
+            COUNT(b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
+            COUNT(b.id) FILTER (WHERE b.ads_meta_active IS TRUE AND b.ads_google_active IS TRUE)::int AS both_active_count,
+            COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
+            MAX(b.ads_last_checked_at) AS last_ads_checked_at
+       FROM extraction_jobs j
+       LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = j.tenant_id
+      WHERE ${where.join(" AND ")}
+      GROUP BY j.id
+      ORDER BY j.created_at DESC
+      LIMIT $${params.length}`,
+    params
+  );
+  return result.rows;
+}
+
+export async function auditAdsCampaignLeads({
+  tenantId = DEFAULT_TENANT_ID,
+  campaignId,
+  limit = 1200
+} = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 1200, 1), 5000);
+  const result = await query(
+    `SELECT b.id,
+            b.name,
+            b.website,
+            b.city,
+            b.niche,
+            b.category,
+            b.phone_e164,
+            b.ads_meta_active,
+            b.ads_google_active,
+            b.ads_last_checked_at,
+            b.ads_enrichment,
+            b.ads_funnel_type,
+            b.ads_funnel_confidence,
+            b.ads_funnel_landing_url,
+            b.created_at,
+            b.updated_at,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'kind', c.kind,
+                  'value', c.value,
+                  'confidence', c.confidence,
+                  'sourceUrl', c.source_url
+                )
+              ) FILTER (WHERE c.id IS NOT NULL),
+              '[]'::json
+            ) AS contacts
+       FROM businesses b
+       LEFT JOIN business_contacts c ON c.business_id = b.id
+      WHERE b.tenant_id = $1
+        AND b.extraction_job_id = $2
+      GROUP BY b.id
+      ORDER BY b.created_at ASC
+      LIMIT $3`,
+    [tenantId, campaignId, safeLimit]
+  );
+  return result.rows;
+}
+
 export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID, campaignId }) {
   const result = await query(
     `SELECT b.id,
@@ -1067,6 +1164,16 @@ export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID,
     [tenantId, campaignId]
   );
   return result.rows;
+}
+
+function searchPatterns(search) {
+  const blocked = new Set(["empresas", "empresa", "para", "con", "los", "las", "del", "una", "unos", "unas"]);
+  return [...new Set(String(search || "")
+    .toLowerCase()
+    .split(/[^a-z0-9áéíóúüñ]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4 && !blocked.has(token))
+    .map((token) => `%${token}%`))];
 }
 
 export async function listBusinesses({
