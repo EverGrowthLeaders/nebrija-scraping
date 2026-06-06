@@ -715,6 +715,7 @@ async function renderCampaignDetail({ params }) {
 // ── Leads list ────────────────────────────────────────────
 async function renderLeadsList({ search }) {
   setCurrentCrumb("Lista");
+  rememberLeadListRoute();
   const status = search.get("status") || "";
   const niche = search.get("niche") || "";
   const city = search.get("city") || "";
@@ -816,6 +817,21 @@ async function renderLeadsList({ search }) {
 
     <div class="table-wrap table-wrap--scroll">
       <table class="table leads-table">
+        <colgroup>
+          <col style="width:44px" />
+          <col style="width:250px" />
+          <col style="width:190px" />
+          <col style="width:220px" />
+          <col style="width:260px" />
+          <col style="width:150px" />
+          <col style="width:94px" />
+          <col style="width:170px" />
+          <col style="width:210px" />
+          <col style="width:170px" />
+          <col style="width:145px" />
+          <col style="width:125px" />
+          <col style="width:96px" />
+        </colgroup>
         <thead>
           <tr>
             <th class="col-select">
@@ -929,6 +945,23 @@ function renderLeadCampaignCell(business = {}) {
   `;
 }
 
+function rememberLeadListRoute() {
+  const hash = location.hash || "#/leads";
+  if (!hash.startsWith("#/leads/")) {
+    try {
+      sessionStorage.setItem("nebrija.lastLeadsRoute", hash.startsWith("#/leads") ? hash : "#/leads");
+    } catch {}
+  }
+}
+
+function leadListReturnHash() {
+  try {
+    const stored = sessionStorage.getItem("nebrija.lastLeadsRoute");
+    if (stored?.startsWith("#/leads") && !stored.startsWith("#/leads/")) return stored;
+  } catch {}
+  return "#/leads";
+}
+
 function bindLeadSelection(rows) {
   const selected = new Set();
   const byId = new Map(rows.map((row) => [String(row.id), row]));
@@ -992,9 +1025,10 @@ async function renderLeadDetail({ params }) {
   ]);
   const b = data.business;
   setCurrentCrumb(b.name);
+  const returnHash = leadListReturnHash();
 
   view.innerHTML = `
-    <a class="back-link" href="#/leads">← Volver a leads</a>
+    <a class="back-link" href="${escape(returnHash)}">← Volver a leads</a>
     <div class="row">
       <div class="grow">
         <h1 class="headline">${escape(b.name)}</h1>
@@ -1167,7 +1201,7 @@ async function renderLeadDetail({ params }) {
   $("[data-action='lead-ads']", view).addEventListener("click", () => leadAction(b, "ads"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
   $("[data-action='lead-delete']", view).addEventListener("click", () =>
-    confirmDeleteLead(b, { afterDelete: () => { location.hash = "#/leads"; } })
+    confirmDeleteLead(b, { afterDelete: () => { location.hash = leadListReturnHash(); } })
   );
   $("[data-action='save-scoring-notes']", view).addEventListener("click", () => saveScoringNotes(b.id));
   $("[data-action='add-to-list']", view).addEventListener("click", () => addLeadToSelectedList(b.id));

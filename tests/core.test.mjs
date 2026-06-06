@@ -408,6 +408,30 @@ test("classifies ecommerce ad landings from catalog and checkout signals", () =>
   assert.ok(result.signals.some((signal) => signal.id === "checkout_integration"));
 });
 
+test("classifies ecommerce stores as ecommerce despite account forms and register copy", () => {
+  const result = classifyLandingPage({
+    url: "https://www.branxstore.com.ar/",
+    page: {
+      markdown: `
+        Entrá. Registráte. 0 Carrito (0) $0,00.
+        Carrito de compras. Subtotal $0,00. Total $0,00.
+        Set Juego Herramientas Maletin Branx $119.175,00 6 x $19.862,50.
+        Agregar al carrito. Comprar. Solo quedan 17 en stock.
+      `,
+      html: `
+        <form class="product-form"><button class="add-to-cart" name="add-to-cart">Agregar al carrito</button></form>
+        <a href="/cart">Ver carrito</a>
+      `,
+      links: [{ url: "https://www.branxstore.com.ar/cart", text: "Carrito" }]
+    },
+    business: { website: "https://www.branxstore.com.ar" }
+  });
+
+  assert.equal(result.type, "ecommerce");
+  assert.ok(result.scores.ecommerce > result.scores.lead_generation);
+  assert.ok(result.signals.some((signal) => signal.id === "catalog_runtime_copy"));
+});
+
 test("classifies custom quote apparel landing as lead generation despite WooCommerce", () => {
   const result = classifyLandingPage({
     url: "https://disownedfactory.com/sudaderas-para-grupos/",

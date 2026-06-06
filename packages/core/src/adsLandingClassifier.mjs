@@ -177,7 +177,9 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     if (target === "other") otherScore += weight;
   };
 
-  if (/<form\b/i.test(html) || /elementor-form|wpforms|gform_|wpcf7|contact-form-7/i.test(html)) {
+  const transactionalForm = /<form[^>]+(?:product-form|cart|checkout|add-to-cart|woocommerce|shopify)/i.test(html) ||
+    /<(?:button|input|a)[^>]+(?:add-to-cart|ajax_add_to_cart|single_add_to_cart|name=["']add-to-cart)/i.test(html);
+  if ((/<form\b/i.test(html) || /elementor-form|wpforms|gform_|wpcf7|contact-form-7/i.test(html)) && !transactionalForm) {
     addSignal({
       target: "lead_generation",
       id: "form_present",
@@ -226,7 +228,7 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     /\bagenda (?:una )?(?:demo|llamada|consulta|cita)\b/i,
     /\breserva (?:tu )?(?:cita|consulta|demo)\b/i,
     /\bdiagnostico gratuito\b|\basesoramiento gratuito\b|\bcotiza\b|\bquote\b/i,
-    /\bregistrate\b|\bregístrate\b|\bcontacta con nuestro equipo\b/i,
+    /\bcontacta con nuestro equipo\b/i,
     /\bquiero (?:un )?(?:diseno|diseño|presupuesto|maqueta)\b/i
   ]);
   if (leadCopy) {
@@ -239,7 +241,7 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     });
   }
 
-  if (/\b(whatsapp|wa\.me|api\.whatsapp\.com)\b/i.test(text) && /presupuesto|consulta|cita|informacion|pedido personalizado/i.test(normalized)) {
+  if (/\b(whatsapp|wa\.me|api\.whatsapp\.com)\b/i.test(text) && /presupuesto|consulta|cita|informacion|cotizacion|cotización|asesoramiento|maqueta|demo|quote/i.test(normalized)) {
     addSignal({
       target: "lead_generation",
       id: "whatsapp_lead_cta",
@@ -301,6 +303,21 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     });
   }
 
+  const catalogRuntimeCopy = firstMatchedPattern(normalized, [
+    /\b(?:ver carrito|carrito de compras|subtotal|total:|calcular envio|calcular envío)\b/i,
+    /\b(?:solo quedan|no tenemos mas stock|no tenemos más stock|en stock|productos?\s+producto)\b/i,
+    /\b(?:agregando|agregado al carrito|ver mas productos|ver más productos)\b/i
+  ]);
+  if (catalogRuntimeCopy) {
+    addSignal({
+      target: "ecommerce",
+      id: "catalog_runtime_copy",
+      label: "Cart and stock runtime copy",
+      weight: 1.7,
+      snippet: catalogRuntimeCopy
+    });
+  }
+
   if (/\/(?:products?|producto|collections?|tienda|shop|catalogo|categoria|cart|checkout)\b/i.test(path)) {
     addSignal({
       target: "ecommerce",
@@ -311,13 +328,13 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     });
   }
 
-  const priceSignals = Array.from(text.matchAll(/(?:€|\bEUR\b)\s?\d{1,5}(?:[.,]\d{2})?|\b\d{1,5}(?:[.,]\d{2})?\s?(?:€|\bEUR\b)/gi)).slice(0, 4);
+  const priceSignals = Array.from(text.matchAll(/(?:€|\$|\bEUR\b|\bARS\b)\s?\d{1,9}(?:[.,]\d{2})?|\b\d{1,9}(?:[.,]\d{2})?\s?(?:€|\$|\bEUR\b|\bARS\b)/gi)).slice(0, 6);
   if (priceSignals.length >= 2) {
     addSignal({
       target: "ecommerce",
       id: "multiple_prices",
       label: "Multiple price signals",
-      weight: 0.8,
+      weight: priceSignals.length >= 4 ? 1.4 : 0.9,
       snippet: priceSignals.map((match) => match[0]).join(" ")
     });
   }
@@ -333,24 +350,38 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
     leadScore = Math.max(0, leadScore - 1.4);
   }
 
-  const strongLeadSignal = signals.some((signal) =>
+  const highIntentLeadSignal = signals.some((signal) =>
     signal.target === "lead_generation" &&
-    ["custom_quote_landing", "lead_form_integration", "lead_generation_copy", "lead_landing_path", "whatsapp_lead_cta"].includes(signal.id)
+    ["custom_quote_landing", "lead_form_integration", "lead_generation_copy", "lead_landing_path"].includes(signal.id)
+  );
+  const quoteLeadSignal = signals.some((signal) =>
+    signal.target === "lead_generation" &&
+    ["custom_quote_landing", "lead_landing_path"].includes(signal.id)
   );
   const strongTransactionalSignal = signals.some((signal) =>
     signal.target === "ecommerce" &&
-    ["checkout_integration", "commerce_copy", "commerce_path"].includes(signal.id)
+    ["checkout_integration", "commerce_copy", "commerce_path", "catalog_runtime_copy"].includes(signal.id)
   );
-  const leadOverride = strongLeadSignal && leadScore >= 4 && leadScore >= ecommerceScore - 1.5;
+  const ecommerceOverride = strongTransactionalSignal &&
+    ecommerceScore >= 5 &&
+    ecommerceScore >= leadScore - 0.5 &&
+    !quoteLeadSignal;
+  const leadOverride = highIntentLeadSignal &&
+    leadScore >= 4 &&
+    leadScore >= ecommerceScore - 1.5 &&
+    (!strongTransactionalSignal || quoteLeadSignal || leadScore >= ecommerceScore + 2);
   let type = "other";
   let reason = "insufficient_campaign_intent_signal";
-  if (leadOverride && (!genericContactPage || strongLeadSignal)) {
+  if (ecommerceOverride) {
+    type = "ecommerce";
+    reason = "ecommerce_signals_won";
+  } else if (leadOverride && (!genericContactPage || highIntentLeadSignal)) {
     type = "lead_generation";
     reason = "lead_generation_signals_won";
   } else if (strongTransactionalSignal && ecommerceScore >= 4.5 && ecommerceScore >= leadScore + 2) {
     type = "ecommerce";
     reason = "ecommerce_signals_won";
-  } else if (leadScore >= 4 && leadScore >= ecommerceScore && (!genericContactPage || strongLeadSignal)) {
+  } else if (leadScore >= 4 && leadScore >= ecommerceScore && (!genericContactPage || highIntentLeadSignal)) {
     type = "lead_generation";
     reason = genericContactPage ? "lead_specific_contact_page" : "lead_generation_signals_won";
   } else if (strongTransactionalSignal && ecommerceScore >= 4 && leadScore < 3) {
