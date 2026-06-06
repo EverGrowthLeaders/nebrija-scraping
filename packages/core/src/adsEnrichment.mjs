@@ -96,8 +96,9 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
       ];
   const hasActiveCopy = activePhrases.some((phrase) => normalized.includes(normalizeText(phrase)));
   const hasCreativeId = /\bCR\d{8,}\b/.test(text);
+  const googleDomainAds = provider === "google" ? googleDomainAdsSignal({ text, context }) : null;
 
-  if (provider === "google" && (recentDate || hasCreativeId)) {
+  if (provider === "google" && (recentDate || hasCreativeId || googleDomainAds?.matched)) {
     const identity = googleIdentityMatch({ text, context });
     if (!identity.matched) {
       return evidence({
@@ -111,7 +112,7 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
         context: { ...context, matchedFields: identity.fields }
       });
     }
-    if (!googleSourceIsVerified({ sourceUrl, identity })) {
+    if (!googleSourceIsVerified({ sourceUrl, identity, googleDomainAds })) {
       return evidence({
         provider,
         status: "unknown",
@@ -127,11 +128,17 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
       provider,
       status: "active",
       active: true,
-      confidence: Math.min(recentDate ? 0.84 : 0.68, identity.confidence),
+      confidence: googleDomainAds?.matched
+        ? Math.min(0.78, identity.confidence)
+        : Math.min(recentDate ? 0.84 : 0.68, identity.confidence),
       sourceUrl,
-      reason: recentDate ? "recent_last_shown_date" : "creative_id_found",
+      reason: googleDomainAds?.matched ? "google_domain_ads_found" : recentDate ? "recent_last_shown_date" : "creative_id_found",
       latestDetectedDate: recentDate,
-      context: { ...context, matchedFields: identity.fields }
+      context: {
+        ...context,
+        matchedFields: identity.fields,
+        itemsSeen: googleDomainAds?.count ?? context.itemsSeen
+      }
     });
   }
   if (provider === "meta" && (hasActiveCopy || hasMetaLibraryId) && !normalized.includes("0 results")) {
@@ -704,10 +711,29 @@ function matchApifyBusinessItem({ item, business }) {
   };
 }
 
-function googleSourceIsVerified({ sourceUrl, identity }) {
+function googleSourceIsVerified({ sourceUrl, identity, googleDomainAds }) {
   const fields = identity?.fields || [];
   if (fields.includes("landing_domain")) return true;
+  if (googleDomainAds?.matched) return true;
   return /adstransparency\.google\.com\/advertiser\//i.test(String(sourceUrl || ""));
+}
+
+function googleDomainAdsSignal({ text, context = {} }) {
+  const normalized = normalizeText(text);
+  const domain = extractDomain(context.domain || context.query || context.business?.website);
+  if (!domain || !normalized.includes(normalizeText(domain))) return null;
+  const hasDomainResultsCopy = [
+    "este dominio incluye resultados",
+    "this domain includes results",
+    "anuncios que se orientan a este dominio",
+    "ads that target this domain"
+  ].some((phrase) => normalized.includes(normalizeText(phrase)));
+  if (!hasDomainResultsCopy) return null;
+  const matches = Array.from(String(text || "").matchAll(/\b(\d{1,5})\s+(?:anuncios|ads)\b/gi));
+  const count = matches
+    .map((match) => Number(match[1]))
+    .find((value) => Number.isFinite(value) && value > 0);
+  return count ? { matched: true, count } : null;
 }
 
 function textIncludesBusinessName(normalizedText, businessName) {

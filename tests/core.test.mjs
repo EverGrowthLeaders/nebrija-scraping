@@ -355,6 +355,17 @@ test("infers active ads from public transparency page signals", () => {
   });
   assert.equal(unverifiedGoogleSearch.active, null);
   assert.equal(unverifiedGoogleSearch.reason, "google_search_source_not_verified");
+
+  const directDomainGoogle = inferAdsActivity({
+    provider: "google",
+    now: new Date("2026-06-06T00:00:00Z"),
+    sourceUrl: "https://adstransparency.google.com/?region=ES&domain=climatron.net",
+    context: { domain: "climatron.net", businessName: "Climatron" },
+    text: "climatron.net Este dominio incluye resultados de varias cuentas de anunciante con anuncios que se orientan a este dominio. 28 anuncios"
+  });
+  assert.equal(directDomainGoogle.active, true);
+  assert.equal(directDomainGoogle.reason, "google_domain_ads_found");
+  assert.equal(directDomainGoogle.itemsSeen, 28);
 });
 
 test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {

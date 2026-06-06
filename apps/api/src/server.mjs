@@ -1124,6 +1124,7 @@ function isWeakAttempt(provider, attempt = {}) {
 function auditGoogleSourceIsVerified(detail = {}) {
   const fields = Array.isArray(detail?.matchedFields) ? detail.matchedFields : [];
   if (fields.includes("landing_domain")) return true;
+  if (detail?.reason === "google_domain_ads_found" && fields.includes("domain")) return true;
   return /adstransparency\.google\.com\/advertiser\//i.test(String(detail?.sourceUrl || ""));
 }
 
