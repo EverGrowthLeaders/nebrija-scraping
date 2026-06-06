@@ -721,6 +721,7 @@ async function renderLeadsList({ search }) {
   const city = search.get("city") || "";
   const campaignId = search.get("campaignId") || "";
   const listId = search.get("listId") || "";
+  const phoneType = search.get("phoneType") || "";
   const adsActive = search.get("adsActive") || "";
   const adsFunnelType = search.get("adsFunnelType") || "";
   const adsInvestmentMin = search.get("adsInvestmentMin") || "";
@@ -779,6 +780,10 @@ async function renderLeadsList({ search }) {
           ${(leadLists.rows || [])
             .map((list) => `<option value="${escape(list.id)}" ${list.id === listId ? "selected" : ""}>${escape(list.name)}</option>`)
             .join("")}
+        </select>
+        <select class="select" name="phoneType" style="max-width:170px">
+          <option value="">Cualquier teléfono</option>
+          ${renderPhoneTypeOptions(phoneType)}
         </select>
         <select class="select" name="adsActive" style="max-width:180px">
           <option value="">Cualquier Ads</option>
@@ -872,6 +877,7 @@ async function renderLeadsList({ search }) {
   if (city) params.set("city", city);
   if (campaignId) params.set("campaignId", campaignId);
   if (listId) params.set("listId", listId);
+  if (phoneType) params.set("phoneType", phoneType);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
   if (adsInvestmentMin) params.set("adsInvestmentMin", adsInvestmentMin);
@@ -899,7 +905,7 @@ async function renderLeadsList({ search }) {
         <td>${escape(b.city || "—")} <span class="muted">·</span> ${escape(b.niche || "—")}</td>
         <td>${renderLeadCampaignCell(b)}</td>
         <td>${b.website ? `<span class="mono ellipsis" style="display:inline-block;max-width:220px">${escape(stripScheme(b.website))}</span>` : "<span class='faint'>—</span>"}</td>
-        <td class="mono">${escape(b.phone_e164 || "—")}</td>
+        <td>${renderLeadPhoneCell(b)}</td>
         <td class="col-num">${renderScore(b.score)}</td>
         <td>${renderListBadges(b.lists || [])}</td>
         <td>${renderAdsState(b)}</td>
@@ -930,9 +936,29 @@ function renderCampaignOption(job, selectedId = "") {
   return `<option value="${escape(job.id)}" ${job.id === selectedId ? "selected" : ""}>${escape(formatCampaignLabel(job))}${escape(count)}</option>`;
 }
 
+function renderPhoneTypeOptions(selected = "") {
+  return [
+    ["mobile", "Solo móviles"],
+    ["fixed", "Solo fijos"],
+    ["with_phone", "Con teléfono"],
+    ["without_phone", "Sin teléfono"],
+    ["unknown", "Otro formato"]
+  ]
+    .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
+    .join("");
+}
+
 function formatCampaignLabel(job = {}) {
   const main = [job.niche, job.city].filter(Boolean).join(" · ");
   return main || job.name || `Campaña ${String(job.id || "").slice(0, 8)}`;
+}
+
+function renderLeadPhoneCell(row = {}) {
+  const phone = row.phone_e164 || row.phone;
+  const type = crmPhoneType(row);
+  return phone
+    ? `<div class="crm-phone-cell"><span class="mono crm-phone">${escape(phone)}</span>${type !== "none" ? `<span class="crm-phone-type crm-phone-type--${escape(type)}">${escape(crmPhoneLabel(type))}</span>` : ""}</div>`
+    : `<span class="faint">—</span>`;
 }
 
 function renderLeadCampaignCell(business = {}) {
@@ -1749,10 +1775,7 @@ function renderCrmFilterBar(rows = []) {
         <span>Teléfono</span>
         <select class="select" data-crm-quick-filter="phoneType">
           <option value="">Todos</option>
-          <option value="mobile">Solo móviles</option>
-          <option value="fixed">Solo fijos</option>
-          <option value="with_phone">Con teléfono</option>
-          <option value="without_phone">Sin teléfono</option>
+          ${renderPhoneTypeOptions()}
         </select>
       </label>
       <label class="crm-filter">
@@ -1881,8 +1904,9 @@ function createCrmColumns(options = {}, rows = []) {
       key: "phone",
       label: "Teléfono",
       width: 160,
-      filter: "text",
+      filter: "phone_type",
       value: (row) => row.phone_e164 || row.phone,
+      filterValue: (row) => crmPhoneType(row),
       render: renderCrmPhone
     },
     {
@@ -2082,6 +2106,14 @@ function renderCrmHeaderCell(column, state) {
 }
 
 function renderCrmColumnFilter(column, selected) {
+  if (column.filter === "phone_type") {
+    return `
+      <select class="crm-column-filter" data-crm-column-filter="${escape(column.key)}">
+        <option value="">Todos</option>
+        ${renderPhoneTypeOptions(selected)}
+      </select>
+    `;
+  }
   if (column.filter === "select") {
     return `
       <select class="crm-column-filter" data-crm-column-filter="${escape(column.key)}">
@@ -2237,7 +2269,12 @@ function crmMatchesColumnFilters(row, columns, filters = {}) {
     if (!filter) return true;
     const column = columns.find((item) => item.key === key);
     if (!column) return true;
-    const value = column.value(row);
+    const value = column.filterValue ? column.filterValue(row) : column.value(row);
+    if (column.filter === "phone_type") {
+      if (filter === "with_phone") return value !== "none";
+      if (filter === "without_phone") return value === "none";
+      return value === filter;
+    }
     if (column.filter === "select" || column.filter === "boolean") return String(value ?? "") === String(filter);
     if (column.filter === "date") return String(value || "") === String(filter);
     if (column.filter === "number") return matchCrmNumberFilter(value, filter);

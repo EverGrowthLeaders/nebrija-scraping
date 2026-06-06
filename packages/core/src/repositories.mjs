@@ -1059,6 +1059,7 @@ export async function listBusinesses({
   search,
   extractionJobId,
   listId,
+  phoneType,
   adsActive,
   adsFunnelType,
   adsInvestmentMin,
@@ -1099,6 +1100,19 @@ export async function listBusinesses({
          AND ll.tenant_id = b.tenant_id
     )`);
   }
+  const phoneDigitsExpr = `regexp_replace(COALESCE(NULLIF(b.phone_e164, ''), NULLIF(b.phone, ''), ''), '[^0-9]', '', 'g')`;
+  const localPhoneExpr = `(CASE
+    WHEN ${phoneDigitsExpr} LIKE '0034%' THEN substring(${phoneDigitsExpr} from 5)
+    WHEN ${phoneDigitsExpr} LIKE '34%' AND length(${phoneDigitsExpr}) = 11 THEN substring(${phoneDigitsExpr} from 3)
+    ELSE ${phoneDigitsExpr}
+  END)`;
+  if (phoneType) {
+    if (phoneType === "mobile") where.push(`${localPhoneExpr} ~ '^[67]'`);
+    else if (phoneType === "fixed") where.push(`${localPhoneExpr} ~ '^[89]'`);
+    else if (phoneType === "with_phone") where.push(`${localPhoneExpr} <> ''`);
+    else if (phoneType === "without_phone") where.push(`${localPhoneExpr} = ''`);
+    else if (phoneType === "unknown") where.push(`${localPhoneExpr} <> '' AND ${localPhoneExpr} !~ '^[6789]'`);
+  }
   if (adsActive) {
     if (adsActive === "any") {
       where.push(`(b.ads_meta_active IS TRUE OR b.ads_google_active IS TRUE)`);
@@ -1134,7 +1148,7 @@ export async function listBusinesses({
   params.push(safeLimit);
   params.push(safeOffset);
   const result = await query(
-    `SELECT b.id, b.name, b.niche, b.city, b.website, b.phone_e164, b.status, b.score, b.scoring_notes,
+    `SELECT b.id, b.name, b.niche, b.city, b.website, b.phone, b.phone_e164, b.status, b.score, b.scoring_notes,
             b.has_online_booking, b.has_chatbot, b.ads_meta_active, b.ads_google_active, b.ads_last_checked_at,
             b.ads_funnel_type, b.ads_funnel_confidence, b.ads_funnel_landing_url, b.ads_funnel_last_checked_at,
             b.custom_fields, b.extraction_job_id, b.created_at, b.updated_at,

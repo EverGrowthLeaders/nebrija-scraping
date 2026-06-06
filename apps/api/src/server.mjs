@@ -477,6 +477,7 @@ const server = http.createServer(async (req, res) => {
         search: url.searchParams.get("search") || undefined,
         extractionJobId: url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined,
         listId: url.searchParams.get("listId") || undefined,
+        phoneType: url.searchParams.get("phoneType") || undefined,
         adsActive: url.searchParams.get("adsActive") || undefined,
         adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined,
         adsInvestmentMin: url.searchParams.get("adsInvestmentMin") || undefined,
