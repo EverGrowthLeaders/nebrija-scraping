@@ -795,6 +795,31 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      const testCampaignAdsMatch = matchPath(url.pathname, /^\/api\/test-jobs\/campaigns\/([^/]+)\/ads-enrichment$/);
+      if (req.method === "POST" && testCampaignAdsMatch) {
+        const campaignId = testCampaignAdsMatch[1];
+        const job = await findExtractionJobDetail(campaignId, { tenantId: auth.tenantId });
+        if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+        const businessIds = await listBusinessIdsForCampaign(campaignId, { tenantId: auth.tenantId });
+        const queueJobs = [];
+        for (const businessId of businessIds) {
+          queueJobs.push(
+            await queues.adsEnrichment.add("enrich", {
+              tenantId: auth.tenantId,
+              businessId,
+              campaignId,
+              testTriggered: true
+            })
+          );
+        }
+        return sendJson(res, 202, {
+          campaignId,
+          queued: queueJobs.length,
+          queue: QUEUE_NAMES.adsEnrichment,
+          jobIds: queueJobs.map((queueJob) => queueJob.id)
+        });
+      }
+
       const queueMatch = matchPath(url.pathname, /^\/api\/test-jobs\/queues\/([^/]+)\/([^/]+)$/);
       if (req.method === "GET" && queueMatch) {
         const queueName = queueMatch[1];
