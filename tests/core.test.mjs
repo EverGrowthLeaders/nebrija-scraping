@@ -637,7 +637,7 @@ test("falls back to Apify for matched active Meta ads only", async () => {
     async runFacebookAdsLibrary(input) {
       assert.equal(input.limitPerSource, 1);
       assert.equal(input.count, 10);
-      assert.equal(input.scrapeAdDetails, false);
+      assert.equal(input.scrapeAdDetails, true);
       assert.equal(input["scrapePageAds.activeStatus"], "active");
       assert.match(input.urls[0].url, /%40disowned_factory/);
       return [
@@ -653,6 +653,7 @@ test("falls back to Apify for matched active Meta ads only", async () => {
             body: { text: "Escríbenos @disowned_factory" },
             cards: [{ link_url: "https://disownedfactory.com/sudaderas-personalizadas/" }]
           },
+          impressions_with_index: { impressions_text: "1K-5K", impressions_index: 2 },
           start_date: 1780642800
         }
       ];
@@ -676,6 +677,21 @@ test("falls back to Apify for matched active Meta ads only", async () => {
     "https://disownedfactory.com/sudaderas-para-grupos/",
     "https://disownedfactory.com/sudaderas-personalizadas/"
   ]);
+  assert.deepEqual(enrichment.meta.spendEstimate, {
+    status: "estimated",
+    source: "public_impressions_cpm_benchmark",
+    currency: "EUR",
+    impressionsMin: 1000,
+    impressionsMax: 5000,
+    estimatedSpendMin: 8,
+    estimatedSpendMax: 40,
+    cpm: 8,
+    confidence: 0.49,
+    matchedAds: 1,
+    adsWithImpressions: 1,
+    checkedAt: "2026-06-05T00:00:00.000Z",
+    note: "Estimación por impresiones públicas de Meta Ads Library multiplicadas por CPM benchmark del nicho."
+  });
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.sourceProvider === "apify" && attempt.active === true));
   assert.ok(enrichment.google.attempts.length >= 1);
 });
@@ -762,7 +778,8 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
             page_name: "DT Lite",
             caption: "play.google.com",
             body: { text: "A story where someone is disowned by family" }
-          }
+          },
+          impressions_with_index: { impressions_text: "10K-20K", impressions_index: 4 }
         }
       ];
     }
@@ -780,4 +797,5 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
   assert.equal(enrichment.meta.reason, "apify_active_items_not_matched");
   assert.equal(enrichment.meta.itemsSeen, 1);
   assert.equal(enrichment.meta.samplePageName, "DT Lite");
+  assert.equal(enrichment.meta.spendEstimate, null);
 });

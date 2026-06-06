@@ -105,9 +105,84 @@ const renderAdsEvidenceBadge = (value, label, evidence = {}) => {
 const renderAdsState = (business) => `
   <div class="ads-badges">
     ${renderAdsBadge(business.ads_meta_active, "Meta")}
+    ${renderMetaAdsEstimateBadge(business, { compact: true })}
     ${renderAdsBadge(business.ads_google_active, "Google")}
   </div>
 `;
+
+function metaAdsEstimateFromRow(row = {}) {
+  const max = Number(row.meta_ads_estimated_spend_max);
+  if (!Number.isFinite(max) || max <= 0) return null;
+  const min = Number(row.meta_ads_estimated_spend_min);
+  const impressionsMax = Number(row.meta_ads_impressions_max);
+  return {
+    estimatedSpendMin: Number.isFinite(min) ? min : max,
+    estimatedSpendMax: max,
+    impressionsMin: Number(row.meta_ads_impressions_min) || 0,
+    impressionsMax: Number.isFinite(impressionsMax) ? impressionsMax : 0,
+    currency: row.meta_ads_estimate_currency || "EUR",
+    confidence: Number(row.meta_ads_estimate_confidence) || null,
+    source: row.meta_ads_estimate_source || "public_impressions_cpm_benchmark",
+    cpm: Number(row.meta_ads_estimate_cpm) || null,
+    checkedAt: row.meta_ads_estimate_checked_at || null
+  };
+}
+
+function metaAdsEstimateFromEvidence(evidence = {}) {
+  const estimate = evidence?.spendEstimate;
+  if (!estimate) return null;
+  const max = Number(estimate.estimatedSpendMax);
+  if (!Number.isFinite(max) || max <= 0) return null;
+  return estimate;
+}
+
+function hasMetaAdsEstimate(row = {}) {
+  return Boolean(metaAdsEstimateFromRow(row));
+}
+
+function formatCurrencyRange(min, max, currency = "EUR") {
+  const formatter = new Intl.NumberFormat("es-ES", {
+    style: "currency",
+    currency: currency || "EUR",
+    maximumFractionDigits: max >= 100 ? 0 : 2
+  });
+  const safeMin = Number.isFinite(Number(min)) ? Number(min) : Number(max);
+  const safeMax = Number.isFinite(Number(max)) ? Number(max) : safeMin;
+  if (Math.round(safeMin * 100) === Math.round(safeMax * 100)) return formatter.format(safeMax);
+  return `${formatter.format(safeMin)}-${formatter.format(safeMax)}`;
+}
+
+function formatImpressionRange(min, max) {
+  const safeMin = Number(min) || 0;
+  const safeMax = Number(max) || 0;
+  if (!safeMax) return "sin impresiones públicas";
+  if (safeMin === safeMax) return `${fmtNumber(safeMax)} impresiones`;
+  if (safeMin <= 0) return `<${fmtNumber(safeMax + 1)} impresiones`;
+  return `${fmtNumber(safeMin)}-${fmtNumber(safeMax)} impresiones`;
+}
+
+function metaAdsEstimateTitle(estimate = {}) {
+  const confidence = estimate.confidence != null ? ` · conf ${Math.round(Number(estimate.confidence) * 100)}%` : "";
+  const cpm = estimate.cpm ? ` · CPM ref. ${formatCurrencyRange(estimate.cpm, estimate.cpm, estimate.currency || "EUR")}` : "";
+  return `Estimación por impresiones públicas de Meta Ads Library${confidence}${cpm}. ${formatImpressionRange(estimate.impressionsMin, estimate.impressionsMax)}.`;
+}
+
+function renderMetaAdsEstimateBadge(row = {}, { compact = false } = {}) {
+  const estimate = metaAdsEstimateFromRow(row);
+  if (!estimate) {
+    return compact
+      ? `<span class="meta-estimate meta-estimate--empty" title="Sin impresiones públicas suficientes en anuncios matcheados">Sin dato</span>`
+      : `<span class="badge badge--zinc">Sin dato suficiente</span>`;
+  }
+  const label = formatCurrencyRange(estimate.estimatedSpendMin, estimate.estimatedSpendMax, estimate.currency);
+  const confidence = estimate.confidence != null ? `${Math.round(Number(estimate.confidence) * 100)}%` : "est.";
+  return `
+    <span class="meta-estimate" title="${escape(metaAdsEstimateTitle(estimate))}">
+      <strong>${escape(label)}</strong>
+      ${compact ? `<small>${escape(confidence)}</small>` : `<small>conf ${escape(confidence)}</small>`}
+    </span>
+  `;
+}
 
 const ADS_FUNNEL_LABELS = {
   lead_generation: ["cyan", "Captación"],
@@ -123,7 +198,7 @@ const renderAdsFunnelBadge = (type, confidence) => {
 };
 
 const CRM_PAGE_SIZE = 120;
-const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v3";
+const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v4";
 const CRM_DEFAULT_COLUMNS = [
   "decision_maker_name",
   "first_contact_at",
@@ -133,6 +208,7 @@ const CRM_DEFAULT_COLUMNS = [
   "answered_by",
   "category",
   "ads_meta_active",
+  "meta_ads_estimate",
   "ads_google_active",
   "ads_funnel_type",
   "phone",
@@ -749,6 +825,8 @@ async function renderLeadsList({ search }) {
   const phoneType = search.get("phoneType") || "";
   const adsActive = search.get("adsActive") || "";
   const adsFunnelType = search.get("adsFunnelType") || "";
+  const hasMetaAdsEstimate = search.get("hasMetaAdsEstimate") || "";
+  const metaAdsEstimateMin = search.get("metaAdsEstimateMin") || "";
   const term = search.get("search") || "";
   const [leadLists, campaigns, selectedCampaignResult] = await Promise.all([
     api("/api/lead-lists"),
@@ -815,6 +893,12 @@ async function renderLeadsList({ search }) {
           <option value="google" ${adsActive === "google" ? "selected" : ""}>Google activo</option>
           <option value="both" ${adsActive === "both" ? "selected" : ""}>Meta + Google</option>
         </select>
+        <select class="select" name="hasMetaAdsEstimate" style="max-width:170px">
+          <option value="">Estim. Meta</option>
+          <option value="true" ${hasMetaAdsEstimate === "true" ? "selected" : ""}>Con estimación</option>
+          <option value="false" ${hasMetaAdsEstimate === "false" ? "selected" : ""}>Sin dato suficiente</option>
+        </select>
+        <input class="input" name="metaAdsEstimateMin" type="number" min="0" step="1" placeholder="Est. min €" value="${escape(metaAdsEstimateMin)}" style="max-width:120px" />
         <select class="select" name="adsFunnelType" style="max-width:200px">
           <option value="">Cualquier funnel</option>
           <option value="lead_generation" ${adsFunnelType === "lead_generation" ? "selected" : ""}>Captación</option>
@@ -902,6 +986,8 @@ async function renderLeadsList({ search }) {
   if (phoneType) params.set("phoneType", phoneType);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
+  if (hasMetaAdsEstimate) params.set("hasMetaAdsEstimate", hasMetaAdsEstimate);
+  if (metaAdsEstimateMin) params.set("metaAdsEstimateMin", metaAdsEstimateMin);
   if (term) params.set("search", term);
   params.set("limit", "100");
 
@@ -1459,10 +1545,31 @@ function renderAdsDetail(label, value, evidence = {}) {
           ${evidence.sourceUrl ? `<a class="mini-link" href="${escape(evidence.sourceUrl)}" target="_blank" rel="noopener">fuente principal</a>` : ""}
         </div>
       </div>
+      ${label === "Meta" ? renderMetaAdsEstimateDetail(evidence) : ""}
       ${renderAdsDiscovery(evidence)}
       ${visibleAttempts.length ? `<div class="ads-signals">${visibleAttempts.map(renderAdsAttempt).join("")}</div>` : ""}
       ${renderAdsAttemptsDisclosure(hiddenAttempts)}
       ${!attempts.length ? `<div class="ads-empty">Sin trazas guardadas todavía.</div>` : ""}
+    </div>
+  `;
+}
+
+function renderMetaAdsEstimateDetail(evidence = {}) {
+  const estimate = metaAdsEstimateFromEvidence(evidence);
+  if (!estimate) {
+    return `
+      <div class="meta-estimate-detail meta-estimate-detail--empty">
+        <strong>Estimación Meta Ads</strong>
+        <span>Sin dato suficiente: no hay impresiones públicas en anuncios matcheados con este lead.</span>
+      </div>
+    `;
+  }
+  const confidence = estimate.confidence != null ? `${Math.round(Number(estimate.confidence) * 100)}%` : "estimada";
+  return `
+    <div class="meta-estimate-detail">
+      <strong>${escape(formatCurrencyRange(estimate.estimatedSpendMin, estimate.estimatedSpendMax, estimate.currency))}</strong>
+      <span>${escape(formatImpressionRange(estimate.impressionsMin, estimate.impressionsMax))} · CPM ref. ${escape(formatCurrencyRange(estimate.cpm || 0, estimate.cpm || 0, estimate.currency))} · conf ${escape(confidence)}</span>
+      <small>Fuente: impresiones públicas de Meta Ads Library en anuncios activos matcheados. No es inversión real declarada.</small>
     </div>
   `;
 }
@@ -1849,6 +1956,14 @@ function renderCrmFilterBar(rows = []) {
         </select>
       </label>
       <label class="crm-filter">
+        <span>Estim. Meta</span>
+        <select class="select" data-crm-quick-filter="hasMetaEstimate">
+          <option value="">Todos</option>
+          <option value="true">Con estimación</option>
+          <option value="false">Sin dato</option>
+        </select>
+      </label>
+      <label class="crm-filter">
         <span>Google Ads</span>
         <select class="select" data-crm-quick-filter="googleAds">
           <option value="">Todos</option>
@@ -2096,6 +2211,18 @@ function createCrmColumns(options = {}, rows = [], { editable = true } = {}) {
       render: (row) => renderAdsBadge(row.ads_meta_active, "Meta")
     },
     {
+      key: "meta_ads_estimate",
+      label: "Estim. Meta",
+      width: 118,
+      filter: "estimate",
+      value: (row) => hasMetaAdsEstimate(row) ? "true" : "false",
+      sortValue: (row) => {
+        const value = Number(row.meta_ads_estimated_spend_max);
+        return Number.isFinite(value) ? value : null;
+      },
+      render: (row) => renderMetaAdsEstimateBadge(row, { compact: true })
+    },
+    {
       key: "ads_google_active",
       label: "Google Ads",
       width: 102,
@@ -2178,6 +2305,15 @@ function renderCrmColumnFilter(column, selected) {
         <option value="true" ${selected === "true" ? "selected" : ""}>Activo</option>
         <option value="false" ${selected === "false" ? "selected" : ""}>Sin señal</option>
         <option value="unknown" ${selected === "unknown" ? "selected" : ""}>Sin revisar</option>
+      </select>
+    `;
+  }
+  if (column.filter === "estimate") {
+    return `
+      <select class="crm-column-filter" data-crm-column-filter="${escape(column.key)}">
+        <option value="">Todos</option>
+        <option value="true" ${selected === "true" ? "selected" : ""}>Con estimación</option>
+        <option value="false" ${selected === "false" ? "selected" : ""}>Sin dato</option>
       </select>
     `;
   }
@@ -2308,6 +2444,7 @@ function crmMatchesQuickFilters(row, columns, quick = {}) {
   if (quick.niche && row.niche !== quick.niche) return false;
   if (quick.adsFunnelType && !crmMatchesFunnelFilter(row.ads_funnel_type || "unknown", quick.adsFunnelType)) return false;
   if (quick.metaAds && crmBoolValue(row.ads_meta_active) !== quick.metaAds) return false;
+  if (quick.hasMetaEstimate && String(hasMetaAdsEstimate(row)) !== quick.hasMetaEstimate) return false;
   if (quick.googleAds && crmBoolValue(row.ads_google_active) !== quick.googleAds) return false;
   return true;
 }
@@ -2323,6 +2460,7 @@ function crmMatchesColumnFilters(row, columns, filters = {}) {
       if (filter === "without_phone") return value === "none";
       return value === filter;
     }
+    if (column.filter === "estimate") return String(hasMetaAdsEstimate(row)) === String(filter);
     if (key === "ads_funnel_type") return crmMatchesFunnelFilter(value || "unknown", filter);
     if (column.filter === "select" || column.filter === "boolean") return String(value ?? "") === String(filter);
     if (column.filter === "date") return String(value || "") === String(filter);

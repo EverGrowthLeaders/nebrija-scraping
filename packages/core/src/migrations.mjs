@@ -99,6 +99,15 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_confidence DOUBLE PRECISION`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_landing_url TEXT`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS ads_funnel_last_checked_at TIMESTAMPTZ`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_impressions_min INTEGER`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_impressions_max INTEGER`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimated_spend_min NUMERIC`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimated_spend_max NUMERIC`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_currency TEXT`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_confidence DOUBLE PRECISION`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_source TEXT`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_cpm NUMERIC`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_checked_at TIMESTAMPTZ`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS scoring_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb`);
     await run(`ALTER TABLE extraction_jobs ALTER COLUMN source_type SET DEFAULT 'google_places_api'`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
@@ -183,6 +192,7 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_score ON businesses(tenant_id, score DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_checked ON businesses(tenant_id, ads_last_checked_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_ads_funnel ON businesses(tenant_id, ads_funnel_type, ads_funnel_last_checked_at DESC)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_meta_ads_estimate ON businesses(tenant_id, meta_ads_estimated_spend_max DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_created ON extraction_jobs(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_voice_calls_tenant_created ON voice_calls(tenant_id, created_at DESC)`);
 

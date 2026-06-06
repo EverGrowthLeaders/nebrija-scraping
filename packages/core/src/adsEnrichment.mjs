@@ -1,6 +1,14 @@
 import { classifyAdsLandingIntent, extractLandingUrlsFromText } from "./adsLandingClassifier.mjs";
 
 const DEFAULT_COUNTRY = "ES";
+const DEFAULT_META_CPM_EUR = 8;
+const META_CPM_BY_NICHE = [
+  [/abogad|legal|jurid|bufete/i, 18],
+  [/dental|clinica|clínica|salud|medic|estet/i, 12],
+  [/inmobili|real estate|propiedad/i, 10],
+  [/formacion|curso|academy|academia|educacion|educación/i, 9],
+  [/ecommerce|tienda|moda|ropa|retail|shop/i, 7]
+];
 
 export async function enrichBusinessAds({ business, firecrawl, apify, country = DEFAULT_COUNTRY, now = new Date() }) {
   if (!firecrawl) throw new Error("firecrawl_client_required");
@@ -349,6 +357,7 @@ export function buildMetaAdProbes(business = {}) {
 
 function evidence({ provider, status, active, confidence, sourceUrl, reason, latestDetectedDate, error, context }) {
   const landingUrls = Array.isArray(context?.landingUrls) ? context.landingUrls.filter(Boolean).slice(0, 8) : [];
+  const spendEstimate = normalizeMetaSpendEstimate(context?.spendEstimate);
   return {
     provider,
     status,
@@ -369,6 +378,7 @@ function evidence({ provider, status, active, confidence, sourceUrl, reason, lat
     samplePageName: context?.samplePageName || null,
     adArchiveId: context?.adArchiveId || null,
     actorId: context?.actorId || null,
+    spendEstimate,
     landingUrl: landingUrls[0] || null,
     landingUrls
   };
@@ -401,6 +411,7 @@ function adAttempt(probe, result, url) {
     matchedFields: result.matchedFields || null,
     adArchiveId: result.adArchiveId || null,
     actorId: result.actorId || probe.actorId || null,
+    spendEstimate: result.spendEstimate || null,
     landingUrl: result.landingUrl || null,
     landingUrls: Array.isArray(result.landingUrls) ? result.landingUrls.slice(0, 8) : []
   };
@@ -530,7 +541,7 @@ function buildApifyMetaInput(source, apify) {
     urls: [{ url: source.sourceUrl }],
     limitPerSource: 1,
     count: maxChargedResults,
-    scrapeAdDetails: false,
+    scrapeAdDetails: true,
     "scrapePageAds.period": "",
     "scrapePageAds.activeStatus": "active",
     "scrapePageAds.sortBy": "most_recent",
@@ -541,27 +552,40 @@ function buildApifyMetaInput(source, apify) {
 
 function inferApifyMetaActivity({ items = [], business, source, now }) {
   const activeItems = items.filter((item) => item?.is_active === true || item?.is_active == null);
+  const matchedItems = [];
+  let bestMatch = null;
   for (const item of activeItems) {
     const match = matchApifyBusinessItem({ item, business });
     if (!match.matched) continue;
-    const latestDetectedDate = apifyItemDate(item, now);
-    const landingUrls = collectApifyLandingUrls(item, business);
+    matchedItems.push({ item, match });
+    if (!bestMatch || match.confidence > bestMatch.match.confidence) bestMatch = { item, match };
+  }
+  if (bestMatch) {
+    const latestDetectedDate = apifyItemDate(bestMatch.item, now);
+    const landingUrls = collectApifyLandingUrls(bestMatch.item, business);
+    const spendEstimate = estimateMetaSpendFromApifyItems({
+      matchedItems,
+      business,
+      now
+    });
     return evidence({
       provider: "meta",
       status: "active",
       active: true,
-      confidence: Math.max(Number(source.confidence || 0), match.confidence),
-      sourceUrl: item.ad_library_url || source.sourceUrl,
+      confidence: Math.max(Number(source.confidence || 0), bestMatch.match.confidence),
+      sourceUrl: bestMatch.item.ad_library_url || source.sourceUrl,
       reason: "apify_active_ad_matched",
       latestDetectedDate,
       context: {
         ...source,
-        matchedFields: match.fields,
+        matchedFields: bestMatch.match.fields,
         itemsSeen: items.length,
         total: apifyTotal(items),
-        samplePageName: samplePageName(item),
-        adArchiveId: item.ad_archive_id || null,
-        landingUrls
+        matchedItems: matchedItems.length,
+        samplePageName: samplePageName(bestMatch.item),
+        adArchiveId: bestMatch.item.ad_archive_id || null,
+        landingUrls,
+        spendEstimate
       }
     });
   }
@@ -646,6 +670,122 @@ function collectApifyItemStrings(item = {}) {
 
 function collectApifyLandingUrls(item, business) {
   return extractLandingUrlsFromText(collectApifyItemStrings(item).join("\n"), { business }).slice(0, 8);
+}
+
+function estimateMetaSpendFromApifyItems({ matchedItems = [], business = {}, now = new Date() } = {}) {
+  const ranges = matchedItems
+    .map(({ item }) => parseApifyImpressions(item?.impressions_with_index?.impressions_text))
+    .filter(Boolean);
+  if (!ranges.length) return null;
+
+  const impressionsMin = ranges.reduce((sum, range) => sum + range.min, 0);
+  const impressionsMax = ranges.reduce((sum, range) => sum + range.max, 0);
+  if (!Number.isFinite(impressionsMax) || impressionsMax <= 0) return null;
+
+  const cpm = cpmForBusiness(business);
+  const estimatedSpendMin = roundMoney((impressionsMin / 1000) * cpm);
+  const estimatedSpendMax = roundMoney((impressionsMax / 1000) * cpm);
+  const exactLikeRanges = ranges.filter((range) => range.precision === "range").length;
+  const confidence = Math.min(0.72, 0.42 + matchedItems.length * 0.04 + exactLikeRanges * 0.03);
+  return normalizeMetaSpendEstimate({
+    status: "estimated",
+    source: "public_impressions_cpm_benchmark",
+    currency: "EUR",
+    impressionsMin,
+    impressionsMax,
+    estimatedSpendMin,
+    estimatedSpendMax: Math.max(estimatedSpendMin, estimatedSpendMax),
+    cpm,
+    confidence,
+    matchedAds: matchedItems.length,
+    adsWithImpressions: ranges.length,
+    checkedAt: now.toISOString(),
+    note: "Estimación por impresiones públicas de Meta Ads Library multiplicadas por CPM benchmark del nicho."
+  });
+}
+
+function parseApifyImpressions(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[–—]/g, "-")
+    .replace(/,/g, "")
+    .replace(/\./g, "");
+  if (!normalized) return null;
+  const less = normalized.match(/^<(\d+(?:k|m)?)/i);
+  if (less) {
+    const max = parseCompactNumber(less[1]);
+    return max ? { min: 0, max: Math.max(0, max - 1), precision: "upper_bound", raw } : null;
+  }
+  const plus = normalized.match(/^(\d+(?:k|m)?)\+$/i);
+  if (plus) {
+    const min = parseCompactNumber(plus[1]);
+    return min ? { min, max: Math.round(min * 1.5), precision: "lower_bound", raw } : null;
+  }
+  const range = normalized.match(/^(\d+(?:k|m)?)-(\d+(?:k|m)?)$/i);
+  if (range) {
+    const min = parseCompactNumber(range[1]);
+    const max = parseCompactNumber(range[2]);
+    return min != null && max != null ? { min, max: Math.max(min, max), precision: "range", raw } : null;
+  }
+  const exact = parseCompactNumber(normalized);
+  return exact != null ? { min: exact, max: exact, precision: "exact", raw } : null;
+}
+
+function parseCompactNumber(value) {
+  const match = String(value || "").match(/^(\d+)(k|m)?$/i);
+  if (!match) return null;
+  const base = Number(match[1]);
+  if (!Number.isFinite(base)) return null;
+  const suffix = match[2]?.toLowerCase();
+  if (suffix === "m") return base * 1_000_000;
+  if (suffix === "k") return base * 1_000;
+  return base;
+}
+
+function cpmForBusiness(business = {}) {
+  const text = [business.niche, business.category, business.name].filter(Boolean).join(" ");
+  for (const [pattern, cpm] of META_CPM_BY_NICHE) {
+    if (pattern.test(text)) return cpm;
+  }
+  return DEFAULT_META_CPM_EUR;
+}
+
+function normalizeMetaSpendEstimate(value) {
+  if (!value || typeof value !== "object") return null;
+  const impressionsMax = Number(value.impressionsMax ?? value.impressions_max);
+  const estimatedSpendMax = Number(value.estimatedSpendMax ?? value.estimated_spend_max);
+  if (!Number.isFinite(impressionsMax) || impressionsMax <= 0 || !Number.isFinite(estimatedSpendMax)) return null;
+  const estimatedSpendMin = Number(value.estimatedSpendMin ?? value.estimated_spend_min ?? 0);
+  const impressionsMin = Number(value.impressionsMin ?? value.impressions_min ?? 0);
+  return {
+    status: value.status || "estimated",
+    source: value.source || "public_impressions_cpm_benchmark",
+    currency: value.currency || "EUR",
+    impressionsMin: Math.max(0, Math.round(Number.isFinite(impressionsMin) ? impressionsMin : 0)),
+    impressionsMax: Math.max(0, Math.round(impressionsMax)),
+    estimatedSpendMin: roundMoney(Number.isFinite(estimatedSpendMin) ? estimatedSpendMin : 0),
+    estimatedSpendMax: roundMoney(estimatedSpendMax),
+    cpm: roundMoney(value.cpm ?? DEFAULT_META_CPM_EUR),
+    confidence: roundConfidence(value.confidence ?? 0.45),
+    matchedAds: Number(value.matchedAds || value.matched_ads || 0),
+    adsWithImpressions: Number(value.adsWithImpressions || value.ads_with_impressions || 0),
+    checkedAt: value.checkedAt || value.checked_at || null,
+    note: value.note || null
+  };
+}
+
+function roundMoney(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.round(number * 100) / 100 : null;
+}
+
+function roundConfidence(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return 0.45;
+  return Math.max(0.1, Math.min(0.95, Math.round(number * 100) / 100));
 }
 
 function strongNameMatch(pageName, businessName) {

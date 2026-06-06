@@ -699,6 +699,8 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
   const checkedAt = enrichment?.checkedAt ? new Date(enrichment.checkedAt) : new Date();
   const classification = enrichment?.classification || {};
   const classifiedAt = classification.checkedAt ? new Date(classification.checkedAt) : checkedAt;
+  const metaEstimate = enrichment?.meta?.spendEstimate || null;
+  const estimateCheckedAt = metaEstimate?.checkedAt ? new Date(metaEstimate.checkedAt) : checkedAt;
   const result = await query(
     `UPDATE businesses
         SET ads_meta_active = $3,
@@ -709,6 +711,15 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
             ads_funnel_confidence = $8,
             ads_funnel_landing_url = $9,
             ads_funnel_last_checked_at = $10,
+            meta_ads_impressions_min = $11,
+            meta_ads_impressions_max = $12,
+            meta_ads_estimated_spend_min = $13,
+            meta_ads_estimated_spend_max = $14,
+            meta_ads_estimate_currency = $15,
+            meta_ads_estimate_confidence = $16,
+            meta_ads_estimate_source = $17,
+            meta_ads_estimate_cpm = $18,
+            meta_ads_estimate_checked_at = $19,
             status = CASE
               WHEN status IN ('new', 'scraped', 'enrichment_pending') THEN 'enriched'::lead_status
               ELSE status
@@ -726,7 +737,16 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
       classification.type || null,
       classification.confidence ?? null,
       classification.landingUrl || null,
-      classifiedAt
+      classifiedAt,
+      metaEstimate?.impressionsMin ?? null,
+      metaEstimate?.impressionsMax ?? null,
+      metaEstimate?.estimatedSpendMin ?? null,
+      metaEstimate?.estimatedSpendMax ?? null,
+      metaEstimate?.currency || null,
+      metaEstimate?.confidence ?? null,
+      metaEstimate?.source || null,
+      metaEstimate?.cpm ?? null,
+      metaEstimate ? estimateCheckedAt : null
     ]
   );
   return result.rows[0] || null;
@@ -1061,7 +1081,10 @@ export async function listBusinesses({
   listId,
   phoneType,
   adsActive,
-  adsFunnelType
+  adsFunnelType,
+  hasMetaAdsEstimate,
+  metaAdsEstimateMin,
+  metaAdsEstimateMax
 } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
@@ -1130,6 +1153,25 @@ export async function listBusinesses({
       where.push(`COALESCE(b.ads_funnel_type, 'unknown') = $${params.length}`);
     }
   }
+  if (hasMetaAdsEstimate === "true" || hasMetaAdsEstimate === true) {
+    where.push(`b.meta_ads_estimated_spend_max IS NOT NULL`);
+  } else if (hasMetaAdsEstimate === "false" || hasMetaAdsEstimate === false) {
+    where.push(`b.meta_ads_estimated_spend_max IS NULL`);
+  }
+  if (metaAdsEstimateMin !== undefined && metaAdsEstimateMin !== null && metaAdsEstimateMin !== "") {
+    const value = Number(metaAdsEstimateMin);
+    if (Number.isFinite(value)) {
+      params.push(value);
+      where.push(`b.meta_ads_estimated_spend_max >= $${params.length}`);
+    }
+  }
+  if (metaAdsEstimateMax !== undefined && metaAdsEstimateMax !== null && metaAdsEstimateMax !== "") {
+    const value = Number(metaAdsEstimateMax);
+    if (Number.isFinite(value)) {
+      params.push(value);
+      where.push(`COALESCE(b.meta_ads_estimated_spend_min, b.meta_ads_estimated_spend_max) <= $${params.length}`);
+    }
+  }
   const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
   params.push(safeLimit);
   params.push(safeOffset);
@@ -1137,6 +1179,10 @@ export async function listBusinesses({
     `SELECT b.id, b.name, b.niche, b.city, b.website, b.phone, b.phone_e164, b.status, b.score, b.scoring_notes,
             b.has_online_booking, b.has_chatbot, b.ads_meta_active, b.ads_google_active, b.ads_last_checked_at,
             b.ads_funnel_type, b.ads_funnel_confidence, b.ads_funnel_landing_url, b.ads_funnel_last_checked_at,
+            b.meta_ads_impressions_min, b.meta_ads_impressions_max,
+            b.meta_ads_estimated_spend_min, b.meta_ads_estimated_spend_max,
+            b.meta_ads_estimate_currency, b.meta_ads_estimate_confidence,
+            b.meta_ads_estimate_source, b.meta_ads_estimate_cpm, b.meta_ads_estimate_checked_at,
             b.custom_fields, b.extraction_job_id, b.created_at, b.updated_at,
             j.niche AS campaign_niche,
             j.city AS campaign_city,
@@ -1308,6 +1354,15 @@ const CRM_ROW_SELECT = `
     b.ads_funnel_type,
     b.ads_funnel_confidence,
     b.ads_funnel_landing_url,
+    b.meta_ads_impressions_min,
+    b.meta_ads_impressions_max,
+    b.meta_ads_estimated_spend_min,
+    b.meta_ads_estimated_spend_max,
+    b.meta_ads_estimate_currency,
+    b.meta_ads_estimate_confidence,
+    b.meta_ads_estimate_source,
+    b.meta_ads_estimate_cpm,
+    b.meta_ads_estimate_checked_at,
     email_contact.value AS fallback_email
   FROM lead_list_members lm
   JOIN lead_lists ll ON ll.id = lm.lead_list_id
@@ -1369,6 +1424,15 @@ export async function listCampaignCrmEntries({ tenantId = DEFAULT_TENANT_ID, cam
         b.ads_funnel_type,
         b.ads_funnel_confidence,
         b.ads_funnel_landing_url,
+        b.meta_ads_impressions_min,
+        b.meta_ads_impressions_max,
+        b.meta_ads_estimated_spend_min,
+        b.meta_ads_estimated_spend_max,
+        b.meta_ads_estimate_currency,
+        b.meta_ads_estimate_confidence,
+        b.meta_ads_estimate_source,
+        b.meta_ads_estimate_cpm,
+        b.meta_ads_estimate_checked_at,
         email_contact.value AS fallback_email
        FROM businesses b
        LEFT JOIN LATERAL (
