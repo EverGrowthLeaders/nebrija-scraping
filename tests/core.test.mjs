@@ -19,6 +19,7 @@ import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../pack
 import { buildMetaAdProbes, buildMetaAdsLibraryUrl, discoverSocialsForAds, enrichBusinessAds, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
 import {
   buildLinkedInDecisionMakerDork,
+  enrichDecisionMaker,
   selectDecisionMakerFromSearchResults
 } from "../packages/core/src/decisionMakerEnrichment.mjs";
 import {
@@ -363,6 +364,47 @@ test("rejects weak LinkedIn decision maker matches", () => {
   });
 
   assert.equal(result.found, false);
+});
+
+test("uses AI resolver to choose between ambiguous LinkedIn decision maker candidates", async () => {
+  const result = await enrichDecisionMaker({
+    now: new Date("2026-06-06T10:00:00Z"),
+    business: { name: "Instalaciones Riojanas S.L.", city: "Logroño" },
+    searchClient: {
+      async search(query) {
+        assert.equal(query, 'site:linkedin.com/in/ "Instalaciones Riojanas" "Logroño"');
+        return [
+          {
+            url: "https://www.linkedin.com/in/maria-riojanas",
+            title: "María López - Marketing en Instalaciones Riojanas S.L. - Logroño | LinkedIn",
+            description: "Marketing en Instalaciones Riojanas"
+          },
+          {
+            url: "https://www.linkedin.com/in/ana-riojanas",
+            title: "Ana García - Socia administradora en Instalaciones Riojanas S.L. - Logroño | LinkedIn",
+            description: "Socia administradora de Instalaciones Riojanas en Logroño"
+          }
+        ];
+      }
+    },
+    aiResolver: async ({ candidates }) => {
+      const selected = candidates.find((candidate) => candidate.linkedinUrl === "https://www.linkedin.com/in/ana-riojanas");
+      return {
+        found: true,
+        selectedCandidateId: selected.candidateId,
+        confidence: 0.91,
+        fullName: "Ana García",
+        role: "Socia administradora",
+        reason: "highest_authority_role"
+      };
+    }
+  });
+
+  assert.equal(result.found, true);
+  assert.equal(result.decisionMaker.fullName, "Ana García");
+  assert.equal(result.decisionMaker.linkedinUrl, "https://www.linkedin.com/in/ana-riojanas");
+  assert.equal(result.ai.status, "resolved");
+  assert.ok(result.decisionMaker.confidence >= 0.9);
 });
 
 test("infers active ads from public transparency page signals", () => {

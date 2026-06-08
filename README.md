@@ -72,15 +72,42 @@ ADS_FUNNEL_AI_MAX_VISIBLE_TEXT_CHARS=9000
 Si `DEEPINFRA_API_KEY` no esta configurada, el sistema mantiene el clasificador
 determinista local como fallback para no bloquear el enriquecimiento.
 
+## Enriquecimiento de decisor con LinkedIn
+
+Tras crear leads desde Google Places, el worker encola `decision-maker-enrichment`.
+La busqueda usa un Google dork quirurgico contra perfiles personales de LinkedIn:
+
+```text
+site:linkedin.com/in/ "Nombre Comercial" "Ciudad"
+```
+
+El modulo limpia sufijos societarios comunes (`S.L.`, `S.A.`, etc.), descarta
+URLs que no sean perfiles `/in/`, puntua coincidencia por empresa, ciudad y rol
+decisor, y guarda el resultado en `custom_fields.decision_maker`. Si hay varios
+candidatos plausibles, DeepSeek V4 Flash en DeepInfra resuelve el desempate
+usando solo titulos/snippets de resultados, sin inventar datos.
+
+```env
+DEEPINFRA_API_KEY=...
+DECISION_MAKER_AI_PROVIDER=deepinfra
+DECISION_MAKER_AI_MODEL=deepseek-ai/DeepSeek-V4-Flash
+DECISION_MAKER_AI_MODE=ambiguous
+DECISION_MAKER_AI_MAX_EVIDENCE_CHARS=12000
+```
+
+Si no hay clave de DeepInfra, el enriquecimiento mantiene el ranking
+determinista como fallback.
+
 ## Flujo principal
 
 1. `POST /campaigns` crea un job de descubrimiento.
 2. `google-discovery` usa Google Places API con field mask minimo para candidatos.
-3. `web-discovery` usa Firecrawl Search para encontrar la web oficial.
-4. `business-crawl` usa Firecrawl Map/Scrape sobre la web del negocio.
-5. `scoring` calcula prioridad.
-6. `voice-call` lanza llamada Nebrija AI con el asistente elegido en la campana.
-7. `POST /webhooks/nebrija/calls` ingiere `end-of-call-report` estilo Vapi.
+3. `decision-maker-enrichment` busca el perfil personal de LinkedIn del decisor.
+4. `web-discovery` usa Firecrawl Search para encontrar la web oficial.
+5. `business-crawl` usa Firecrawl Map/Scrape sobre la web del negocio.
+6. `scoring` calcula prioridad.
+7. `voice-call` lanza llamada Nebrija AI con el asistente elegido en la campana.
+8. `POST /webhooks/nebrija/calls` ingiere `end-of-call-report` estilo Vapi.
 
 La API key de NebrijaAI puede configurarse por tenant desde `Settings`. Si no hay
 configuracion guardada en base de datos, el sistema usa las variables de entorno

@@ -66,6 +66,15 @@ export const config = {
     maxEvidenceChars: intFromEnv("ADS_FUNNEL_AI_MAX_EVIDENCE_CHARS", 18000),
     maxVisibleTextChars: intFromEnv("ADS_FUNNEL_AI_MAX_VISIBLE_TEXT_CHARS", 9000)
   },
+  decisionMakerAi: {
+    provider: process.env.DECISION_MAKER_AI_PROVIDER || "deepinfra",
+    mode: process.env.DECISION_MAKER_AI_MODE || "ambiguous",
+    apiKey: process.env.DECISION_MAKER_AI_API_KEY || process.env.DEEPINFRA_API_KEY || "",
+    baseUrl: trimTrailingSlash(process.env.DECISION_MAKER_AI_BASE_URL || process.env.DEEPINFRA_BASE_URL || "https://api.deepinfra.com/v1/openai"),
+    model: process.env.DECISION_MAKER_AI_MODEL || "deepseek-ai/DeepSeek-V4-Flash",
+    requestTimeoutMs: intFromEnv("DECISION_MAKER_AI_REQUEST_TIMEOUT_MS", 30000),
+    maxEvidenceChars: intFromEnv("DECISION_MAKER_AI_MAX_EVIDENCE_CHARS", 12000)
+  },
   google: {
     apiKey: process.env.GOOGLE_MAPS_API_KEY || "",
     placesBaseUrl: trimTrailingSlash(
