@@ -17,6 +17,7 @@ import {
   createVoiceCallFromDispatch,
   deleteContactsByKindAndSource,
   findBusinessById,
+  findBusinessDetail,
   findCallableBusinessById,
   findBusinessVoiceContext,
   findExtractionJob,
@@ -429,10 +430,11 @@ async function runAdsEnrichment(job) {
 }
 
 async function runDecisionMakerEnrichment(job) {
-  const business = await findBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
+  const detail = await findBusinessDetail(job.data.businessId, { tenantId: job.data.tenantId });
+  const business = detail?.business;
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
 
-  const enrichment = await enrichDecisionMaker({ business, searchClient: firecrawl });
+  const enrichment = await enrichDecisionMaker({ business, contacts: detail.contacts || [], searchClient: firecrawl });
   const updated = await updateBusinessDecisionMaker({
     tenantId: business.tenant_id,
     businessId: business.id,
@@ -441,6 +443,8 @@ async function runDecisionMakerEnrichment(job) {
   if (!updated) throw new Error(`business decision maker update failed: ${business.id}`);
 
   const decisionMaker = enrichment.decisionMaker || {};
+  const linkedinCompany = enrichment.linkedinCompany || {};
+  const recommendedAccessContact = enrichment.recommendedAccessContact || {};
   if (enrichment.found && decisionMaker.linkedinUrl) {
     await upsertContact({
       businessId: business.id,
@@ -481,11 +485,43 @@ async function runDecisionMakerEnrichment(job) {
       })
     });
   }
+  if (linkedinCompany.linkedinUrl) {
+    await upsertContact({
+      businessId: business.id,
+      kind: "linkedin_company",
+      value: linkedinCompany.linkedinUrl,
+      confidence: linkedinCompany.confidence || 0.74,
+      sourceUrl: linkedinCompany.linkedinUrl
+    });
+    await recordProvenance({
+      businessId: business.id,
+      fieldName: "linkedin_company",
+      sourceType: "google_dork_linkedin_company",
+      sourceUrl: linkedinCompany.linkedinUrl,
+      observedValue: JSON.stringify({
+        queries: enrichment.queries || [],
+        linkedinUrl: linkedinCompany.linkedinUrl,
+        confidence: linkedinCompany.confidence
+      })
+    });
+  }
+  if (recommendedAccessContact.value) {
+    await upsertContact({
+      businessId: business.id,
+      kind: "recommended_access_contact",
+      value: `${recommendedAccessContact.kind}:${recommendedAccessContact.value}`,
+      confidence: recommendedAccessContact.confidence || 0.7,
+      sourceUrl: recommendedAccessContact.sourceUrl || recommendedAccessContact.value
+    });
+  }
 
   return {
     found: enrichment.found,
+    decisionStatus: enrichment.decisionStatus,
     reason: enrichment.reason,
     linkedinUrl: decisionMaker.linkedinUrl,
+    linkedinCompanyUrl: linkedinCompany.linkedinUrl,
+    accessContact: recommendedAccessContact.value,
     fullName: decisionMaker.fullName,
     confidence: decisionMaker.confidence
   };

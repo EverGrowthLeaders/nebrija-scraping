@@ -81,11 +81,21 @@ La busqueda usa un Google dork quirurgico contra perfiles personales de LinkedIn
 site:linkedin.com/in/ "Nombre Comercial" "Ciudad"
 ```
 
-El modulo limpia sufijos societarios comunes (`S.L.`, `S.A.`, etc.), descarta
-URLs que no sean perfiles `/in/`, puntua coincidencia por empresa, ciudad y rol
-decisor, y guarda el resultado en `custom_fields.decision_maker`. Si hay varios
-candidatos plausibles, DeepSeek V4 Flash en DeepInfra resuelve el desempate
-usando solo titulos/snippets de resultados, sin inventar datos.
+El modulo limpia sufijos societarios comunes (`S.L.`, `S.A.`, etc.) y tambien
+recorta descriptores largos tipo `Empresa de...` para buscar primero la marca
+comercial. Lanza busquedas escalonadas contra perfiles personales `/in/`, paginas
+de empresa `/company/` y, cuando aparecen candidatos, queries adicionales por
+persona. El resultado se guarda en `custom_fields.decision_maker`.
+
+El enriquecimiento separa tres niveles operativos:
+
+- `verified`: persona decisora con perfil personal, empresa y rol suficientemente claros.
+- `candidate`: persona relacionada, pero con evidencia insuficiente para tratarla como decisor.
+- `access_contact`: sin persona verificable; se recomienda el mejor telefono/email/social/LinkedIn empresa disponible.
+
+Si hay varios candidatos plausibles o solo hay contactos de acceso, DeepSeek V4
+Flash en DeepInfra resuelve con un paquete de evidencia cerrado: queries, titulos,
+snippets, LinkedIn empresa y contactos ya extraidos. No debe inventar datos.
 
 ```env
 DEEPINFRA_API_KEY=...

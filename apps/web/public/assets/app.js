@@ -1887,11 +1887,17 @@ function renderCustomFieldValue(key, value) {
 
 function renderDecisionMakerCustomField(value) {
   const decisionMaker = value.decisionMaker || value.decision_maker || {};
+  const linkedinCompany = value.linkedinCompany || value.linkedin_company || {};
+  const accessContact = value.recommendedAccessContact || value.recommended_access_contact || {};
+  const status = value.decisionStatus || value.decision_status || (value.found ? "verified" : "not_found");
   const confidence = decisionMaker.confidence != null ? `${Math.round(Number(decisionMaker.confidence) * 100)}%` : "—";
   if (!value.found) {
     return `
       <div class="decision-maker-field">
-        <span class="muted">Sin decisor encontrado</span>
+        <strong>${status === "access_contact" ? "Contacto de acceso" : status === "candidate" ? "Candidato no verificado" : "Sin decisor encontrado"}</strong>
+        ${accessContact.value ? `<span>${escape(accessContact.kind || "contacto")}: ${escape(accessContact.value)}</span>` : ""}
+        ${linkedinCompany.linkedinUrl ? `<a href="${escape(linkedinCompany.linkedinUrl)}" target="_blank" rel="noopener">LinkedIn empresa</a>` : ""}
+        ${value.reason ? `<span class="muted">${escape(decisionMakerReasonLabel(value.reason))}</span>` : ""}
         ${value.query ? `<span class="decision-maker-field__query">${escape(value.query)}</span>` : ""}
       </div>
     `;
@@ -1901,10 +1907,21 @@ function renderDecisionMakerCustomField(value) {
       <strong>${escape(decisionMaker.fullName || "Decisor detectado")}</strong>
       ${decisionMaker.role ? `<span>${escape(decisionMaker.role)}</span>` : ""}
       ${decisionMaker.linkedinUrl ? `<a href="${escape(decisionMaker.linkedinUrl)}" target="_blank" rel="noopener">Perfil de LinkedIn</a>` : ""}
+      ${linkedinCompany.linkedinUrl ? `<a href="${escape(linkedinCompany.linkedinUrl)}" target="_blank" rel="noopener">LinkedIn empresa</a>` : ""}
       <span class="muted">Confianza ${escape(confidence)}</span>
       ${value.query ? `<span class="decision-maker-field__query">${escape(value.query)}</span>` : ""}
     </div>
   `;
+}
+
+function decisionMakerReasonLabel(reason) {
+  return {
+    no_linkedin_profile_match: "Sin perfil personal verificable",
+    low_confidence_match: "Coincidencia débil",
+    ai_selected_access_contact: "Mejor contacto disponible",
+    no_person_decision_maker_best_phone: "Sin persona verificable; usar teléfono",
+    ai_rejected_candidates: "Candidatos rechazados por baja evidencia"
+  }[reason] || reason || "";
 }
 
 async function saveScoringNotes(businessId) {

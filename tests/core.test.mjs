@@ -19,6 +19,7 @@ import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../pack
 import { buildMetaAdProbes, buildMetaAdsLibraryUrl, discoverSocialsForAds, enrichBusinessAds, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
 import {
   buildLinkedInDecisionMakerDork,
+  buildLinkedInDecisionMakerQueries,
   enrichDecisionMaker,
   selectDecisionMakerFromSearchResults
 } from "../packages/core/src/decisionMakerEnrichment.mjs";
@@ -323,6 +324,11 @@ test("builds LinkedIn decision maker dorks from local business data", () => {
     buildLinkedInDecisionMakerDork({ name: "Instalaciones Riojanas S.L.", city: "Logroño" }),
     'site:linkedin.com/in/ "Instalaciones Riojanas" "Logroño"'
   );
+  assert.deepEqual(buildLinkedInDecisionMakerQueries({ name: "ION Proyectos Empresa de climatización y fotovoltaica", city: "Valencia" }).slice(0, 3), [
+    'site:linkedin.com/in/ "ION Proyectos" "Valencia"',
+    'site:linkedin.com/in/ "ION Proyectos"',
+    'site:linkedin.com/in/ "ION Proyectos" gerente OR fundador OR socio OR director'
+  ]);
 });
 
 test("selects LinkedIn personal profiles for decision makers", () => {
@@ -367,12 +373,13 @@ test("rejects weak LinkedIn decision maker matches", () => {
 });
 
 test("uses AI resolver to choose between ambiguous LinkedIn decision maker candidates", async () => {
+  const queries = [];
   const result = await enrichDecisionMaker({
     now: new Date("2026-06-06T10:00:00Z"),
     business: { name: "Instalaciones Riojanas S.L.", city: "Logroño" },
     searchClient: {
       async search(query) {
-        assert.equal(query, 'site:linkedin.com/in/ "Instalaciones Riojanas" "Logroño"');
+        queries.push(query);
         return [
           {
             url: "https://www.linkedin.com/in/maria-riojanas",
@@ -404,7 +411,54 @@ test("uses AI resolver to choose between ambiguous LinkedIn decision maker candi
   assert.equal(result.decisionMaker.fullName, "Ana García");
   assert.equal(result.decisionMaker.linkedinUrl, "https://www.linkedin.com/in/ana-riojanas");
   assert.equal(result.ai.status, "resolved");
+  assert.ok(queries.includes('site:linkedin.com/in/ "Instalaciones Riojanas" "Logroño"'));
   assert.ok(result.decisionMaker.confidence >= 0.9);
+});
+
+test("falls back to access contact when LinkedIn company exists but no decision maker is verified", async () => {
+  const result = await enrichDecisionMaker({
+    now: new Date("2026-06-08T10:00:00Z"),
+    business: {
+      name: "ION Proyectos Empresa de climatización y fotovoltaica",
+      city: "Valencia",
+      website: "https://www.ionproyectos.com/",
+      phone_e164: "+34635766456",
+      instagram: "https://www.instagram.com/ion.proyectos/",
+      facebook: "https://www.facebook.com/ion.proyectos"
+    },
+    contacts: [
+      { kind: "phone", value: "+34644579123", confidence: 0.85, source_url: "https://www.ionproyectos.com/" },
+      { kind: "email", value: "contacto@ionproyectos.com", confidence: 0.8, source_url: "https://www.ionproyectos.com/" }
+    ],
+    searchClient: {
+      async search(query) {
+        if (query.includes("company")) {
+          return [
+            {
+              url: "https://www.linkedin.com/company/ionproyectos/",
+              title: "ION Proyectos | LinkedIn",
+              description: "Empresa de climatización y fotovoltaica en Valencia"
+            }
+          ];
+        }
+        return [];
+      }
+    },
+    aiResolver: async ({ accessContacts }) => ({
+      found: false,
+      decisionStatus: "access_contact",
+      selectedAccessContactId: accessContacts.find((contact) => contact.value === "+34635766456").contactId,
+      confidence: 0.86,
+      reason: "no_person_decision_maker_best_phone"
+    })
+  });
+
+  assert.equal(result.found, false);
+  assert.equal(result.decisionStatus, "access_contact");
+  assert.equal(result.linkedinCompany.linkedinUrl, "https://www.linkedin.com/company/ionproyectos");
+  assert.equal(result.recommendedAccessContact.kind, "phone");
+  assert.equal(result.recommendedAccessContact.value, "+34635766456");
+  assert.equal(result.ai.status, "resolved_no_match");
 });
 
 test("infers active ads from public transparency page signals", () => {
