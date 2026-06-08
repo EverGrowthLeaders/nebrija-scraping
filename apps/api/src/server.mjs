@@ -525,6 +525,35 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "POST" && url.pathname === "/api/businesses/decision-maker-enrichment") {
+      const { json } = await readJson(req);
+      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 1000);
+      if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
+
+      const queueJobs = [];
+      let skipped = 0;
+      for (const businessId of businessIds) {
+        const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
+        if (!business) {
+          skipped += 1;
+          continue;
+        }
+        queueJobs.push(
+          await queues.decisionMakerEnrichment.add("enrich", {
+            tenantId: auth.tenantId,
+            businessId: business.id,
+            bulk: true
+          })
+        );
+      }
+      return sendJson(res, 202, {
+        queued: queueJobs.length,
+        skipped,
+        queue: QUEUE_NAMES.decisionMakerEnrichment,
+        jobIds: queueJobs.map((queueJob) => queueJob.id)
+      });
+    }
+
     const businessDetailMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)$/);
     if (req.method === "GET" && businessDetailMatch) {
       const detail = await findBusinessDetail(businessDetailMatch[1], { tenantId: auth.tenantId });
@@ -961,6 +990,17 @@ const server = http.createServer(async (req, res) => {
         businessId: business.id
       });
       return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.adsEnrichment });
+    }
+
+    const decisionMakerEnrichmentMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)\/decision-maker-enrichment$/);
+    if (req.method === "POST" && decisionMakerEnrichmentMatch) {
+      const business = await findBusinessById(decisionMakerEnrichmentMatch[1], { tenantId: auth.tenantId });
+      if (!business) return sendJson(res, 404, { error: "business_not_found" });
+      const job = await queues.decisionMakerEnrichment.add("enrich", {
+        tenantId: auth.tenantId,
+        businessId: business.id
+      });
+      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.decisionMakerEnrichment });
     }
 
     const callMatch = matchPath(url.pathname, /^\/businesses\/([^/]+)\/call$/);

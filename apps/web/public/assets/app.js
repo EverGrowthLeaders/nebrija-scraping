@@ -923,6 +923,10 @@ async function renderLeadsList({ search }) {
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M4 4h16v3H4V4Zm0 5h10v3H4V9Zm0 5h16v3H4v-3Zm0 5h10v2H4v-2Zm13.5-9 1.6 3.2 3.4.5-2.5 2.4.6 3.4-3.1-1.6-3 1.6.6-3.4-2.5-2.4 3.4-.5L17.5 10Z"/></svg>
           Enriquecer Ads/Funnel
         </button>
+        <button class="btn btn--sm" data-action="enrich-selected-decision-makers" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 1 5 5c0 1.6-.7 3-1.8 3.9A8 8 0 0 1 20 18v3h-2v-3a6 6 0 0 0-12 0v3H4v-3a8 8 0 0 1 4.8-7.1A5 5 0 0 1 12 2Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm6.5 5.5 1.1 2.2 2.4.4-1.8 1.7.4 2.4-2.1-1.1-2.1 1.1.4-2.4-1.8-1.7 2.4-.4 1.1-2.2Z"/></svg>
+          Enriquecer decisor
+        </button>
         <button class="btn btn--danger btn--sm" data-action="delete-selected-leads" type="button">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
           Eliminar
@@ -1128,6 +1132,7 @@ function bindLeadSelection(rows) {
   const selectAll = $("[data-action='toggle-all-leads']", view);
   const clearButton = $("[data-action='clear-lead-selection']", view);
   const enrichAdsButton = $("[data-action='enrich-selected-ads']", view);
+  const enrichDecisionMakerButton = $("[data-action='enrich-selected-decision-makers']", view);
   const deleteButton = $("[data-action='delete-selected-leads']", view);
   const checks = $$("[data-action='toggle-lead']", view);
 
@@ -1168,6 +1173,13 @@ function bindLeadSelection(rows) {
       .map((id) => byId.get(id))
       .filter(Boolean);
     if (leads.length) bulkLeadAdsAction(leads, enrichAdsButton);
+  });
+
+  enrichDecisionMakerButton.addEventListener("click", () => {
+    const leads = Array.from(selected)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+    if (leads.length) bulkLeadDecisionMakerAction(leads, enrichDecisionMakerButton);
   });
 
   deleteButton.addEventListener("click", () => {
@@ -1212,6 +1224,10 @@ async function renderLeadDetail({ params }) {
         <button class="btn" data-action="lead-ads" type="button">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 4h16v3H4V4Zm0 5h10v3H4V9Zm0 5h16v3H4v-3Zm0 5h10v2H4v-2Zm13.5-9 1.6 3.2 3.4.5-2.5 2.4.6 3.4-3.1-1.6-3 1.6.6-3.4-2.5-2.4 3.4-.5L17.5 10Z"/></svg>
           Enriquecer Ads
+        </button>
+        <button class="btn" data-action="lead-decision-maker" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 1 5 5c0 1.6-.7 3-1.8 3.9A8 8 0 0 1 20 18v3h-2v-3a6 6 0 0 0-12 0v3H4v-3a8 8 0 0 1 4.8-7.1A5 5 0 0 1 12 2Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm6.5 5.5 1.1 2.2 2.4.4-1.8 1.7.4 2.4-2.1-1.1-2.1 1.1.4-2.4-1.8-1.7 2.4-.4 1.1-2.2Z"/></svg>
+          Enriquecer decisor
         </button>
         <button class="btn btn--gold" data-action="lead-call" type="button" ${!b.phone_e164 ? "disabled" : ""}>
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.3a11 11 0 0 0 3.4.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.4 1 1 0 0 1-.3 1l-2.2 2.4Z"/></svg>
@@ -1365,6 +1381,7 @@ async function renderLeadDetail({ params }) {
   $("[data-action='lead-crawl']", view).addEventListener("click", () => leadAction(b, "crawl"));
   $("[data-action='lead-score']", view).addEventListener("click", () => leadAction(b, "score"));
   $("[data-action='lead-ads']", view).addEventListener("click", () => leadAction(b, "ads"));
+  $("[data-action='lead-decision-maker']", view).addEventListener("click", () => leadAction(b, "decisionMaker"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
   $("[data-action='lead-delete']", view).addEventListener("click", () =>
     confirmDeleteLead(b, { afterDelete: () => { location.hash = leadListReturnHash(); } })
@@ -1511,7 +1528,11 @@ function confirmDeleteLeads(leads, { afterDelete } = {}) {
 
 async function leadAction(business, kind) {
   try {
-    const url = kind === "ads" ? `/api/businesses/${business.id}/ads-enrichment` : `/businesses/${business.id}/${kind}`;
+    const url = kind === "ads"
+      ? `/api/businesses/${business.id}/ads-enrichment`
+      : kind === "decisionMaker"
+        ? `/api/businesses/${business.id}/decision-maker-enrichment`
+        : `/businesses/${business.id}/${kind}`;
     await api(url, { method: "POST", body: "{}" });
     toast(
       kind === "call"
@@ -1520,6 +1541,8 @@ async function leadAction(business, kind) {
           ? "Crawl en cola"
           : kind === "ads"
             ? "Enriquecimiento Ads en cola"
+            : kind === "decisionMaker"
+              ? "Enriquecimiento de decisor en cola"
             : "Re-scoring en cola",
       "ok"
     );
@@ -1554,6 +1577,24 @@ async function bulkLeadAdsAction(leads, button) {
     toast(`${fmtNumber(result.queued)} leads enviados a Ads/Funnel${skipped}`, result.queued ? "ok" : "error");
   } catch (err) {
     toast(`No se pudo lanzar Ads/Funnel (${err.message})`, "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+async function bulkLeadDecisionMakerAction(leads, button) {
+  const businessIds = leads.map((lead) => lead.id).filter(Boolean);
+  if (!businessIds.length) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await api("/api/businesses/decision-maker-enrichment", {
+      method: "POST",
+      body: JSON.stringify({ businessIds })
+    });
+    const skipped = result.skipped ? ` · ${fmtNumber(result.skipped)} omitidos` : "";
+    toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento de decisor${skipped}`, result.queued ? "ok" : "error");
+  } catch (err) {
+    toast(`No se pudo lanzar decisor (${err.message})`, "error");
   } finally {
     if (button) button.disabled = false;
   }
