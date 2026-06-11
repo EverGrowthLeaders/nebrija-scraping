@@ -802,12 +802,8 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
   }
 
   try {
-    const items = await apify.runGoogleAdsTransparency({
-      searchTerms: [domain],
-      region: country,
-      resultsLimit: Math.min(3, Math.max(1, Number(apify.maxChargedResults || 3))),
-      skipDetails: true
-    });
+    const input = buildApifyGoogleInput({ domain, country, apify });
+    const items = await apify.runGoogleAdsTransparency(input);
     const apifyResult = inferApifyGoogleActivity({ items, business, domain, country, now });
     attempts.push(adAttempt(
       {
@@ -818,6 +814,7 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         businessName: business.name,
         country,
         sourceProvider: "apify",
+        actorId: apify.googleAdsActorId || null,
         datePreset: GOOGLE_RECENT_DATE_PRESET
       },
       apifyResult,
@@ -839,7 +836,8 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         domain,
         businessName: business.name,
         country,
-        sourceProvider: "apify"
+        sourceProvider: "apify",
+        actorId: apify.googleAdsActorId || null
       }
     });
     attempts.push(adAttempt(
@@ -851,6 +849,7 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         businessName: business.name,
         country,
         sourceProvider: "apify",
+        actorId: apify.googleAdsActorId || null,
         datePreset: GOOGLE_RECENT_DATE_PRESET
       },
       result,
@@ -860,10 +859,34 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
   }
 }
 
+function buildApifyGoogleInput({ domain, country, apify }) {
+  const maxResults = Math.min(10, Math.max(1, Number(apify?.maxChargedResults || 3)));
+  if (isSolidcodeGoogleAdsActor(apify?.googleAdsActorId)) {
+    return {
+      searchQuery: domain,
+      maxResults
+    };
+  }
+  return {
+    searchTerms: [domain],
+    region: country,
+    resultsLimit: Math.min(3, maxResults),
+    skipDetails: true
+  };
+}
+
+function isSolidcodeGoogleAdsActor(actorId) {
+  return /solidcode~ads-transparency-scraper/i.test(String(actorId || ""));
+}
+
+function isCrawlerbrosFacebookAdsActor(actorId) {
+  return /crawlerbros~facebook-ads-library-scraper/i.test(String(actorId || ""));
+}
+
 function inferApifyGoogleActivity({ items = [], business = {}, domain, country, now }) {
   const evidenceSnippet = compactSnippet(items.map((item) => collectApifyGoogleItemStrings(item).join("\n")).join("\n---\n"), 1800);
   const recentItems = items
-    .filter((item) => String(item?.searchTerm || "").toLowerCase() === String(domain || "").toLowerCase())
+    .filter((item) => apifyGoogleItemMatchesDomain(item, domain))
     .filter((item) => apifyGoogleDateWithin(item?.lastShown || item?.last_shown_datetime, now, GOOGLE_RECENT_DAYS));
   if (!recentItems.length) {
     if (!items.length && domain) {
@@ -915,7 +938,7 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
     status: "active",
     active: true,
     confidence: 0.82,
-    sourceUrl: first.adLibraryUrl || buildGoogleAdsTransparencyUrl({ domain, country }),
+    sourceUrl: first.adUrl || first.ad_url || first.adLibraryUrl || first.ad_library_url || buildGoogleAdsTransparencyUrl({ domain, country }),
     reason: "apify_google_recent_domain_ad",
     latestDetectedDate: normalizeApifyGoogleDate(first.lastShown || first.last_shown_datetime),
     context: {
@@ -928,11 +951,25 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
       matchedFields: ["domain"],
       itemsSeen: recentItems.length,
       total: items.length,
-      samplePageName: first.advertiserName || null,
-      adArchiveId: first.creativeId || null,
+      samplePageName: first.advertiserName || first.advertiser_name || null,
+      adArchiveId: first.creativeId || first.creative_id || null,
       evidenceSnippet
     }
   });
+}
+
+function apifyGoogleItemMatchesDomain(item = {}, domain) {
+  const normalizedDomain = normalizeText(domain);
+  if (!normalizedDomain) return false;
+  const explicitSearchTerm = firstValue(item.searchTerm, item.search_term, item.searchQuery, item.search_query);
+  if (explicitSearchTerm) return normalizeText(explicitSearchTerm) === normalizedDomain;
+  const strings = collectApifyGoogleItemStrings(item);
+  if (strings
+    .map((value) => normalizeText(value))
+    .some((value) => value.includes(normalizedDomain))) {
+    return true;
+  }
+  return Boolean(firstValue(item.advertiserName, item.advertiser_name, item.advertiserId, item.advertiser_id, item.creativeId, item.creative_id, item.adUrl, item.ad_url));
 }
 
 async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery, discoveryPlan }) {
@@ -950,6 +987,7 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
       const analyzed = inferApifyMetaActivity({ items, business, source: sourceWithActor, now });
       attempts.push(apifyAttempt(sourceWithActor, analyzed, items));
       fallback = betterMetaFallback(fallback, analyzed);
+      if (isStrongMetaApifyResult(analyzed)) break;
     } catch (error) {
       const result = evidence({
         provider: "meta",
@@ -1987,9 +2025,26 @@ function mergeProviderEvidence(primary, secondary) {
 
 function betterMetaFallback(current, next) {
   if (!current) return next;
-  if (next.active === false && current.active !== false) return next;
+  if (current.active === true || next.active === true) {
+    if (next.active === true && current.active !== true) return next;
+    if (current.active === true && next.active !== true) return current;
+    const currentLandingCount = Array.isArray(current.landingUrls) ? current.landingUrls.length : 0;
+    const nextLandingCount = Array.isArray(next.landingUrls) ? next.landingUrls.length : 0;
+    if (nextLandingCount > currentLandingCount) return next;
+    if (nextLandingCount < currentLandingCount) return current;
+    if ((next.confidence || 0) > (current.confidence || 0)) return next;
+    return current;
+  }
+  if (next.active === false && current.active == null) return next;
   if ((next.confidence || 0) > (current.confidence || 0)) return next;
   return current;
+}
+
+function isStrongMetaApifyResult(result = {}) {
+  return result.active === true &&
+    (result.confidence || 0) >= 0.9 &&
+    Array.isArray(result.landingUrls) &&
+    result.landingUrls.length > 0;
 }
 
 function buildApifyMetaSources(business, country, discoveryPlan) {
@@ -2099,11 +2154,22 @@ function addApifySource(sources, source) {
 }
 
 function buildApifyMetaInput(source, apify) {
-  const maxChargedResults = Math.max(10, Number(apify?.maxChargedResults || 10));
+  const maxChargedResults = Math.max(1, Number(apify?.maxChargedResults || 10));
+  if (isCrawlerbrosFacebookAdsActor(apify?.facebookAdsActorId)) {
+    return {
+      searchTerms: [metaApifySearchTerm(source)].filter(Boolean),
+      country: apifyMetaCountry(source.country),
+      adActiveStatus: "active",
+      adType: "all",
+      mediaType: "all",
+      resultsPerSearch: Math.min(10, maxChargedResults),
+      runTag: "lexington-meta-active-check"
+    };
+  }
   return {
     urls: [{ url: source.sourceUrl }],
     limitPerSource: 1,
-    count: maxChargedResults,
+    count: Math.max(10, maxChargedResults),
     scrapeAdDetails: true,
     "scrapePageAds.period": "",
     "scrapePageAds.activeStatus": "active",
@@ -2113,8 +2179,33 @@ function buildApifyMetaInput(source, apify) {
   };
 }
 
+function metaApifySearchTerm(source = {}) {
+  const query = cleanQuery(source.query);
+  if (query) return query;
+  try {
+    const parsed = new URL(source.sourceUrl);
+    return cleanQuery(parsed.searchParams.get("q") || parsed.searchParams.get("page_id") || "");
+  } catch {
+    return cleanQuery(source.sourceUrl || "");
+  }
+}
+
+function apifyMetaCountry(country) {
+  const normalized = normalizeCountryCode(country);
+  return normalized && normalized !== "ALL" ? normalized : "ES";
+}
+
+function isApifyMetaItemActive(item = {}) {
+  if (item?.is_active === true) return true;
+  if (item?.is_active === false) return false;
+  const status = normalizeText(item?.status || item?.ad_status || item?.active_status || "");
+  if (status.includes("inactive")) return false;
+  if (status.includes("active")) return true;
+  return true;
+}
+
 function inferApifyMetaActivity({ items = [], business, source, now }) {
-  const activeItems = items.filter((item) => item?.is_active === true || item?.is_active == null);
+  const activeItems = items.filter((item) => isApifyMetaItemActive(item));
   const matchedItems = [];
   let bestMatch = null;
   for (const item of activeItems) {
@@ -2137,7 +2228,7 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       status: "active",
       active: true,
       confidence: Math.max(Number(source.confidence || 0), bestMatch.match.confidence),
-      sourceUrl: bestMatch.item.ad_library_url || source.sourceUrl,
+      sourceUrl: bestMatch.item.ad_library_url || bestMatch.item.ad_snapshot_url || source.sourceUrl,
       reason: "apify_active_ad_matched",
       latestDetectedDate,
       context: {
@@ -2147,7 +2238,7 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
         total: apifyTotal(items),
         matchedItems: matchedItems.length,
         samplePageName: samplePageName(bestMatch.item),
-        adArchiveId: bestMatch.item.ad_archive_id || null,
+        adArchiveId: bestMatch.item.ad_archive_id || bestMatch.item.ad_id || null,
         landingUrls,
         spendEstimate,
         evidenceSnippet
@@ -2312,9 +2403,19 @@ function collectApifyItemStrings(item = {}) {
   const body = typeof snapshot.body === "string" ? snapshot.body : snapshot.body?.text;
   return [
     item.page_name,
+    item.page_id,
     item.ad_archive_id,
+    item.ad_id,
     item.ad_library_url,
+    item.ad_snapshot_url,
     item.url,
+    item.status,
+    item.ad_text,
+    item.link_url,
+    item.cta_text,
+    item.search_term,
+    Array.isArray(item.platforms) ? item.platforms.join(" ") : item.platforms,
+    item.media_type,
     snapshot.page_name,
     snapshot.page_profile_uri,
     snapshot.caption,
@@ -2338,12 +2439,20 @@ function collectApifyGoogleItemStrings(item = {}) {
   return [
     item.advertiserName,
     item.advertiser_name,
+    item.advertiserId,
+    item.advertiser_id,
     item.creativeId,
     item.creative_id,
+    item.adUrl,
+    item.ad_url,
     item.adLibraryUrl,
     item.ad_library_url,
+    item.imageUrl,
+    item.image_url,
     item.searchTerm,
     item.search_term,
+    item.searchQuery,
+    item.search_query,
     item.firstShown,
     item.first_shown_datetime,
     item.lastShown,
@@ -2506,8 +2615,9 @@ function samplePageName(item = {}) {
 function apifyItemDate(item = {}, now) {
   const raw = item.start_date || item.end_date;
   const number = Number(raw);
-  if (!Number.isFinite(number) || number <= 0) return null;
-  const date = new Date(number > 10_000_000_000 ? number : number * 1000);
+  const date = Number.isFinite(number) && number > 0
+    ? new Date(number > 10_000_000_000 ? number : number * 1000)
+    : parseLooseDate(raw);
   if (Number.isNaN(date.getTime())) return null;
   if (date.getTime() > now.getTime() + 86400_000 * 2) return null;
   return date.toISOString().slice(0, 10);
@@ -2537,8 +2647,16 @@ function normalizeApifyGoogleDate(value) {
   const raw = String(value || "").trim();
   if (!raw) return null;
   const match = raw.match(/\b(20\d{2})[-/](0?[1-9]|1[0-2])[-/](0?[1-9]|[12]\d|3[01])\b/);
-  if (!match) return null;
-  return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+  if (match) return `${match[1]}-${match[2].padStart(2, "0")}-${match[3].padStart(2, "0")}`;
+  const date = parseLooseDate(raw);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
+}
+
+function parseLooseDate(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return new Date(Number.NaN);
+  const parsed = new Date(raw);
+  return parsed;
 }
 
 function parseAiJson(content) {

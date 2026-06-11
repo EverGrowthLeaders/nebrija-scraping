@@ -33,15 +33,30 @@ export async function fetchJson(url, options = {}) {
     }
 
     if (!response.ok) {
-      throw new HttpError(`HTTP ${response.status} for ${url}`, {
+      const safeUrl = redactUrlSecrets(url);
+      throw new HttpError(`HTTP ${response.status} for ${safeUrl}`, {
         status: response.status,
         body,
-        url
+        url: safeUrl
       });
     }
 
     return body;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+function redactUrlSecrets(value) {
+  try {
+    const url = new URL(value);
+    for (const key of url.searchParams.keys()) {
+      if (/token|api[-_]?key|secret|password|authorization/i.test(key)) {
+        url.searchParams.set(key, "[redacted]");
+      }
+    }
+    return url.toString();
+  } catch {
+    return String(value || "").replace(/([?&](?:token|api[-_]?key|secret|password|authorization)=)[^&]+/gi, "$1[redacted]");
   }
 }

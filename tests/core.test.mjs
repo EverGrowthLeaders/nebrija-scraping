@@ -21,6 +21,7 @@ import {
 import { extractEmails, extractLeadSignals, extractPhones, selectBusinessUrls } from "../packages/core/src/extractors.mjs";
 import { calculateLeadScore, nextOutreachChannel } from "../packages/core/src/scoring.mjs";
 import { parseEndOfCallReport } from "../packages/core/src/vapiReport.mjs";
+import { fetchJson } from "../packages/core/src/http.mjs";
 import {
   buildMapRequestBody,
   normalizeMapResponse,
@@ -112,6 +113,25 @@ test("normalizes Spanish phone numbers to E.164", () => {
   assert.equal(normalizeSpanishPhone("+34 911 222 333"), "+34911222333");
   assert.equal(normalizeSpanishPhone("0034 600 111 222"), "+34600111222");
   assert.equal(normalizeSpanishPhone("123"), null);
+});
+
+test("redacts secret query params from HTTP errors", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response("{}", { status: 403 });
+  try {
+    await assert.rejects(
+      fetchJson("https://api.example.com/run?token=secret-token&api_key=secret-key&safe=1"),
+      (error) => {
+        assert.match(error.message, /token=%5Bredacted%5D|token=\[redacted\]/);
+        assert.match(error.message, /api_key=%5Bredacted%5D|api_key=\[redacted\]/);
+        assert.doesNotMatch(error.message, /secret-token|secret-key/);
+        assert.doesNotMatch(error.url, /secret-token|secret-key/);
+        return true;
+      }
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("estimates Deepseek V4 Flash usage cost with cached tokens", () => {
@@ -367,12 +387,14 @@ test("counts and validates Apify usage budgets for enrichment smoke", () => {
         provider: "meta",
         urls: ["https://www.facebook.com/ads/library/?q=demo"],
         searchTerms: [],
+        searchQuery: null,
         resultsLimit: 10
       },
       {
         provider: "google",
         urls: [],
         searchTerms: ["demo.example"],
+        searchQuery: null,
         resultsLimit: 3
       }
     ]
@@ -2628,6 +2650,75 @@ test("uses AI-planned Meta sources when Apify fallback is enabled", async () => 
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.sourceProvider === "apify" && attempt.plannedBy === "ai"));
 });
 
+test("uses CrawlerBros Facebook Ads actor input and normalizes its output", async () => {
+  const apifyInputs = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://planned.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 4,
+    facebookAdsActorId: "crawlerbros~facebook-ads-library-scraper",
+    async runFacebookAdsLibrary(input) {
+      apifyInputs.push(input);
+      assert.deepEqual(input.searchTerms, ["planned.example"]);
+      assert.equal(input.country, "ES");
+      assert.equal(input.adActiveStatus, "active");
+      assert.equal(input.resultsPerSearch, 4);
+      assert.equal(input.urls, undefined);
+      return [
+        {
+          status: "Active",
+          page_name: "Planned Demo",
+          page_id: "987654321",
+          ad_id: "123456789",
+          ad_snapshot_url: "https://www.facebook.com/ads/library/?id=123456789",
+          ad_text: "Reserva una visita en planned.example",
+          link_url: "https://planned.example/oferta",
+          cta_text: "Solicitar presupuesto",
+          search_term: "planned.example",
+          start_date: "2026-06-04"
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Planned Demo", website: "https://planned.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "planned.example", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain_query" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
+      if (phase === "firecrawl_apify") {
+        const apifyAttempt = evidence.providers.meta.attempts.find((attempt) => attempt.sourceProvider === "apify");
+        assert.equal(apifyAttempt.activeSignal, true);
+        assert.equal(apifyAttempt.adArchiveId, "123456789");
+        assert.equal(apifyAttempt.latestDetectedDate, "2026-06-04");
+      }
+    }),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyInputs.length, 1);
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.sourceProvider, "apify");
+  assert.equal(enrichment.meta.sourceUrl, "https://www.facebook.com/ads/library/?id=123456789");
+  assert.deepEqual(enrichment.meta.landingUrls, ["https://planned.example/oferta"]);
+});
+
 test("passes empty precise Apify results as inactive evidence for Deepseek", async () => {
   const firecrawl = {
     async search() {
@@ -2861,6 +2952,74 @@ test("uses Apify Google Transparency fallback for recent domain ads", async () =
   assert.equal(enrichment.google.latestDetectedDate, "2026-06-06");
 });
 
+test("uses Solidcode Google Ads actor input and normalizes its output", async () => {
+  const googleInputs = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://planned.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    enabled: true,
+    maxChargedResults: 5,
+    googleAdsActorId: "solidcode~ads-transparency-scraper",
+    async runFacebookAdsLibrary() {
+      return [];
+    },
+    async runGoogleAdsTransparency(input) {
+      googleInputs.push(input);
+      assert.deepEqual(input, {
+        searchQuery: "planned.example",
+        maxResults: 5
+      });
+      return [
+        {
+          advertiserName: "Planned Demo",
+          advertiserId: "AR123",
+          creativeId: "CR123",
+          lastShown: "2026-06-05",
+          adUrl: "https://adstransparency.google.com/advertiser/AR123/creative/CR123",
+          finalUrl: "https://planned.example/promo"
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Planned Demo", website: "https://planned.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      googleUrls: [
+        { url: "https://adstransparency.google.com/?region=ES&domain=planned.example", reason: "ai_exact_domain" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
+      if (phase === "firecrawl_apify") {
+        const apifyAttempt = evidence.providers.google.attempts.find((attempt) => attempt.sourceProvider === "apify");
+        assert.equal(apifyAttempt.activeSignal, true);
+        assert.equal(apifyAttempt.adArchiveId, "CR123");
+        assert.equal(apifyAttempt.samplePageName, "Planned Demo");
+      }
+    }),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(googleInputs.length, 1);
+  assert.equal(enrichment.google.active, true);
+  assert.equal(enrichment.google.sourceProvider, "apify");
+  assert.equal(enrichment.google.sourceUrl, "https://adstransparency.google.com/advertiser/AR123/creative/CR123");
+  assert.equal(enrichment.google.latestDetectedDate, "2026-06-05");
+});
+
 test("continues Apify sources when the first active match has no landing URL", async () => {
   const apifyCalls = [];
   const firecrawl = {
@@ -2926,7 +3085,7 @@ test("continues Apify sources when the first active match has no landing URL", a
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(apifyCalls.length, 3);
+  assert.equal(apifyCalls.length, 2);
   assert.equal(enrichment.meta.active, true);
   assert.deepEqual(enrichment.meta.landingUrls, ["https://demo.example/landing"]);
   assert.equal(enrichment.classification.type, "lead_generation");

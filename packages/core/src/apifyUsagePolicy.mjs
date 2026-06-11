@@ -18,7 +18,8 @@ export function recordApifyCall(stats, provider, input = {}) {
     provider: normalizedProvider,
     urls: Array.isArray(input.urls) ? input.urls.map((item) => item?.url || item).filter(Boolean).slice(0, 4) : [],
     searchTerms: Array.isArray(input.searchTerms) ? input.searchTerms.slice(0, 8) : [],
-    resultsLimit: input.resultsLimit ?? input.count ?? input.limitPerSource ?? null
+    searchQuery: input.searchQuery || null,
+    resultsLimit: input.resultsLimit ?? input.maxResults ?? input.resultsPerSearch ?? input.count ?? input.limitPerSource ?? null
   });
 }
 
