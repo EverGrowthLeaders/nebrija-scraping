@@ -2353,16 +2353,25 @@ function googleDomainAdsSignal({ text, context = {} }) {
   const domain = extractDomain(context.domain || context.query || context.business?.website);
   if (!domain || !normalized.includes(normalizeText(domain))) return null;
   const hasRecentFilter = normalizeText(context.datePreset).includes(normalizeText(GOOGLE_RECENT_DATE_PRESET)) ||
-    normalized.includes(normalizeText(GOOGLE_RECENT_DATE_PRESET));
+    [
+      GOOGLE_RECENT_DATE_PRESET,
+      "ultimos 30 dias",
+      "últimos 30 días",
+      "last 30 days",
+      "30 derniers jours"
+    ].some((phrase) => normalized.includes(normalizeText(phrase)));
   if (!hasRecentFilter) return null;
   const hasDomainResultsCopy = [
     "este dominio incluye resultados",
     "this domain includes results",
+    "ce domaine inclut des resultats",
+    "ce domaine inclut des résultats",
     "anuncios que se orientan a este dominio",
-    "ads that target this domain"
+    "ads that target this domain",
+    "annonces redirigent vers ce domaine"
   ].some((phrase) => normalized.includes(normalizeText(phrase)));
   if (!hasDomainResultsCopy) return null;
-  const matches = Array.from(String(text || "").matchAll(/\b(\d{1,5})\s+(?:anuncios|ads)\b/gi));
+  const matches = Array.from(String(text || "").matchAll(/\b(\d{1,5})\s+(?:anuncios|ads|annonces)\b/gi));
   const count = matches
     .map((match) => Number(match[1]))
     .find((value) => Number.isFinite(value) && value > 0);

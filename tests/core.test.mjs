@@ -1465,6 +1465,17 @@ test("infers active ads from public transparency page signals", () => {
   assert.equal(directDomainGoogle.active, true);
   assert.equal(directDomainGoogle.reason, "google_domain_ads_found");
   assert.equal(directDomainGoogle.itemsSeen, 12);
+
+  const frenchDomainGoogle = inferAdsActivity({
+    provider: "google",
+    now: new Date("2026-06-06T00:00:00Z"),
+    sourceUrl: "https://adstransparency.google.com/?region=ES&domain=reformashoy.com&preset-date=Last+30+days",
+    context: { domain: "reformashoy.com", businessName: "Reformas Hoy | Reformas Integrales en Madrid" },
+    text: "reformashoy.com Ce domaine inclut des résultats pour plusieurs comptes d'annonceur dont les annonces redirigent vers ce domaine. 2 annonces 30 derniers jours Francisco Bolufer Juan Validé"
+  });
+  assert.equal(frenchDomainGoogle.active, true);
+  assert.equal(frenchDomainGoogle.reason, "google_domain_ads_found");
+  assert.equal(frenchDomainGoogle.itemsSeen, 2);
 });
 
 test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {
