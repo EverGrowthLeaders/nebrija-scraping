@@ -22,6 +22,7 @@ import { extractEmails, extractLeadSignals, extractPhones, selectBusinessUrls } 
 import { calculateLeadScore, nextOutreachChannel } from "../packages/core/src/scoring.mjs";
 import { parseEndOfCallReport } from "../packages/core/src/vapiReport.mjs";
 import { fetchJson } from "../packages/core/src/http.mjs";
+import { postDeepInfraJson } from "../packages/core/src/deepinfraClient.mjs";
 import {
   buildMapRequestBody,
   normalizeMapResponse,
@@ -132,6 +133,35 @@ test("redacts secret query params from HTTP errors", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("retries DeepInfra overloaded responses", async () => {
+  let calls = 0;
+  const delays = [];
+  const result = await postDeepInfraJson({
+    baseUrl: "https://deepinfra.example/v1/openai",
+    apiKey: "test-key",
+    body: { model: "deepseek-ai/DeepSeek-V4-Flash", messages: [] },
+    timeoutMs: 100,
+    maxAttempts: 3,
+    retryBaseDelayMs: 5,
+    sleep: async (ms) => delays.push(ms),
+    fetchImpl: async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(JSON.stringify({ error: { code: "engine_overloaded", message: "Model busy, retry later" } }), {
+          status: 429
+        });
+      }
+      return new Response(JSON.stringify({ choices: [{ message: { content: "{}" } }], usage: { total_tokens: 1 } }), {
+        status: 200
+      });
+    }
+  });
+
+  assert.equal(calls, 2);
+  assert.deepEqual(delays, [5]);
+  assert.equal(result.usage.total_tokens, 1);
 });
 
 test("estimates Deepseek V4 Flash usage cost with cached tokens", () => {

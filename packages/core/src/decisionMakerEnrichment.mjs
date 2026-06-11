@@ -1,5 +1,6 @@
 import { config } from "./config.mjs";
 import { estimateDeepseekUsageCost } from "./aiUsage.mjs";
+import { postDeepInfraJson } from "./deepinfraClient.mjs";
 
 const LINKEDIN_PROFILE_HOSTS = ["linkedin.com"];
 const DEFAULT_MAX_AI_EVIDENCE_CHARS = 12000;
@@ -958,28 +959,6 @@ function buildDecisionMakerVerificationPack({
     ]
   };
   return enforceEvidenceBudget(evidence, maxEvidenceChars);
-}
-
-async function postDeepInfraJson({ baseUrl, apiKey, body, timeoutMs }) {
-  if (!apiKey) throw new Error("deepinfra_api_key_missing");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`deepinfra_http_${response.status}:${text.slice(0, 300)}`);
-    return JSON.parse(text);
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function mergeAiDecisionMakerResult({ deterministic = {}, rawResult, aiConfig, requireAiPlannedSearch = false }) {

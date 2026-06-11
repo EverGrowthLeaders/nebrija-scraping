@@ -1,6 +1,7 @@
 import { classifyAdsLandingIntent, extractLandingUrlsFromText } from "./adsLandingClassifier.mjs";
 import { estimateDeepseekUsageCost } from "./aiUsage.mjs";
 import { config } from "./config.mjs";
+import { postDeepInfraJson } from "./deepinfraClient.mjs";
 
 const DEFAULT_COUNTRY = "ES";
 const GOOGLE_RECENT_DAYS = 30;
@@ -1390,28 +1391,6 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
     ...parseAiJson(json?.choices?.[0]?.message?.content),
     usage: json?.usage || null
   };
-}
-
-async function postDeepInfraJson({ baseUrl, apiKey, body, timeoutMs }) {
-  if (!apiKey) throw new Error("deepinfra_api_key_missing");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json"
-      },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    });
-    const text = await response.text();
-    if (!response.ok) throw new Error(`deepinfra_http_${response.status}:${text.slice(0, 300)}`);
-    return JSON.parse(text);
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function mergeAiAdsActivityResult({ providerEvidence = {}, rawResult, aiConfig, now, phase, requireAiPlannedEvidence = false }) {
