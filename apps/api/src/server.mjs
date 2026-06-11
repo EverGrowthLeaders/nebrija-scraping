@@ -1625,10 +1625,31 @@ function compactReformasMadridReport(report = {}) {
       },
       failures: row.failures || [],
       summary: row.summary || null,
+      attempts: {
+        meta: compactAdsAttempts(row.ads?.meta?.attempts),
+        google: compactAdsAttempts(row.ads?.google?.attempts)
+      },
       startedAt: row.startedAt || null,
       finishedAt: row.finishedAt || null
     }))
   };
+}
+
+function compactAdsAttempts(attempts = []) {
+  return attempts.slice(0, 40).map((attempt) => ({
+    attemptId: attempt.attemptId || null,
+    sourceProvider: attempt.sourceProvider || null,
+    plannedBy: attempt.plannedBy || null,
+    strategy: attempt.strategy || null,
+    query: attempt.query || null,
+    status: attempt.status || null,
+    active: attempt.active ?? null,
+    reason: attempt.reason || null,
+    sourceUrl: attempt.sourceUrl || null,
+    itemsSeen: attempt.itemsSeen ?? null,
+    total: attempt.total ?? null,
+    actorId: attempt.actorId || null
+  }));
 }
 
 function verifyWebhookSignature(raw, headers, secret) {
