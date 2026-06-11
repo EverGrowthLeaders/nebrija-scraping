@@ -823,13 +823,14 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
     ));
     return withAttempts(apifyResult, attempts);
   } catch (error) {
+    const quotaExceeded = isExternalQuotaError(error);
     const result = evidence({
       provider: "google",
       status: "error",
       active: null,
       confidence: 0,
       sourceUrl: primaryUrl,
-      reason: "apify_google_error",
+      reason: quotaExceeded ? "apify_google_quota_exceeded" : "apify_google_error",
       error: externalErrorMessage(error),
       context: {
         strategy: "domain_apify",
@@ -990,18 +991,20 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
       fallback = betterMetaFallback(fallback, analyzed);
       if (isStrongMetaApifyResult(analyzed)) break;
     } catch (error) {
+      const quotaExceeded = isExternalQuotaError(error);
       const result = evidence({
         provider: "meta",
         status: "error",
         active: null,
         confidence: 0,
         sourceUrl: sourceWithActor.sourceUrl,
-        reason: "apify_error",
+        reason: quotaExceeded ? "apify_quota_exceeded" : "apify_error",
         error: externalErrorMessage(error),
         context: sourceWithActor
       });
       attempts.push(apifyAttempt(sourceWithActor, result, []));
       fallback = betterMetaFallback(fallback, result);
+      if (quotaExceeded) break;
     }
   }
 
@@ -2653,6 +2656,11 @@ function externalErrorMessage(error) {
     error?.body?.message ||
     (typeof error?.body === "string" ? error.body.slice(0, 300) : "");
   return compactSnippet([error?.message, bodyMessage].filter(Boolean).join(" - "), 600);
+}
+
+function isExternalQuotaError(error) {
+  const text = externalErrorMessage(error);
+  return /quota|hard limit|usage limit|monthly usage|limit exceeded/i.test(text);
 }
 
 function parseAiJson(content) {

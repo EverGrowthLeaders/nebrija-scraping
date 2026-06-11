@@ -2760,6 +2760,54 @@ test("uses CrawlerBros Facebook Ads actor input and normalizes its output", asyn
   assert.deepEqual(enrichment.meta.landingUrls, ["https://planned.example/oferta"]);
 });
 
+test("stops Meta Apify fallback after quota errors", async () => {
+  let apifyCalls = 0;
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://quota.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    facebookAdsActorId: "crawlerbros~facebook-ads-library-scraper",
+    async runFacebookAdsLibrary() {
+      apifyCalls += 1;
+      const error = new Error("HTTP 403 for https://api.apify.com/v2/acts/demo/run-sync-get-dataset-items?token=[redacted]");
+      error.body = { error: { message: "Monthly usage hard limit exceeded" } };
+      throw error;
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Quota Demo", website: "https://quota.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "quota.example", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain" },
+        { query: "Quota Demo Madrid", searchType: "keyword_unordered", country: "ES", reason: "ai_name_city" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyCalls, 1);
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.reason === "apify_quota_exceeded" &&
+    /Monthly usage hard limit exceeded/.test(attempt.error)
+  ));
+});
+
 test("passes empty precise Apify results as inactive evidence for Deepseek", async () => {
   const firecrawl = {
     async search() {
