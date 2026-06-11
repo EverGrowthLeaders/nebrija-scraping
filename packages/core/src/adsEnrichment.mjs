@@ -830,7 +830,7 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
       confidence: 0,
       sourceUrl: primaryUrl,
       reason: "apify_google_error",
-      error: error.message,
+      error: externalErrorMessage(error),
       context: {
         strategy: "domain_apify",
         query: domain,
@@ -997,7 +997,7 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
         confidence: 0,
         sourceUrl: sourceWithActor.sourceUrl,
         reason: "apify_error",
-        error: error.message,
+        error: externalErrorMessage(error),
         context: sourceWithActor
       });
       attempts.push(apifyAttempt(sourceWithActor, result, []));
@@ -2636,6 +2636,14 @@ function parseLooseDate(value) {
   if (!raw) return new Date(Number.NaN);
   const parsed = new Date(raw);
   return parsed;
+}
+
+function externalErrorMessage(error) {
+  const bodyMessage =
+    error?.body?.error?.message ||
+    error?.body?.message ||
+    (typeof error?.body === "string" ? error.body.slice(0, 300) : "");
+  return compactSnippet([error?.message, bodyMessage].filter(Boolean).join(" - "), 600);
 }
 
 function parseAiJson(content) {
