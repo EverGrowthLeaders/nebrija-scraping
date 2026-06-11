@@ -2628,6 +2628,58 @@ test("uses AI-planned Meta sources when Apify fallback is enabled", async () => 
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.sourceProvider === "apify" && attempt.plannedBy === "ai"));
 });
 
+test("passes empty precise Apify results as inactive evidence for Deepseek", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://empty-apify.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    facebookAdsActorId: "actor/meta",
+    googleAdsActorId: "actor/google",
+    async runFacebookAdsLibrary() {
+      return [];
+    },
+    async runGoogleAdsTransparency() {
+      return [];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Empty Apify", website: "https://empty-apify.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "on_unknown",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [{ query: "empty-apify.example", searchType: "page", country: "ES", reason: "ai_exact_page_probe" }],
+      googleUrls: [{ url: "https://adstransparency.google.com/?region=ES&domain=empty-apify.example", reason: "ai_exact_domain" }]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, false);
+  assert.equal(enrichment.google.active, false);
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.active === false &&
+    attempt.reason === "apify_no_active_items_for_precise_source"
+  ));
+  assert.ok(enrichment.google.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.active === false &&
+    attempt.reason === "apify_google_no_recent_domain_ads"
+  ));
+});
+
 test("falls back to Apify for matched active Meta ads only", async () => {
   const firecrawl = {
     async search() {

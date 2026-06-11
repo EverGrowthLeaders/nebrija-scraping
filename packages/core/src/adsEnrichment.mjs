@@ -866,6 +866,28 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
     .filter((item) => String(item?.searchTerm || "").toLowerCase() === String(domain || "").toLowerCase())
     .filter((item) => apifyGoogleDateWithin(item?.lastShown || item?.last_shown_datetime, now, GOOGLE_RECENT_DAYS));
   if (!recentItems.length) {
+    if (!items.length && domain) {
+      return evidence({
+        provider: "google",
+        status: "inactive",
+        active: false,
+        confidence: 0.74,
+        sourceUrl: buildGoogleAdsTransparencyUrl({ domain, country }),
+        reason: "apify_google_no_recent_domain_ads",
+        context: {
+          strategy: "domain_apify",
+          query: domain,
+          domain,
+          businessName: business.name,
+          country,
+          sourceProvider: "apify",
+          matchedFields: ["domain"],
+          itemsSeen: 0,
+          total: 0,
+          evidenceSnippet: "Apify returned zero Google Ads Transparency items for this exact domain search."
+        }
+      });
+    }
     return evidence({
       provider: "google",
       status: "unknown",
@@ -2133,6 +2155,23 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
   }
 
   const evidenceSnippet = compactSnippet(activeItems.map((item) => collectApifyItemStrings(item).join("\n")).join("\n---\n"), 1800);
+  if (!activeItems.length && isPreciseApifyMetaSource(source)) {
+    return evidence({
+      provider: "meta",
+      status: "inactive",
+      active: false,
+      confidence: Math.max(Number(source.confidence || 0), 0.74),
+      sourceUrl: source.sourceUrl,
+      reason: "apify_no_active_items_for_precise_source",
+      context: {
+        ...source,
+        itemsSeen: items.length,
+        total: apifyTotal(items),
+        samplePageName: null,
+        evidenceSnippet: "Apify returned zero active Meta Ads Library items for this precise planned source."
+      }
+    });
+  }
   return evidence({
     provider: "meta",
     status: "unknown",
@@ -2148,6 +2187,16 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       evidenceSnippet
     }
   });
+}
+
+function isPreciseApifyMetaSource(source = {}) {
+  if (source.plannedBy !== "ai") return false;
+  const strategy = String(source.strategy || "");
+  const searchType = String(source.searchType || "");
+  return searchType === "page" ||
+    /page|domain|facebook|instagram|url|handle/i.test(strategy) ||
+    /^https?:\/\//i.test(String(source.query || "")) ||
+    /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(String(source.query || ""));
 }
 
 function googleIdentityMatch({ text, context = {} }) {
