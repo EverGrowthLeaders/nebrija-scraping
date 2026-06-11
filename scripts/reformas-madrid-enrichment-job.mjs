@@ -64,6 +64,7 @@ if (isCliRun()) {
       requireDecisionMaker: args.requireDecisionMaker,
       maxDeepseekUsd: args.maxDeepseekUsd,
       maxDeepseekUsdPerBusiness: args.maxDeepseekUsdPerBusiness,
+      apifyFallbackMode: args.apifyFallbackMode,
       outputPath: args.out
     });
     if (report.failures.length) {
@@ -83,6 +84,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   const requireDecisionMaker = Boolean(options.requireDecisionMaker);
   const maxDeepseekUsd = numberOrNull(options.maxDeepseekUsd);
   const maxDeepseekUsdPerBusiness = numberOrNull(options.maxDeepseekUsdPerBusiness);
+  const apifyFallbackMode = normalizeApifyFallbackMode(options.apifyFallbackMode || config.adsEnrichment.apifyFallbackMode || "off");
   const outputPath = options.outputPath
     ? path.resolve(process.cwd(), options.outputPath)
     : path.resolve(process.cwd(), DEFAULT_OUT_DIR, `reformas-madrid-enrichment-${timestampForFile()}.json`);
@@ -129,7 +131,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   for (const [index, business] of selectedBusinesses.entries()) {
     const label = `${index + 1}/${selectedBusinesses.length} ${business.name}`;
     logger?.log?.(`\n[job] ${label}`);
-    const { apify, apifyStats } = createCountingApifyClient();
+    const { apify, apifyStats } = createCountingApifyClient(apifyFallbackMode);
     const startedAt = new Date().toISOString();
 
     try {
@@ -137,7 +139,8 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         business,
         firecrawl,
         apify,
-        country: "ES"
+        country: "ES",
+        apifyFallbackMode
       });
       const decisionMaker = await enrichDecisionMaker({
         business,
@@ -152,7 +155,8 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         apifyStats,
         deepseek,
         requireDecisionMaker,
-        maxDeepseekUsdPerBusiness
+        maxDeepseekUsdPerBusiness,
+        apifyFallbackMode
       });
       failures.push(...validationFailures);
       const row = {
@@ -187,10 +191,10 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
       logger?.error?.(JSON.stringify(failure, null, 2));
     }
 
-    await writeReport(outputPath, buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker }));
+    await writeReport(outputPath, buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode }));
   }
 
-  const report = buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker });
+  const report = buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode });
   report.outputPath = outputPath;
   await writeReport(outputPath, report);
   return report;
@@ -242,8 +246,7 @@ function contactsForBusiness(business = {}) {
   return contacts;
 }
 
-function createCountingApifyClient() {
-  const mode = config.adsEnrichment.apifyFallbackMode || "off";
+function createCountingApifyClient(mode = config.adsEnrichment.apifyFallbackMode || "off") {
   const stats = createApifyUsageStats(mode);
   if (mode === "off" || !config.apify.apiKey) return { apify: null, apifyStats: stats };
 
@@ -275,7 +278,7 @@ function createCountingApifyClient() {
   };
 }
 
-function validateOperationalResult({ business, ads, decisionMaker, apifyStats, deepseek, requireDecisionMaker, maxDeepseekUsdPerBusiness }) {
+function validateOperationalResult({ business, ads, decisionMaker, apifyStats, deepseek, requireDecisionMaker, maxDeepseekUsdPerBusiness, apifyFallbackMode }) {
   const label = business.name || "business";
   const failures = [];
   if (ads.discoveryPlan?.ai?.status !== "planned") {
@@ -339,7 +342,7 @@ function validateOperationalResult({ business, ads, decisionMaker, apifyStats, d
     });
   }
   const apify = summarizeApifyUsage(apifyStats);
-  if ((config.adsEnrichment.apifyFallbackMode || "off") === "off" && apify.totalCalls > 0) {
+  if ((apifyFallbackMode || config.adsEnrichment.apifyFallbackMode || "off") === "off" && apify.totalCalls > 0) {
     failures.push({
       business: label,
       area: "ads.apify",
@@ -422,7 +425,7 @@ function summarizeBusinessResult({ ads, decisionMaker, apifyStats, deepseek }) {
   };
 }
 
-function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker }) {
+function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode }) {
   const deepseek = summarizeDeepseekCostItems(
     results.flatMap((row) => (row.summary?.deepseek?.items || []).map((item) => ({
       ...item,
@@ -443,7 +446,8 @@ function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseek
       city: "Madrid",
       requestedLimit: limit,
       processedLimit: selectedBusinesses.length,
-      requireDecisionMaker
+      requireDecisionMaker,
+      apifyFallbackMode
     },
     summary: {
       processed: results.length,
@@ -452,7 +456,7 @@ function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseek
       metaActive: results.filter((row) => row.summary?.ads?.metaActive === true).length,
       googleActive: results.filter((row) => row.summary?.ads?.googleActive === true).length,
       decisionMakersFound: results.filter((row) => row.summary?.decisionMaker?.found === true).length,
-      apify: summarizeBatchApify(results),
+      apify: summarizeBatchApify(results, apifyFallbackMode),
       deepseek
     },
     failures: baseFailures,
@@ -462,7 +466,7 @@ function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseek
     report,
     expectedLimit: limit,
     requireDecisionMaker,
-    apifyFallbackMode: config.adsEnrichment.apifyFallbackMode,
+    apifyFallbackMode: apifyFallbackMode || config.adsEnrichment.apifyFallbackMode,
     requireAdsVerification: adsVerificationRequired(),
     requireDecisionMakerVerification: decisionMakerVerificationRequired()
   });
@@ -476,10 +480,10 @@ function isCliRun() {
   return process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 }
 
-function summarizeBatchApify(results) {
+function summarizeBatchApify(results, apifyFallbackMode = config.adsEnrichment.apifyFallbackMode || "off") {
   const calls = results.flatMap((row) => row.summary?.apify?.calls || []);
   return {
-    mode: config.adsEnrichment.apifyFallbackMode || "off",
+    mode: apifyFallbackMode,
     metaCalls: results.reduce((total, row) => total + (row.summary?.apify?.metaCalls || 0), 0),
     googleCalls: results.reduce((total, row) => total + (row.summary?.apify?.googleCalls || 0), 0),
     totalCalls: results.reduce((total, row) => total + (row.summary?.apify?.totalCalls || 0), 0),
@@ -536,6 +540,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--require-decision-maker") {
       parsed.requireDecisionMaker = true;
+    } else if (arg === "--apify-fallback-mode") {
+      parsed.apifyFallbackMode = argv[index + 1];
+      index += 1;
     }
   }
   return parsed;
@@ -550,6 +557,11 @@ function numberOrNull(value) {
   if (value == null || value === "") return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function normalizeApifyFallbackMode(value) {
+  const mode = String(value || "off").trim().toLowerCase();
+  return ["off", "on_unknown", "always"].includes(mode) ? mode : "off";
 }
 
 function isPersonalLinkedInUrl(value) {

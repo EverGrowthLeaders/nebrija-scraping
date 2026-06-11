@@ -649,6 +649,7 @@ const server = http.createServer(async (req, res) => {
               requireDecisionMaker: parseBoolean(json.requireDecisionMaker ?? json.require_decision_maker ?? false),
               maxDeepseekUsd: json.maxDeepseekUsd ?? json.max_deepseek_usd ?? 5,
               maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
+              apifyFallbackMode: json.apifyFallbackMode || json.apify_fallback_mode || config.adsEnrichment.apifyFallbackMode,
               outputPath: json.outputPath || json.output_path,
               logger: logger
             });
