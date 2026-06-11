@@ -642,25 +642,37 @@ const server = http.createServer(async (req, res) => {
         const testId = json.testId || json.test_id || `codex-${Date.now()}`;
 
         if (type === "reformas_madrid_enrichment" || type === "reformas-madrid-enrichment") {
-          const { runReformasMadridEnrichmentJob } = await import("../../../scripts/reformas-madrid-enrichment-job.mjs");
-          const report = await runReformasMadridEnrichmentJob({
-            limit: json.limit || json.requestedLimit || json.requested_limit || 100,
-            requireDecisionMaker: parseBoolean(json.requireDecisionMaker ?? json.require_decision_maker ?? false),
-            maxDeepseekUsd: json.maxDeepseekUsd ?? json.max_deepseek_usd ?? 5,
-            maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
-            outputPath: json.outputPath || json.output_path,
-            logger: logger
-          });
-          return sendJson(res, 200, {
-            testJob: {
-              type,
-              testId,
-              done: true,
-              ok: report.failures.length === 0,
-              reportPath: report.outputPath || null
-            },
-            report: compactReformasMadridReport(report)
-          });
+          try {
+            const { runReformasMadridEnrichmentJob } = await import("../../../scripts/reformas-madrid-enrichment-job.mjs");
+            const report = await runReformasMadridEnrichmentJob({
+              limit: json.limit || json.requestedLimit || json.requested_limit || 100,
+              requireDecisionMaker: parseBoolean(json.requireDecisionMaker ?? json.require_decision_maker ?? false),
+              maxDeepseekUsd: json.maxDeepseekUsd ?? json.max_deepseek_usd ?? 5,
+              maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
+              outputPath: json.outputPath || json.output_path,
+              logger: logger
+            });
+            return sendJson(res, 200, {
+              testJob: {
+                type,
+                testId,
+                done: true,
+                ok: report.failures.length === 0,
+                reportPath: report.outputPath || null
+              },
+              report: compactReformasMadridReport(report)
+            });
+          } catch (error) {
+            logger.error({ error, testId }, "reformas Madrid enrichment test job failed");
+            const statusCode = error.code === "missing_required_env" ? 400 : 500;
+            return sendJson(res, statusCode, {
+              error: "reformas_madrid_enrichment_failed",
+              code: error.code || "job_error",
+              message: error.message,
+              missing: error.missing || undefined,
+              testId
+            });
+          }
         }
 
         if (type === "business_crawl") {
