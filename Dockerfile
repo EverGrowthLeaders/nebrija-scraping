@@ -7,6 +7,7 @@ RUN npm install --omit=dev
 
 COPY apps ./apps
 COPY packages ./packages
+COPY scripts ./scripts
 
 ENV NODE_ENV=production
 
