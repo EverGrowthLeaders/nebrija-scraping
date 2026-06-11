@@ -1056,6 +1056,7 @@ function adAttempt(probe, result, url) {
     active: result.active,
     confidence: result.confidence,
     reason: result.reason,
+    error: result.error || null,
     sourceUrl: url,
     latestDetectedDate: result.latestDetectedDate || null,
     itemsSeen: result.itemsSeen ?? null,

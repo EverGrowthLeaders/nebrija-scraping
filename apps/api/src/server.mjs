@@ -1645,6 +1645,7 @@ function compactAdsAttempts(attempts = []) {
     status: attempt.status || null,
     active: attempt.active ?? null,
     reason: attempt.reason || null,
+    error: attempt.error || null,
     sourceUrl: attempt.sourceUrl || null,
     itemsSeen: attempt.itemsSeen ?? null,
     total: attempt.total ?? null,
