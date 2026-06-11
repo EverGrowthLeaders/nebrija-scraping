@@ -11,6 +11,9 @@
     "dev:worker": "node --watch apps/worker/src/index.mjs",
     "start:api": "node apps/api/src/server.mjs",
     "start:worker": "node apps/worker/src/index.mjs",
+    "job:reformas-madrid": "node scripts/reformas-madrid-enrichment-job.mjs",
+    "report:validate-enrichment": "node scripts/validate-enrichment-report.mjs",
+    "smoke:enrichment": "node scripts/enrichment-smoke.mjs",
     "test": "node --test tests/*.test.mjs"
   },
   "dependencies": {

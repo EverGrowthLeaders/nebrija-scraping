@@ -56,8 +56,24 @@ export const config = {
     runTimeoutSecs: intFromEnv("APIFY_RUN_TIMEOUT_SECS", 90),
     maxChargedResults: intFromEnv("APIFY_MAX_CHARGED_RESULTS", 10)
   },
+  adsEnrichment: {
+    apifyFallbackMode: process.env.ADS_APIFY_FALLBACK_MODE || "off"
+  },
+  adsActivityAi: {
+    provider: "deepinfra",
+    mode: process.env.ADS_ACTIVITY_AI_MODE || "always",
+    apiKey: process.env.DEEPINFRA_API_KEY || "",
+    baseUrl: trimTrailingSlash(process.env.DEEPINFRA_BASE_URL || "https://api.deepinfra.com/v1/openai"),
+    model: process.env.ADS_ACTIVITY_AI_MODEL || process.env.ADS_FUNNEL_AI_MODEL || "deepseek-ai/DeepSeek-V4-Flash",
+    verifyMode: process.env.ADS_ACTIVITY_AI_VERIFY_MODE || "always",
+    requirePlannedEvidence: process.env.ADS_ACTIVITY_AI_REQUIRE_PLANNED_EVIDENCE == null || process.env.ADS_ACTIVITY_AI_REQUIRE_PLANNED_EVIDENCE === ""
+      ? undefined
+      : boolFromEnv("ADS_ACTIVITY_AI_REQUIRE_PLANNED_EVIDENCE", true),
+    requestTimeoutMs: intFromEnv("ADS_ACTIVITY_AI_REQUEST_TIMEOUT_MS", 45000),
+    maxEvidenceChars: intFromEnv("ADS_ACTIVITY_AI_MAX_EVIDENCE_CHARS", 22000)
+  },
   adsFunnelAi: {
-    provider: process.env.ADS_FUNNEL_AI_PROVIDER || "deepinfra",
+    provider: "deepinfra",
     mode: process.env.ADS_FUNNEL_AI_MODE || "always",
     apiKey: process.env.DEEPINFRA_API_KEY || "",
     baseUrl: trimTrailingSlash(process.env.DEEPINFRA_BASE_URL || "https://api.deepinfra.com/v1/openai"),
@@ -67,11 +83,15 @@ export const config = {
     maxVisibleTextChars: intFromEnv("ADS_FUNNEL_AI_MAX_VISIBLE_TEXT_CHARS", 9000)
   },
   decisionMakerAi: {
-    provider: process.env.DECISION_MAKER_AI_PROVIDER || "deepinfra",
-    mode: process.env.DECISION_MAKER_AI_MODE || "ambiguous",
-    apiKey: process.env.DECISION_MAKER_AI_API_KEY || process.env.DEEPINFRA_API_KEY || "",
-    baseUrl: trimTrailingSlash(process.env.DECISION_MAKER_AI_BASE_URL || process.env.DEEPINFRA_BASE_URL || "https://api.deepinfra.com/v1/openai"),
+    provider: "deepinfra",
+    mode: process.env.DECISION_MAKER_AI_MODE || "always",
+    apiKey: process.env.DEEPINFRA_API_KEY || "",
+    baseUrl: trimTrailingSlash(process.env.DEEPINFRA_BASE_URL || "https://api.deepinfra.com/v1/openai"),
     model: process.env.DECISION_MAKER_AI_MODEL || "deepseek-ai/DeepSeek-V4-Flash",
+    verifyMode: process.env.DECISION_MAKER_AI_VERIFY_MODE || "always",
+    requirePlannedSearch: process.env.DECISION_MAKER_AI_REQUIRE_PLANNED_SEARCH == null || process.env.DECISION_MAKER_AI_REQUIRE_PLANNED_SEARCH === ""
+      ? undefined
+      : boolFromEnv("DECISION_MAKER_AI_REQUIRE_PLANNED_SEARCH", true),
     requestTimeoutMs: intFromEnv("DECISION_MAKER_AI_REQUEST_TIMEOUT_MS", 30000),
     maxEvidenceChars: intFromEnv("DECISION_MAKER_AI_MAX_EVIDENCE_CHARS", 12000)
   },

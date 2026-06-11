@@ -52,40 +52,111 @@ CRAWLER_PROVIDER=firecrawl
 
 Si tu despliegue expone Firecrawl sin `/v2`, cambia `FIRECRAWL_BASE_URL` al path real que acepte `/map`, `/scrape` y `/search`.
 
-## Clasificacion de funnel Ads con IA
+## Actividad Ads con IA
 
-El enriquecimiento de Ads limpia la landing con Firecrawl y genera un paquete
-compacto de evidencias: texto visible, CTAs, formularios, links clave,
-tecnologias detectadas y senales deterministas. Ese JSON se envia a DeepInfra
-con DeepSeek V4 Flash para decidir si el trafico apunta a captacion de leads,
-ecommerce u otro objetivo.
+El enriquecimiento de Ads primero pide a DeepSeek V4 Flash un plan de
+descubrimiento: queries de Firecrawl, probes de Meta Ads Library y URLs oficiales
+de Google Ads Transparency Center que debe inspeccionar para ese negocio. Ese
+plan dirige la recogida de evidencia. En modo productivo estricto, si DeepSeek no
+devuelve un plan valido, no se inspeccionan Meta/Google Ads Library y el resultado
+queda como `unknown`.
+
+Firecrawl ejecuta ese plan y, opcionalmente, Apify solo aporta evidencia: URLs
+consultadas, snippets, IDs, dominios, landings y matches posibles. La decision
+final `active=true/false/null` siempre la toma DeepSeek V4 Flash en DeepInfra con
+un paquete de evidencia cerrado. Para aceptar `active=true` o `active=false`, la
+respuesta de DeepSeek debe apuntar a evidencia existente por `selectedAttemptIds`
+o `sourceUrl`, y debe incluir `active` + `status` coherentes; una conclusion sin
+respaldo trazable o con campos incompletos queda como `unknown`. En produccion,
+esa evidencia tambien debe venir de una fuente `plannedBy=ai` del plan DeepSeek;
+si solo viene de semillas locales, queda como `unknown`. Si no hay IA
+configurada, el sistema no verifica anuncios por heuristica y devuelve `unknown`.
+
+Por defecto, cada decision booleana de Ads pasa por una segunda llamada de
+auditoria DeepSeek (`ADS_ACTIVITY_AI_VERIFY_MODE=always`). Esa auditoria solo
+puede confirmar o invalidar la decision propuesta; si discrepa, falla o necesita
+mas evidencia, el proveedor queda como `unknown` y no se escribe `true/false` en
+las columnas operativas.
+
+Las columnas operativas `ads_meta_active` y `ads_google_active` solo se escriben
+con `true/false` cuando el proveedor tiene `ai.status=resolved` y
+`ai.verification.status=confirmed`; cualquier resultado sin IA resuelta y
+auditada se persiste como `null`. El JSON `ads_enrichment` tambien se sanitiza:
+si llega un booleano no auditado, se convierte a `unknown` antes de guardarse.
 
 ```env
 DEEPINFRA_API_KEY=...
-ADS_FUNNEL_AI_PROVIDER=deepinfra
+ADS_ACTIVITY_AI_MODEL=deepseek-ai/DeepSeek-V4-Flash
+ADS_ACTIVITY_AI_MODE=always
+ADS_ACTIVITY_AI_VERIFY_MODE=always
+ADS_ACTIVITY_AI_REQUIRE_PLANNED_EVIDENCE=true
+ADS_ACTIVITY_AI_MAX_EVIDENCE_CHARS=22000
+ADS_ACTIVITY_AI_REQUEST_TIMEOUT_MS=45000
+ADS_APIFY_FALLBACK_MODE=off
+```
+
+`ADS_APIFY_FALLBACK_MODE` admite:
+
+- `off`: no usa Apify aunque exista `APIFY_API_KEY`.
+- `on_unknown`: usa Apify solo si DeepSeek queda en `unknown` con Firecrawl.
+- `always`: recoge evidencia Apify siempre, pero DeepSeek sigue decidiendo.
+
+Cuando Apify esta habilitado, Meta usa primero las fuentes `plannedBy=ai` del
+plan de descubrimiento DeepSeek. Las semillas locales quedan como respaldo
+deduplicado para no aumentar llamadas de pago sin necesidad. Si el plan de
+descubrimiento DeepSeek falla o queda solo en semilla, Apify no se ejecuta aunque
+`ADS_APIFY_FALLBACK_MODE=always`.
+
+Las respuestas IA guardan `usage` y `cost` estimado con precios DeepSeek V4
+Flash: $0.10/M tokens de entrada, $0.20/M tokens de salida y $0.02/M tokens de
+entrada cacheada. Esto queda en `discoveryPlan.ai.cost`, `meta.ai.cost`,
+`meta.ai.verification.cost`, `google.ai.cost`, `google.ai.verification.cost`,
+`classification.ai.cost`, `decision_maker.searchPlan.ai.cost` y
+`decision_maker.ai.cost`/`decision_maker.ai.verification.cost` cuando el
+proveedor devuelve usage.
+
+## Clasificacion de funnel Ads con IA
+
+Despues de verificar actividad Ads, el sistema limpia la landing con Firecrawl y
+genera otro paquete compacto de evidencias: texto visible, CTAs, formularios,
+links clave, tecnologias detectadas y senales deterministas. Ese JSON se envia a
+DeepInfra con DeepSeek V4 Flash para decidir si el trafico apunta a captacion de
+leads, ecommerce u otro objetivo.
+
+```env
 ADS_FUNNEL_AI_MODEL=deepseek-ai/DeepSeek-V4-Flash
 ADS_FUNNEL_AI_MODE=always
 ADS_FUNNEL_AI_MAX_EVIDENCE_CHARS=18000
 ADS_FUNNEL_AI_MAX_VISIBLE_TEXT_CHARS=9000
 ```
 
-Si `DEEPINFRA_API_KEY` no esta configurada, el sistema mantiene el clasificador
-determinista local como fallback para no bloquear el enriquecimiento.
+Si `DEEPINFRA_API_KEY` no esta configurada, falla la llamada o la respuesta no es
+valida, la clasificacion de funnel queda en `unknown` con `ai.status` auditado.
+Las senales deterministas se conservan solo como evidencia enviada a DeepSeek;
+no deciden el resultado final.
 
 ## Enriquecimiento de decisor con LinkedIn
 
 Tras crear leads desde Google Places, el worker encola `decision-maker-enrichment`.
-La busqueda usa un Google dork quirurgico contra perfiles personales de LinkedIn:
+DeepSeek V4 Flash planifica primero las queries que Firecrawl debe lanzar contra
+Google/LinkedIn, usando nombre, marca limpia, ciudad, nicho, web y contactos ya
+extraidos. La semilla sigue incluyendo un Google dork quirurgico contra perfiles
+personales de LinkedIn:
 
 ```text
 site:linkedin.com/in/ "Nombre Comercial" "Ciudad"
 ```
 
+La ciudad mejora la precision, pero ya no bloquea el enriquecimiento: si falta,
+el sistema busca por marca/nombre sin generar queries vacias y la decision final
+sigue quedando en DeepSeek.
+
 El modulo limpia sufijos societarios comunes (`S.L.`, `S.A.`, etc.) y tambien
 recorta descriptores largos tipo `Empresa de...` para buscar primero la marca
-comercial. Lanza busquedas escalonadas contra perfiles personales `/in/`, paginas
-de empresa `/company/` y, cuando aparecen candidatos, queries adicionales por
-persona. El resultado se guarda en `custom_fields.decision_maker`.
+comercial. DeepSeek planifica las queries; Firecrawl las ejecuta contra perfiles
+personales `/in/`, paginas de empresa `/company/` y, cuando aparecen candidatos,
+queries adicionales por persona. Cada resultado conserva `plannedBy` y
+`discoveryReason`. El resultado se guarda en `custom_fields.decision_maker`.
 
 El enriquecimiento separa tres niveles operativos:
 
@@ -93,20 +164,104 @@ El enriquecimiento separa tres niveles operativos:
 - `candidate`: persona relacionada, pero con evidencia insuficiente para tratarla como decisor.
 - `access_contact`: sin persona verificable; se recomienda el mejor telefono/email/social/LinkedIn empresa disponible.
 
-Si hay varios candidatos plausibles o solo hay contactos de acceso, DeepSeek V4
-Flash en DeepInfra resuelve con un paquete de evidencia cerrado: queries, titulos,
-snippets, LinkedIn empresa y contactos ya extraidos. No debe inventar datos.
+DeepSeek V4 Flash en DeepInfra resuelve siempre con un paquete de evidencia
+cerrado: plan de busqueda, queries, resultados brutos de busqueda, titulos,
+snippets, candidatos, LinkedIn empresa y contactos ya extraidos. No debe
+inventar datos. Si la IA no esta configurada, el sistema no marca un decisor
+como `verified`; deja el caso como contacto de acceso o no encontrado con
+`ai_required_but_unavailable`. La respuesta debe incluir `found` y
+`decisionStatus` explicitamente; si faltan o se contradicen, se trata como
+respuesta invalida.
+
+Cuando la resolucion propone `found=true`, otra llamada DeepSeek de auditoria
+revisa la decision (`DECISION_MAKER_AI_VERIFY_MODE=always`). Solo conserva
+`verified` si confirma que la URL es un perfil personal `/in/` y que titulo o
+snippet conectan a la persona con el negocio y un rol decisor. Ademas, en
+produccion el resultado seleccionado debe venir de una query `plannedBy=ai`; si
+sale solo de una query semilla local, queda como `candidate`. Si rechaza, queda
+como `candidate`/`access_contact` y no se guarda como decisor verificado.
+El worker solo crea contactos operativos `linkedin_decision_maker`,
+`decision_maker_name` y `decision_maker_role` si esa auditoria esta confirmada.
+La entrada `custom_fields.decision_maker` tambien se sanitiza antes de guardar:
+un `found=true` no auditado pasa a `candidate` con el perfil original solo como
+`unverifiedDecisionMaker`.
 
 ```env
 DEEPINFRA_API_KEY=...
-DECISION_MAKER_AI_PROVIDER=deepinfra
 DECISION_MAKER_AI_MODEL=deepseek-ai/DeepSeek-V4-Flash
-DECISION_MAKER_AI_MODE=ambiguous
+DECISION_MAKER_AI_MODE=always
+DECISION_MAKER_AI_VERIFY_MODE=always
+DECISION_MAKER_AI_REQUIRE_PLANNED_SEARCH=true
 DECISION_MAKER_AI_MAX_EVIDENCE_CHARS=12000
 ```
 
-Si no hay clave de DeepInfra, el enriquecimiento mantiene el ranking
-determinista como fallback.
+Smoke real con expectativas:
+
+```bash
+npm run smoke:enrichment -- --cases ./smoke-cases.json
+```
+
+Formato minimo:
+
+```json
+[
+  {
+    "name": "Clinica Demo",
+    "city": "Madrid",
+    "website": "https://example.com",
+    "expectedAds": {
+      "metaActive": true,
+      "googleActive": false,
+      "funnelType": "lead_generation",
+      "maxApifyCalls": 0
+    },
+    "maxDeepseekUsd": 0.02,
+    "expectedDecisionMaker": {
+      "found": true,
+      "linkedinUrl": "https://www.linkedin.com/in/persona-demo",
+      "fullName": "Persona Demo"
+    }
+  }
+]
+```
+
+El smoke falla si faltan expectativas, si Meta/Google no coinciden, si DeepSeek
+queda sin resolver, si el funnel esperado no coincide o si el perfil esperado
+del decisor no coincide. Tambien falla si Apify se usa con
+`ADS_APIFY_FALLBACK_MODE=off` o si supera `maxApifyCalls`,
+`maxMetaApifyCalls` o `maxGoogleApifyCalls`. Tambien puede fallar por
+presupuesto DeepSeek con `maxDeepseekUsd`. `city` mejora la prueba, pero no es
+obligatoria.
+
+Job real de 100 empresas de reformas en Madrid:
+
+```bash
+npm run job:reformas-madrid -- --limit 100 --max-deepseek-usd 5
+```
+
+Este runner no depende de API/worker/Redis: descubre empresas con Google Places,
+ejecuta Ads + decisor directamente con Firecrawl y DeepSeek, y escribe un informe
+JSON en `reports/`. Falla si Meta o Google no quedan resueltos por IA con un
+booleano, si el funnel de anuncios activos no lo clasifica DeepSeek, si el
+decisor no queda resuelto por IA, si Apify se usa estando desactivado o si se
+supera el presupuesto DeepSeek. Antes de declarar PASS tambien valida que el
+informe tenga exactamente 100 filas unicas de reformas en Madrid, sin duplicados,
+con auditoria DeepSeek confirmada en Ads y decisor, y con resumen de coste
+DeepSeek. Usa `--require-decision-maker` para exigir que los 100 tengan perfil
+personal de LinkedIn verificado.
+
+Revalidar un informe ya generado sin gastar nuevas llamadas:
+
+```bash
+npm run report:validate-enrichment -- \
+  --report reports/reformas-madrid-enrichment.json \
+  --expected-limit 100 \
+  --max-deepseek-usd 5
+```
+
+Este comando falla si el JSON contiene fallos embebidos, filas incompletas,
+duplicados, Ads/decisor sin auditoria confirmada, Apify usado en modo `off` o
+coste DeepSeek por encima del presupuesto.
 
 ## Flujo principal
 
@@ -172,8 +327,9 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `FIRECRAWL_BASE_URL`
 - `FIRECRAWL_API_KEY`
-- `APIFY_API_KEY` opcional; fallback de bajo consumo para validar Meta Ads cuando la Ad Library bloquea Firecrawl
-- `DEEPINFRA_API_KEY` para clasificar landings Ads con DeepSeek V4 Flash
+- `APIFY_API_KEY` opcional; solo se usa si `ADS_APIFY_FALLBACK_MODE` no es `off`
+- `ADS_APIFY_FALLBACK_MODE` para controlar gasto Apify: `off`, `on_unknown` o `always`
+- `DEEPINFRA_API_KEY` para resolver actividad Ads, landings Ads y decisor con DeepSeek V4 Flash
 - `GOOGLE_MAPS_API_KEY`
 - `NEBRIJA_API_KEY`
 - `NEBRIJA_ASSISTANT_ID`
@@ -189,6 +345,16 @@ Health interno:
 ```bash
 curl http://localhost:3100/api/test-jobs/health \
   -H "x-api-key: $TEST_JOBS_API_KEY"
+```
+
+Lanzar el batch real de 100 empresas de reformas en Madrid desde el entorno
+desplegado, usando las API keys configuradas ahi:
+
+```bash
+curl -X POST http://localhost:3100/api/test-jobs \
+  -H "content-type: application/json" \
+  -H "x-api-key: $TEST_JOBS_API_KEY" \
+  -d '{"type":"reformas_madrid_enrichment","limit":100,"maxDeepseekUsd":5}'
 ```
 
 Lanzar crawl real con Firecrawl:

@@ -1,5 +1,7 @@
 import { query, withTransaction } from "./db.mjs";
 import { config } from "./config.mjs";
+import { adsEnrichmentForStorage, aiBackedAdsActiveForStorage } from "./adsStoragePolicy.mjs";
+import { decisionMakerEnrichmentForStorage } from "./decisionMakerStoragePolicy.mjs";
 import { DEFAULT_SCORING_RULES, normalizeScoringRules } from "./scoring.mjs";
 
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
@@ -647,6 +649,7 @@ export async function updateBusinessEnrichment({ businessId, patch }) {
 }
 
 export async function updateBusinessDecisionMaker({ businessId, tenantId = DEFAULT_TENANT_ID, enrichment }) {
+  const storedEnrichment = decisionMakerEnrichmentForStorage(enrichment);
   const result = await query(
     `UPDATE businesses
         SET custom_fields = jsonb_set(
@@ -662,7 +665,7 @@ export async function updateBusinessDecisionMaker({ businessId, tenantId = DEFAU
             updated_at = NOW()
       WHERE id = $1 AND tenant_id = $2
       RETURNING *`,
-    [businessId, tenantId, enrichment || {}]
+    [businessId, tenantId, storedEnrichment]
   );
   return result.rows[0] || null;
 }
@@ -717,10 +720,11 @@ export async function createManualBusiness({
 }
 
 export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrichment }) {
-  const checkedAt = enrichment?.checkedAt ? new Date(enrichment.checkedAt) : new Date();
-  const classification = enrichment?.classification || {};
+  const storedEnrichment = adsEnrichmentForStorage(enrichment);
+  const checkedAt = storedEnrichment?.checkedAt ? new Date(storedEnrichment.checkedAt) : new Date();
+  const classification = storedEnrichment?.classification || {};
   const classifiedAt = classification.checkedAt ? new Date(classification.checkedAt) : checkedAt;
-  const metaEstimate = enrichment?.meta?.spendEstimate || null;
+  const metaEstimate = storedEnrichment?.meta?.spendEstimate || null;
   const estimateCheckedAt = metaEstimate?.checkedAt ? new Date(metaEstimate.checkedAt) : checkedAt;
   const result = await query(
     `UPDATE businesses
@@ -751,10 +755,10 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
     [
       businessId,
       tenantId,
-      enrichment?.meta?.active ?? null,
-      enrichment?.google?.active ?? null,
+      aiBackedAdsActiveForStorage(storedEnrichment?.meta),
+      aiBackedAdsActiveForStorage(storedEnrichment?.google),
       checkedAt,
-      enrichment || {},
+      storedEnrichment,
       classification.type || null,
       classification.confidence ?? null,
       classification.landingUrl || null,

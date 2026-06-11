@@ -1,4 +1,5 @@
 import { config } from "./config.mjs";
+import { estimateDeepseekUsageCost } from "./aiUsage.mjs";
 
 const DEFAULT_MAX_PAGES = 2;
 const DEFAULT_MAX_VISIBLE_TEXT_CHARS = 9000;
@@ -433,8 +434,6 @@ export function classifyLandingPage({ url, page = {}, business = {}, candidate =
 
 async function classifyLandingPageForAds({ url, page = {}, business = {}, candidate = {}, aiClassifier, aiConfig = config.adsFunnelAi } = {}) {
   const deterministic = classifyLandingPage({ url, page, business, candidate });
-  if (!shouldUseAiClassifier({ deterministic, aiClassifier, aiConfig })) return deterministic;
-
   const evidence = buildLandingEvidencePack({
     url,
     page,
@@ -444,6 +443,9 @@ async function classifyLandingPageForAds({ url, page = {}, business = {}, candid
     maxVisibleTextChars: aiConfig?.maxVisibleTextChars || DEFAULT_MAX_VISIBLE_TEXT_CHARS,
     maxEvidenceChars: aiConfig?.maxEvidenceChars || DEFAULT_MAX_EVIDENCE_CHARS
   });
+  if (!canUseAiClassifier({ aiClassifier, aiConfig })) {
+    return aiRequiredLandingClassification({ deterministic, evidence, aiConfig });
+  }
 
   try {
     const rawResult = aiClassifier
@@ -451,27 +453,13 @@ async function classifyLandingPageForAds({ url, page = {}, business = {}, candid
       : await classifyLandingWithDeepInfra({ evidence, aiConfig });
     return mergeAiClassification({ deterministic, rawResult, evidence, aiConfig });
   } catch (error) {
-    return {
-      ...deterministic,
-      ai: {
-        status: "failed",
-        provider: aiConfig?.provider || "deepinfra",
-        model: aiConfig?.model || null,
-        error: error.message,
-        evidenceChars: JSON.stringify(evidence).length
-      }
-    };
+    return aiFailedLandingClassification({ deterministic, evidence, aiConfig, error });
   }
 }
 
-function shouldUseAiClassifier({ deterministic, aiClassifier, aiConfig }) {
+function canUseAiClassifier({ aiClassifier, aiConfig }) {
   if (aiClassifier) return true;
-  if (!aiConfig || aiConfig.mode === "never" || aiConfig.provider !== "deepinfra" || !aiConfig.apiKey) return false;
-  if (aiConfig.mode === "always") return true;
-  const scores = deterministic?.scores || {};
-  const values = [scores.lead_generation || 0, scores.ecommerce || 0, scores.other || 0].sort((a, b) => b - a);
-  const gap = (values[0] || 0) - (values[1] || 0);
-  return deterministic?.type === "other" || deterministic?.confidence < 0.82 || gap < 2.2;
+  return Boolean(aiConfig && aiConfig.mode !== "never" && aiConfig.provider === "deepinfra" && aiConfig.apiKey);
 }
 
 export function buildLandingEvidencePack({
@@ -633,15 +621,7 @@ async function postDeepInfraJson({ baseUrl, apiKey, body, timeoutMs }) {
 function mergeAiClassification({ deterministic, rawResult, evidence, aiConfig }) {
   const result = normalizeAiClassification(rawResult);
   if (!result) {
-    return {
-      ...deterministic,
-      ai: {
-        status: "invalid_response",
-        provider: aiConfig?.provider || "deepinfra",
-        model: aiConfig?.model || null,
-        evidenceChars: JSON.stringify(evidence).length
-      }
-    };
+    return aiInvalidLandingClassification({ deterministic, rawResult, evidence, aiConfig });
   }
   const primarySignal = {
     target: result.type,
@@ -681,8 +661,63 @@ function mergeAiClassification({ deterministic, rawResult, evidence, aiConfig })
       deterministicType: deterministic.type,
       deterministicConfidence: deterministic.confidence,
       summary: result.summary || null,
-      usage: rawResult?.usage || null
+      usage: rawResult?.usage || null,
+      cost: estimateDeepseekUsageCost(rawResult?.usage)
     }
+  };
+}
+
+function aiRequiredLandingClassification({ deterministic = {}, evidence, aiConfig } = {}) {
+  return unknownAiLandingClassification({
+    deterministic,
+    reason: "ai_required_but_unavailable",
+    ai: landingAiMetadata({ status: "required_unavailable", deterministic, evidence, aiConfig })
+  });
+}
+
+function aiFailedLandingClassification({ deterministic = {}, evidence, aiConfig, error } = {}) {
+  return unknownAiLandingClassification({
+    deterministic,
+    reason: "ai_classification_failed",
+    ai: {
+      ...landingAiMetadata({ status: "failed", deterministic, evidence, aiConfig }),
+      error: error.message
+    }
+  });
+}
+
+function aiInvalidLandingClassification({ deterministic = {}, rawResult, evidence, aiConfig } = {}) {
+  return unknownAiLandingClassification({
+    deterministic,
+    reason: "ai_invalid_response",
+    ai: landingAiMetadata({ status: "invalid_response", deterministic, evidence, aiConfig, rawResult })
+  });
+}
+
+function unknownAiLandingClassification({ deterministic = {}, reason, ai } = {}) {
+  return {
+    ...deterministic,
+    type: "unknown",
+    confidence: 0.2,
+    reason,
+    scores: { lead_generation: 0, ecommerce: 0, other: 0 },
+    signals: [],
+    ai
+  };
+}
+
+function landingAiMetadata({ status, deterministic = {}, evidence, aiConfig, rawResult } = {}) {
+  return {
+    status,
+    provider: aiConfig?.provider || "deepinfra",
+    model: aiConfig?.model || null,
+    evidenceChars: JSON.stringify(evidence || {}).length,
+    deterministicType: deterministic.type || null,
+    deterministicConfidence: deterministic.confidence ?? null,
+    deterministicReason: deterministic.reason || null,
+    deterministicScores: deterministic.scores || null,
+    usage: rawResult?.usage || null,
+    cost: estimateDeepseekUsageCost(rawResult?.usage)
   };
 }
 

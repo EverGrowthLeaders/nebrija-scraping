@@ -600,6 +600,33 @@ const server = http.createServer(async (req, res) => {
           googlePlaces: {
             apiKeyConfigured: Boolean(config.google.apiKey)
           },
+          deepinfra: {
+            apiKeyConfigured: Boolean(config.adsActivityAi.apiKey || config.adsFunnelAi.apiKey || config.decisionMakerAi.apiKey),
+            adsActivity: {
+              provider: config.adsActivityAi.provider,
+              model: config.adsActivityAi.model,
+              mode: config.adsActivityAi.mode,
+              verifyMode: config.adsActivityAi.verifyMode,
+              apiKeyConfigured: Boolean(config.adsActivityAi.apiKey)
+            },
+            adsFunnel: {
+              provider: config.adsFunnelAi.provider,
+              model: config.adsFunnelAi.model,
+              mode: config.adsFunnelAi.mode,
+              apiKeyConfigured: Boolean(config.adsFunnelAi.apiKey)
+            },
+            decisionMaker: {
+              provider: config.decisionMakerAi.provider,
+              model: config.decisionMakerAi.model,
+              mode: config.decisionMakerAi.mode,
+              verifyMode: config.decisionMakerAi.verifyMode,
+              apiKeyConfigured: Boolean(config.decisionMakerAi.apiKey)
+            }
+          },
+          apify: {
+            fallbackMode: config.adsEnrichment.apifyFallbackMode,
+            apiKeyConfigured: Boolean(config.apify.apiKey)
+          },
           nebrija: {
             apiKeyConfigured: Boolean(config.nebrija.apiKey),
             assistantConfigured: Boolean(config.nebrija.assistantId),
@@ -613,6 +640,28 @@ const server = http.createServer(async (req, res) => {
         const { json } = await readJson(req);
         const type = json.type || json.kind || "business_crawl";
         const testId = json.testId || json.test_id || `codex-${Date.now()}`;
+
+        if (type === "reformas_madrid_enrichment" || type === "reformas-madrid-enrichment") {
+          const { runReformasMadridEnrichmentJob } = await import("../../../scripts/reformas-madrid-enrichment-job.mjs");
+          const report = await runReformasMadridEnrichmentJob({
+            limit: json.limit || json.requestedLimit || json.requested_limit || 100,
+            requireDecisionMaker: parseBoolean(json.requireDecisionMaker ?? json.require_decision_maker ?? false),
+            maxDeepseekUsd: json.maxDeepseekUsd ?? json.max_deepseek_usd ?? 5,
+            maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
+            outputPath: json.outputPath || json.output_path,
+            logger: logger
+          });
+          return sendJson(res, 200, {
+            testJob: {
+              type,
+              testId,
+              done: true,
+              ok: report.failures.length === 0,
+              reportPath: report.outputPath || null
+            },
+            report: compactReformasMadridReport(report)
+          });
+        }
 
         if (type === "business_crawl") {
           const website = json.website || "https://example.com";
@@ -801,7 +850,7 @@ const server = http.createServer(async (req, res) => {
 
         return sendJson(res, 400, {
           error: "unsupported_test_job_type",
-          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign"]
+          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign", "reformas_madrid_enrichment"]
         });
       }
 
@@ -1121,6 +1170,8 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
   const fields = Array.isArray(detail?.matchedFields) ? detail.matchedFields : [];
   const active = storedActive === true || detail?.active === true;
   const reasons = [];
+  const aiResolved = detail?.ai?.status === "resolved";
+  const aiVerified = detail?.ai?.verification?.status === "confirmed";
   const googleHasIdentity = fields.some((field) => ["domain", "landing_domain", "business_name", "brand_domain"].includes(field));
   const metaHasDomain = fields.includes("domain");
   const metaHasPageName = fields.includes("page_name");
@@ -1145,6 +1196,8 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
   }
   if (active && detail?.reason === "generic_ad_library_copy") reasons.push("generic_ad_library_copy");
   if (active && !detail?.sourceUrl) reasons.push("missing_source_url");
+  if (active && !aiResolved) reasons.push("active_without_ai_resolution");
+  if (active && !aiVerified) reasons.push("active_without_ai_verification");
 
   const weakAttempts = attempts.filter((attempt) => attempt?.active === true && isWeakAttempt(provider, attempt));
   if (weakAttempts.length) reasons.push(`${weakAttempts.length}_weak_active_attempts`);
@@ -1155,6 +1208,7 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
     status: detail?.status || null,
     confidence: detail?.confidence ?? null,
     reason: detail?.reason || null,
+    ai: detail?.ai || null,
     sourceProvider: detail?.sourceProvider || null,
     strategy: detail?.strategy || null,
     query: detail?.query || null,
@@ -1204,6 +1258,8 @@ function auditGoogleSourceIsVerified(detail = {}) {
 function compactAdAttempt(attempt = {}) {
   return {
     sourceProvider: attempt.sourceProvider || null,
+    plannedBy: attempt.plannedBy || null,
+    discoveryReason: attempt.discoveryReason || null,
     strategy: attempt.strategy || null,
     query: attempt.query || null,
     country: attempt.country || null,
@@ -1534,6 +1590,32 @@ function parseBoolean(value) {
   if (typeof value === "number") return value !== 0;
   if (typeof value === "string") return ["1", "true", "yes", "on", "si", "sí"].includes(value.trim().toLowerCase());
   return false;
+}
+
+function compactReformasMadridReport(report = {}) {
+  return {
+    generatedAt: report.generatedAt,
+    outputPath: report.outputPath || null,
+    target: report.target || null,
+    status: report.status || (report.failures?.length ? "failed" : "passed"),
+    summary: report.summary || null,
+    failures: (report.failures || []).slice(0, 100),
+    results: (report.results || []).map((row) => ({
+      index: row.index,
+      ok: row.ok === true,
+      business: {
+        name: row.business?.name || null,
+        website: row.business?.website || null,
+        phone: row.business?.phone || null,
+        city: row.business?.city || null,
+        address: row.business?.address || null
+      },
+      failures: row.failures || [],
+      summary: row.summary || null,
+      startedAt: row.startedAt || null,
+      finishedAt: row.finishedAt || null
+    }))
+  };
 }
 
 function verifyWebhookSignature(raw, headers, secret) {

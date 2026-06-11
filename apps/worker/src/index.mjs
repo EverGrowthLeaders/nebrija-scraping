@@ -11,6 +11,7 @@ import { buildVariableValues } from "../../../packages/core/src/leadVariables.mj
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
 import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
 import { enrichDecisionMaker } from "../../../packages/core/src/decisionMakerEnrichment.mjs";
+import { verifiedDecisionMakerForStorage } from "../../../packages/core/src/decisionMakerStoragePolicy.mjs";
 import { explainLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
 import {
   createCrawlerRun,
@@ -72,6 +73,11 @@ logger.info(
     queues: Object.values(QUEUE_NAMES),
     firecrawlBaseUrl: config.firecrawl.baseUrl,
     apifyMetaAdsEnabled: apify.enabled,
+    adsApifyFallbackMode: config.adsEnrichment.apifyFallbackMode,
+    adsActivityAiMode: config.adsActivityAi.mode,
+    adsActivityAiModel: config.adsActivityAi.model,
+    decisionMakerAiMode: config.decisionMakerAi.mode,
+    decisionMakerAiModel: config.decisionMakerAi.model,
     crawlerProvider: config.crawler.provider
   },
   "worker started"
@@ -442,10 +448,10 @@ async function runDecisionMakerEnrichment(job) {
   });
   if (!updated) throw new Error(`business decision maker update failed: ${business.id}`);
 
-  const decisionMaker = enrichment.decisionMaker || {};
+  const decisionMaker = verifiedDecisionMakerForStorage(enrichment) || {};
   const linkedinCompany = enrichment.linkedinCompany || {};
   const recommendedAccessContact = enrichment.recommendedAccessContact || {};
-  if (enrichment.found && decisionMaker.linkedinUrl) {
+  if (decisionMaker.linkedinUrl) {
     await upsertContact({
       businessId: business.id,
       kind: "linkedin_decision_maker",
