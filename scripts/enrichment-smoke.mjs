@@ -136,11 +136,15 @@ function normalizeCases(value) {
 
 function requiredEnv() {
   const missing = [];
-  if (!config.firecrawl.apiKey) missing.push("FIRECRAWL_API_KEY");
+  if (requiresFirecrawlApiKey() && !config.firecrawl.apiKey) missing.push("FIRECRAWL_API_KEY");
   if (!config.adsActivityAi.apiKey) missing.push("DEEPINFRA_API_KEY");
   if (!config.adsFunnelAi.apiKey) missing.push("DEEPINFRA_API_KEY");
   if (!config.decisionMakerAi.apiKey) missing.push("DEEPINFRA_API_KEY");
   return [...new Set(missing)];
+}
+
+function requiresFirecrawlApiKey() {
+  return /(^https?:\/\/)?api\.firecrawl\.dev\b/i.test(String(config.firecrawl.baseUrl || ""));
 }
 
 function normalizeBusiness(smokeCase = {}) {

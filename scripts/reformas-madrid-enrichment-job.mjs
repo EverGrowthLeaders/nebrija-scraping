@@ -507,11 +507,15 @@ async function writeReport(filePath, report) {
 function requiredEnv() {
   const missing = [];
   if (!config.google.apiKey) missing.push("GOOGLE_MAPS_API_KEY");
-  if (!config.firecrawl.apiKey) missing.push("FIRECRAWL_API_KEY");
+  if (requiresFirecrawlApiKey() && !config.firecrawl.apiKey) missing.push("FIRECRAWL_API_KEY");
   if (!config.adsActivityAi.apiKey) missing.push("DEEPINFRA_API_KEY");
   if (!config.adsFunnelAi.apiKey) missing.push("DEEPINFRA_API_KEY");
   if (!config.decisionMakerAi.apiKey) missing.push("DEEPINFRA_API_KEY");
   return [...new Set(missing)];
+}
+
+function requiresFirecrawlApiKey() {
+  return /(^https?:\/\/)?api\.firecrawl\.dev\b/i.test(String(config.firecrawl.baseUrl || ""));
 }
 
 function parseArgs(argv) {
