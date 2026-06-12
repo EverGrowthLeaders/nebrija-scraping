@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { config } from "../../../packages/core/src/config.mjs";
 import { logger } from "../../../packages/core/src/logger.mjs";
 import { closeDb } from "../../../packages/core/src/db.mjs";
-import { isAuthorizedApiKey } from "../../../packages/core/src/auth.mjs";
+import { getRequestApiKey, isAuthorizedApiKey } from "../../../packages/core/src/auth.mjs";
 import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { exchangeGoogleCode, getGoogleAuthUrl, verifyGoogleIdToken } from "../../../packages/core/src/googleOAuth.mjs";
 import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
@@ -30,10 +30,12 @@ import {
   auditAdsCampaigns,
   createLeadList,
   createExtractionJob,
+  createTenantApiKey,
   createManualBusiness,
   createUserSession,
   deleteBusinessForTenant,
   findLeadList,
+  findActiveTenantApiKeyByHash,
   findBusinessById,
   findBusinessDetail,
   findExtractionJobDetail,
@@ -45,6 +47,7 @@ import {
   getDashboardMetrics,
   getTenantNebrijaSettings,
   getTenantScoringRules,
+  listTenantApiKeys,
   listBusinessIdsForCampaign,
   listBusinessIdsForTenant,
   listBusinesses,
@@ -54,8 +57,10 @@ import {
   listLeadListCrmEntries,
   listLeadLists,
   listVoiceCalls,
+  markTenantApiKeyUsed,
   persistNebrijaWebhookEvent,
   removeBusinessFromLeadList,
+  revokeTenantApiKey,
   revokeSession,
   updateBusinessFromCallReport,
   updateBusinessScoringNotes,
@@ -227,6 +232,33 @@ const server = http.createServer(async (req, res) => {
         assistants: assistants.map(({ raw, ...assistant }) => assistant),
         leadVariables: LEAD_VARIABLES
       });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/settings/api-keys") {
+      const keys = await listTenantApiKeys({ tenantId: auth.tenantId });
+      return sendJson(res, 200, { keys: keys.map(publicApiKey) });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/settings/api-keys") {
+      const { json } = await readJson(req);
+      const apiKey = generateTenantApiKey();
+      const key = await createTenantApiKey({
+        tenantId: auth.tenantId,
+        name: json.name || json.label || "Production API Key",
+        keyHash: hashToken(apiKey),
+        keyPrefix: apiKey.slice(0, 12),
+        keyLast4: apiKey.slice(-4),
+        scopes: ["test_jobs"],
+        createdBy: auth.user?.id || null
+      });
+      return sendJson(res, 201, { key: publicApiKey(key), apiKey });
+    }
+
+    const apiKeySettingsMatch = matchPath(url.pathname, /^\/api\/settings\/api-keys\/([^/]+)$/);
+    if (req.method === "DELETE" && apiKeySettingsMatch) {
+      const key = await revokeTenantApiKey({ tenantId: auth.tenantId, keyId: apiKeySettingsMatch[1] });
+      if (!key) return sendJson(res, 404, { error: "api_key_not_found" });
+      return sendJson(res, 200, { key: publicApiKey(key) });
     }
 
     if (req.method === "GET" && url.pathname === "/api/metrics") {
@@ -592,8 +624,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname.startsWith("/api/test-jobs")) {
-      requireTestJobAuth(req);
-
       if (req.method === "GET" && url.pathname === "/api/test-jobs/health") {
         const queueCounts = await getQueueCounts();
         return sendJson(res, 200, {
@@ -1364,8 +1394,7 @@ function summarizeAdsAudit(leads) {
 
 async function getRouteAuth(req, url) {
   if (url.pathname.startsWith("/api/test-jobs")) {
-    requireTestJobAuth(req);
-    return { tenantId: DEFAULT_TENANT_ID, user: null, tenant: { id: DEFAULT_TENANT_ID, slug: "default" } };
+    return await requireTestJobAuth(req);
   }
   if (url.pathname === "/webhooks/nebrija/calls") {
     return { tenantId: DEFAULT_TENANT_ID, user: null, tenant: { id: DEFAULT_TENANT_ID, slug: "default" } };
@@ -1473,6 +1502,23 @@ function requestIsSecure(req) {
 
 function hashToken(token) {
   return crypto.createHash("sha256").update(String(token)).digest("hex");
+}
+
+function generateTenantApiKey() {
+  return `nb_prod_${crypto.randomBytes(32).toString("base64url")}`;
+}
+
+function publicApiKey(key = {}) {
+  return {
+    id: key.id,
+    name: key.name,
+    prefix: key.key_prefix,
+    last4: key.key_last4,
+    scopes: key.scopes || [],
+    createdAt: key.created_at || null,
+    lastUsedAt: key.last_used_at || null,
+    revokedAt: key.revoked_at || null
+  };
 }
 
 function clientIp(req) {
@@ -1810,17 +1856,41 @@ function verifyWebhookSignature(raw, headers, secret) {
   return expectedValues.some((expected) => safeEqual(String(signature), expected));
 }
 
-function requireTestJobAuth(req) {
-  if (!config.testJobs.apiKeys.length && !config.testJobs.apiKeyHashes.length) {
-    const error = new Error("test_jobs_api_key_not_configured");
-    error.statusCode = 503;
-    throw error;
-  }
+async function requireTestJobAuth(req) {
   if (!isAuthorizedApiKey(req.headers, config.testJobs.apiKeys, config.testJobs.apiKeyHashes)) {
+    const candidate = getRequestApiKey(req.headers);
+    if (candidate) {
+      const key = await findActiveTenantApiKeyByHash(hashToken(candidate));
+      if (key) {
+        const scopes = Array.isArray(key.scopes) ? key.scopes : [];
+        if (!scopes.includes("test_jobs")) {
+          const error = new Error("api_key_scope_forbidden");
+          error.statusCode = 403;
+          throw error;
+        }
+        await markTenantApiKeyUsed(key.id);
+        return {
+          tenantId: key.tenant_id,
+          user: null,
+          tenant: {
+            id: key.tenant_id,
+            name: key.tenant_name,
+            slug: key.tenant_slug,
+            googleDomain: key.tenant_google_domain
+          },
+          apiKey: {
+            id: key.id,
+            name: key.name,
+            scopes
+          }
+        };
+      }
+    }
     const error = new Error("unauthorized");
     error.statusCode = 401;
     throw error;
   }
+  return { tenantId: DEFAULT_TENANT_ID, user: null, tenant: { id: DEFAULT_TENANT_ID, slug: "default" } };
 }
 
 async function getQueueCounts() {

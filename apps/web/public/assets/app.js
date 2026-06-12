@@ -3538,13 +3538,31 @@ async function renderSettings() {
         <div data-bind="assistants-list">${rowSkeleton(3)}</div>
       </div>
     </div>
+
+    <div class="card settings-card" style="margin-top:18px">
+      <div class="card__head">
+        <h3>API Keys</h3>
+        <span class="badge badge--zinc">Producción</span>
+      </div>
+      <form class="api-key-create" id="api-key-create">
+        <div class="field">
+          <label>Nombre</label>
+          <input class="input" name="name" placeholder="Producción · Jobs internos" maxlength="120" />
+        </div>
+        <button class="btn btn--primary" type="submit">Crear API Key</button>
+      </form>
+      <div class="api-key-secret" data-bind="api-key-secret" hidden></div>
+      <div data-bind="api-keys-list">${rowSkeleton(3)}</div>
+    </div>
   `;
 
   const settingsData = await api("/api/settings/nebrija");
   hydrateSettingsForm(settingsData);
   await loadAssistants();
+  await loadApiKeys();
 
   $("#nebrija-settings", view).addEventListener("submit", saveNebrijaSettings);
+  $("#api-key-create", view).addEventListener("submit", createApiKey);
   $$("[data-action='refresh-assistants']", view).forEach((button) =>
     button.addEventListener("click", loadAssistants)
   );
@@ -3617,6 +3635,110 @@ function renderAssistantListItem(assistant) {
       </div>
     </div>
   `;
+}
+
+async function loadApiKeys() {
+  const host = $("[data-bind='api-keys-list']", view);
+  if (!host) return;
+  host.innerHTML = rowSkeleton(3);
+  try {
+    const data = await api("/api/settings/api-keys");
+    const keys = data.keys || [];
+    host.innerHTML = keys.length
+      ? `<div class="list">${keys.map(renderApiKeyItem).join("")}</div>`
+      : emptyState("Sin API keys", "Crea una key para lanzar jobs internos contra este SaaS.");
+    $$("[data-action='revoke-api-key']", host).forEach((button) =>
+      button.addEventListener("click", revokeApiKey)
+    );
+  } catch (err) {
+    host.innerHTML = emptyState("No se pudieron cargar", err.message);
+  }
+}
+
+function renderApiKeyItem(key) {
+  const revoked = Boolean(key.revokedAt);
+  return `
+    <div class="list__item ${revoked ? "is-muted" : ""}" style="cursor:default">
+      <div class="list__main">
+        <div class="list__title">${escape(key.name || "API Key")}</div>
+        <div class="list__meta mono">${escape(key.prefix || "nb_prod")}…${escape(key.last4 || "----")} · creada ${escape(fmtDate(key.createdAt))}${key.lastUsedAt ? ` · usada ${escape(fmtRel(key.lastUsedAt))}` : ""}</div>
+        <div class="variable-row">
+          ${(key.scopes || []).map((scope) => `<span class="badge badge--zinc">${escape(scope)}</span>`).join("")}
+          ${revoked ? `<span class="badge badge--burgundy">Revocada</span>` : `<span class="badge badge--green">Activa</span>`}
+        </div>
+      </div>
+      ${revoked ? "" : `<button class="btn btn--danger-soft btn--sm" type="button" data-action="revoke-api-key" data-key-id="${escape(key.id)}">Revocar</button>`}
+    </div>
+  `;
+}
+
+async function createApiKey(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const submit = $("button[type='submit']", form);
+  submit.disabled = true;
+  try {
+    const name = form.elements.name.value.trim() || "Production API Key";
+    const data = await api("/api/settings/api-keys", {
+      method: "POST",
+      body: JSON.stringify({ name })
+    });
+    form.reset();
+    showCreatedApiKey(data.apiKey);
+    await loadApiKeys();
+    toast("API Key creada", "ok");
+  } catch (err) {
+    toast(`No se pudo crear la API Key (${err.message})`, "error");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+function showCreatedApiKey(apiKey) {
+  const host = $("[data-bind='api-key-secret']", view);
+  if (!host || !apiKey) return;
+  host.hidden = false;
+  host.innerHTML = `
+    <div>
+      <strong>Key creada</strong>
+      <p>Guárdala ahora; no volverá a mostrarse.</p>
+    </div>
+    <code class="mono">${escape(apiKey)}</code>
+    <button class="btn btn--sm" type="button" data-action="copy-api-key">Copiar</button>
+  `;
+  $("[data-action='copy-api-key']", host).addEventListener("click", async () => {
+    await copyText(apiKey);
+    toast("API Key copiada", "ok");
+  });
+}
+
+async function revokeApiKey(e) {
+  const keyId = e.currentTarget.dataset.keyId;
+  if (!keyId) return;
+  e.currentTarget.disabled = true;
+  try {
+    await api(`/api/settings/api-keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+    await loadApiKeys();
+    toast("API Key revocada", "ok");
+  } catch (err) {
+    toast(`No se pudo revocar (${err.message})`, "error");
+  }
+}
+
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.append(textarea);
+  textarea.select();
+  document.execCommand("copy");
+  textarea.remove();
 }
 
 // ── Modals: new campaign / new lead ───────────────────────

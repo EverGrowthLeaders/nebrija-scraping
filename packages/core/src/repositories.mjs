@@ -199,6 +199,72 @@ export async function upsertTenantNebrijaSettings({
   return result.rows[0];
 }
 
+export async function listTenantApiKeys({ tenantId = DEFAULT_TENANT_ID } = {}) {
+  const result = await query(
+    `SELECT id, name, key_prefix, key_last4, scopes, created_at, last_used_at, revoked_at
+       FROM tenant_api_keys
+      WHERE tenant_id = $1
+      ORDER BY revoked_at NULLS FIRST, created_at DESC`,
+    [tenantId]
+  );
+  return result.rows;
+}
+
+export async function createTenantApiKey({
+  tenantId = DEFAULT_TENANT_ID,
+  name,
+  keyHash,
+  keyPrefix,
+  keyLast4,
+  scopes = ["test_jobs"],
+  createdBy
+}) {
+  const result = await query(
+    `INSERT INTO tenant_api_keys (tenant_id, name, key_hash, key_prefix, key_last4, scopes, created_by)
+     VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+     RETURNING id, name, key_prefix, key_last4, scopes, created_at, last_used_at, revoked_at`,
+    [
+      tenantId,
+      String(name || "Production API Key").trim().slice(0, 120) || "Production API Key",
+      keyHash,
+      keyPrefix,
+      keyLast4,
+      JSON.stringify(scopes),
+      createdBy || null
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function findActiveTenantApiKeyByHash(keyHash) {
+  const result = await query(
+    `SELECT k.id, k.tenant_id, k.name, k.key_prefix, k.key_last4, k.scopes, k.created_at, k.last_used_at,
+            t.name AS tenant_name, t.slug AS tenant_slug, t.google_domain AS tenant_google_domain
+       FROM tenant_api_keys k
+       JOIN tenants t ON t.id = k.tenant_id
+      WHERE k.key_hash = $1
+        AND k.revoked_at IS NULL`,
+    [keyHash]
+  );
+  return result.rows[0] || null;
+}
+
+export async function markTenantApiKeyUsed(id) {
+  await query(`UPDATE tenant_api_keys SET last_used_at = NOW() WHERE id = $1 AND revoked_at IS NULL`, [id]);
+}
+
+export async function revokeTenantApiKey({ tenantId = DEFAULT_TENANT_ID, keyId }) {
+  const result = await query(
+    `UPDATE tenant_api_keys
+        SET revoked_at = COALESCE(revoked_at, NOW())
+      WHERE tenant_id = $1
+        AND id = $2
+      RETURNING id, name, key_prefix, key_last4, scopes, created_at, last_used_at, revoked_at`,
+    [tenantId, keyId]
+  );
+  return result.rows[0] || null;
+}
+
 export async function getTenantAnalyticsSettings({ tenantId = DEFAULT_TENANT_ID } = {}) {
   const result = await query(
     `SELECT settings, updated_at

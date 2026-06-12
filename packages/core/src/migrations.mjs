@@ -70,6 +70,22 @@ export async function ensureRuntimeSchema() {
     )
   `);
 
+    await run(`
+    CREATE TABLE IF NOT EXISTS tenant_api_keys (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      key_hash TEXT NOT NULL UNIQUE,
+      key_prefix TEXT NOT NULL,
+      key_last4 TEXT NOT NULL,
+      scopes JSONB NOT NULL DEFAULT '[]'::jsonb,
+      created_by UUID REFERENCES users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_used_at TIMESTAMPTZ,
+      revoked_at TIMESTAMPTZ
+    )
+  `);
+
     const tenantTables = [
       "businesses",
       "extraction_jobs",
@@ -184,6 +200,8 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_users_tenant_email ON users(tenant_id, email)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_tenant_integrations_provider ON tenant_integrations(provider)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_tenant_api_keys_hash ON tenant_api_keys(key_hash) WHERE revoked_at IS NULL`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_tenant_api_keys_tenant_created ON tenant_api_keys(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_lists_tenant_created ON lead_lists(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_business ON lead_list_members(business_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_first_contact ON lead_list_members(first_contact_at)`);
