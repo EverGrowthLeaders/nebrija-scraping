@@ -103,7 +103,21 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
 
   const googlePlaces = new GooglePlacesClient();
   const firecrawl = new FirecrawlClient();
-  const businesses = await discoverBusinesses({ googlePlaces, limit, logger });
+  const businesses = await discoverBusinesses({
+    googlePlaces,
+    limit,
+    logger,
+    onProgress: async (discovery) => {
+      await options.onProgress?.(buildDiscoveryReport({
+        limit,
+        outputPath,
+        discovery,
+        requireDecisionMaker,
+        apifyFallbackMode,
+        concurrency
+      }), null);
+    }
+  });
 
   if (businesses.length < limit) {
     logger?.error?.(`[job] Only discovered ${businesses.length}/${limit} unique reformas businesses in Madrid.`);
@@ -236,12 +250,42 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   return report;
 }
 
-async function discoverBusinesses({ googlePlaces, limit, logger = console }) {
+async function discoverBusinesses({ googlePlaces, limit, logger = console, onProgress }) {
   const byKey = new Map();
-  for (const query of REFORMAS_MADRID_QUERIES) {
+  const errors = [];
+  for (let index = 0; index < REFORMAS_MADRID_QUERIES.length; index += 1) {
+    const query = REFORMAS_MADRID_QUERIES[index];
     if (byKey.size >= limit) break;
     logger?.log?.(`[discover] ${query}`);
-    const places = await googlePlaces.searchText({ query, maxResultCount: 20 });
+    await onProgress?.({
+      phase: "discovery",
+      query,
+      queryIndex: index + 1,
+      queryTotal: REFORMAS_MADRID_QUERIES.length,
+      discovered: byKey.size,
+      errors
+    });
+    let places = [];
+    try {
+      places = await googlePlaces.searchText({ query, maxResultCount: 20 });
+    } catch (error) {
+      const failure = {
+        query,
+        message: error.message,
+        status: error.status || null
+      };
+      errors.push(failure);
+      logger?.error?.(`[discover] ${query} failed: ${error.message}`);
+      await onProgress?.({
+        phase: "discovery",
+        query,
+        queryIndex: index + 1,
+        queryTotal: REFORMAS_MADRID_QUERIES.length,
+        discovered: byKey.size,
+        errors
+      });
+      continue;
+    }
     for (const place of places) {
       const business = businessFromPlace(place, query);
       if (!business.name) continue;
@@ -249,8 +293,43 @@ async function discoverBusinesses({ googlePlaces, limit, logger = console }) {
       if (!byKey.has(key)) byKey.set(key, business);
       if (byKey.size >= limit) break;
     }
+    await onProgress?.({
+      phase: "discovery",
+      query,
+      queryIndex: index + 1,
+      queryTotal: REFORMAS_MADRID_QUERIES.length,
+      discovered: byKey.size,
+      errors
+    });
   }
   return [...byKey.values()];
+}
+
+function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMaker, apifyFallbackMode, concurrency }) {
+  return {
+    generatedAt: new Date().toISOString(),
+    outputPath,
+    target: {
+      niche: "empresas de reformas",
+      city: "Madrid",
+      requestedLimit: limit,
+      processedLimit: 0,
+      requireDecisionMaker,
+      apifyFallbackMode,
+      concurrency: concurrency || null
+    },
+    status: "running_discovery",
+    phase: "discovery",
+    discovery,
+    summary: {
+      processed: 0,
+      ok: 0,
+      failed: 0,
+      discovered: discovery?.discovered || 0
+    },
+    failures: [],
+    results: []
+  };
 }
 
 function businessFromPlace(place = {}, discoveryQuery) {

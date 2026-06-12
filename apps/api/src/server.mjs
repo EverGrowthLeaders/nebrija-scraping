@@ -1677,11 +1677,14 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
         onProgress: async (partialReport, row) => {
           job.report = partialReport;
           job.progress = {
+            phase: partialReport.phase || (partialReport.summary?.processed ? "enrichment" : "discovery"),
             processed: partialReport.summary?.processed || 0,
             ok: partialReport.summary?.ok || 0,
             failed: partialReport.summary?.failed || 0,
             total: partialReport.target?.requestedLimit || job.progress.total,
             lastBusiness: row?.business?.name || null,
+            discovery: partialReport.discovery || null,
+            discovered: partialReport.summary?.discovered ?? null,
             metaActive: partialReport.summary?.metaActive ?? null,
             googleActive: partialReport.summary?.googleActive ?? null,
             decisionMakersFound: partialReport.summary?.decisionMakersFound ?? null,
@@ -1740,6 +1743,8 @@ function compactReformasMadridReport(report = {}) {
     outputPath: report.outputPath || null,
     target: report.target || null,
     status: report.status || (report.failures?.length ? "failed" : "passed"),
+    phase: report.phase || null,
+    discovery: report.discovery || null,
     summary: report.summary || null,
     failures: (report.failures || []).slice(0, 100),
     results: (report.results || []).map((row) => ({
