@@ -19,7 +19,12 @@ export function recordApifyCall(stats, provider, input = {}) {
     urls: Array.isArray(input.urls) ? input.urls.map((item) => item?.url || item).filter(Boolean).slice(0, 4) : [],
     searchTerms: Array.isArray(input.searchTerms) ? input.searchTerms.slice(0, 8) : [],
     searchQuery: input.searchQuery || null,
-    resultsLimit: input.resultsLimit ?? input.maxResults ?? input.resultsPerSearch ?? input.count ?? input.limitPerSource ?? null
+    resultsLimit: input.resultsLimit ?? input.maxResults ?? input.resultsPerSearch ?? input.count ?? input.limitPerSource ?? null,
+    count: input.count ?? null,
+    limitPerSource: input.limitPerSource ?? null,
+    scrapeAdDetails: input.scrapeAdDetails ?? null,
+    activeStatus: input["scrapePageAds.activeStatus"] ?? input.adActiveStatus ?? null,
+    countryCode: input["scrapePageAds.countryCode"] ?? input.country ?? input.region ?? null
   });
 }
 

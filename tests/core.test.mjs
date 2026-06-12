@@ -418,14 +418,24 @@ test("counts and validates Apify usage budgets for enrichment smoke", () => {
         urls: ["https://www.facebook.com/ads/library/?q=demo"],
         searchTerms: [],
         searchQuery: null,
-        resultsLimit: 10
+        resultsLimit: 10,
+        count: 10,
+        limitPerSource: null,
+        scrapeAdDetails: null,
+        activeStatus: null,
+        countryCode: null
       },
       {
         provider: "google",
         urls: [],
         searchTerms: ["demo.example"],
         searchQuery: null,
-        resultsLimit: 3
+        resultsLimit: 3,
+        count: null,
+        limitPerSource: null,
+        scrapeAdDetails: null,
+        activeStatus: null,
+        countryCode: null
       }
     ]
   });
@@ -2691,7 +2701,7 @@ test("uses AI-planned Meta sources when Apify fallback is enabled", async () => 
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.sourceProvider === "apify" && attempt.plannedBy === "ai"));
 });
 
-test("uses CrawlerBros Facebook Ads actor input and normalizes its output", async () => {
+test("uses Curious Coder Facebook Ads actor input and normalizes its output", async () => {
   const apifyInputs = [];
   const firecrawl = {
     async search() {
@@ -2705,27 +2715,31 @@ test("uses CrawlerBros Facebook Ads actor input and normalizes its output", asyn
     }
   };
   const apify = {
-    maxChargedResults: 4,
-    facebookAdsActorId: "crawlerbros~facebook-ads-library-scraper",
+    maxChargedResults: 1,
+    facebookAdsActorId: "curious_coder~facebook-ads-library-scraper",
     async runFacebookAdsLibrary(input) {
       apifyInputs.push(input);
-      assert.deepEqual(input.searchTerms, ["planned.example"]);
-      assert.equal(input.country, "ES");
-      assert.equal(input.adActiveStatus, "active");
-      assert.equal(input.resultsPerSearch, 4);
-      assert.equal(input.urls, undefined);
+      assert.equal(input.urls.length, 1);
+      assert.match(input.urls[0].url, /q=planned\.example/);
+      assert.equal(input.limitPerSource, 1);
+      assert.equal(input.count, 1);
+      assert.equal(input.scrapeAdDetails, false);
+      assert.equal(input["scrapePageAds.activeStatus"], "active");
+      assert.equal(input["scrapePageAds.sortBy"], "most_recent");
+      assert.equal(input["scrapePageAds.countryCode"], "ES");
+      assert.equal(input.searchTerms, undefined);
       return [
         {
           status: "Active",
-          page_name: "Planned Demo",
-          page_id: "987654321",
-          ad_id: "123456789",
-          ad_snapshot_url: "https://www.facebook.com/ads/library/?id=123456789",
-          ad_text: "Reserva una visita en planned.example",
-          link_url: "https://planned.example/oferta",
-          cta_text: "Solicitar presupuesto",
-          search_term: "planned.example",
-          start_date: "2026-06-04"
+          pageName: "Planned Demo",
+          pageId: "987654321",
+          adArchiveId: "123456789",
+          adLibraryUrl: "https://www.facebook.com/ads/library/?id=123456789",
+          adText: "Reserva una visita en planned.example",
+          linkUrl: "https://planned.example/oferta",
+          ctaText: "Solicitar presupuesto",
+          searchTerm: "planned.example",
+          startDate: "2026-06-04"
         }
       ];
     }
@@ -2758,6 +2772,52 @@ test("uses CrawlerBros Facebook Ads actor input and normalizes its output", asyn
   assert.equal(enrichment.meta.sourceProvider, "apify");
   assert.equal(enrichment.meta.sourceUrl, "https://www.facebook.com/ads/library/?id=123456789");
   assert.deepEqual(enrichment.meta.landingUrls, ["https://planned.example/oferta"]);
+});
+
+test("keeps CrawlerBros Facebook Ads actor fallback capped when configured", async () => {
+  const apifyInputs = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://planned.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 4,
+    facebookAdsActorId: "crawlerbros~facebook-ads-library-scraper",
+    async runFacebookAdsLibrary(input) {
+      apifyInputs.push(input);
+      assert.deepEqual(input.searchTerms, ["planned.example"]);
+      assert.equal(input.country, "ES");
+      assert.equal(input.adActiveStatus, "active");
+      assert.equal(input.resultsPerSearch, 3);
+      assert.equal(input.urls, undefined);
+      return [];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Planned Demo", website: "https://planned.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "planned.example", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain_query" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyInputs.length, 1);
+  assert.notEqual(enrichment.meta.active, true);
 });
 
 test("stops Meta Apify fallback after quota errors", async () => {
@@ -2806,6 +2866,48 @@ test("stops Meta Apify fallback after quota errors", async () => {
     attempt.reason === "apify_quota_exceeded" &&
     /Monthly usage hard limit exceeded/.test(attempt.error)
   ));
+});
+
+test("does not spend Meta Apify on seed-only sources", async () => {
+  let apifyCalls = 0;
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://seed-only.example") {
+        return {
+          markdown: "[Instagram](https://www.instagram.com/seed_only)",
+          html: "",
+          links: [{ url: "https://www.instagram.com/seed_only" }]
+        };
+      }
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    async runFacebookAdsLibrary() {
+      apifyCalls += 1;
+      return [];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Seed Only", website: "https://seed-only.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({}),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyCalls, 0);
+  assert.notEqual(enrichment.meta.sourceProvider, "apify");
 });
 
 test("passes empty precise Apify results as inactive evidence for Deepseek", async () => {
@@ -2880,11 +2982,11 @@ test("falls back to Apify for matched active Meta ads only", async () => {
     }
   };
   const apify = {
-    maxChargedResults: 10,
+    maxChargedResults: 1,
     async runFacebookAdsLibrary(input) {
       assert.equal(input.limitPerSource, 1);
-      assert.equal(input.count, 10);
-      assert.equal(input.scrapeAdDetails, true);
+      assert.equal(input.count, 1);
+      assert.equal(input.scrapeAdDetails, false);
       assert.equal(input["scrapePageAds.activeStatus"], "active");
       assert.match(input.urls[0].url, /%40disowned_factory/);
       return [
@@ -2912,7 +3014,11 @@ test("falls back to Apify for matched active Meta ads only", async () => {
     firecrawl,
     apify,
     apifyFallbackMode: "always",
-    aiDiscoveryPlanner: async () => ({}),
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "@disowned_factory", searchType: "keyword_unordered", country: "ALL", reason: "ai_official_instagram_handle" }
+      ]
+    }),
     aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
       if (phase === "firecrawl_apify") {
         assert.ok(evidence.providers.meta.attempts.some((attempt) => attempt.sourceProvider === "apify"));
@@ -3129,7 +3235,8 @@ test("continues Apify sources when the first active match has no landing URL", a
     }
   };
   const apify = {
-    maxChargedResults: 10,
+    maxChargedResults: 1,
+    metaMaxSources: 2,
     async runFacebookAdsLibrary(input) {
       apifyCalls.push(input.urls[0].url);
       if (apifyCalls.length === 1) {
@@ -3156,7 +3263,12 @@ test("continues Apify sources when the first active match has no landing URL", a
     firecrawl,
     apify,
     apifyFallbackMode: "always",
-    aiDiscoveryPlanner: async () => ({}),
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "demo.example", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain" },
+        { query: "demofactory", searchType: "page", country: "ES", reason: "ai_facebook_page_handle" }
+      ]
+    }),
     aiResolver: adsAiResolverFromEvidence(),
     landingAiClassifier: async ({ deterministic }) => {
       assert.equal(deterministic.type, "lead_generation");
@@ -3194,7 +3306,7 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
     }
   };
   const apify = {
-    maxChargedResults: 10,
+    maxChargedResults: 1,
     async runFacebookAdsLibrary() {
       return [
         {
@@ -3219,7 +3331,11 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
     firecrawl,
     apify,
     apifyFallbackMode: "always",
-    aiDiscoveryPlanner: async () => ({}),
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "@disowned_factory", searchType: "keyword_unordered", country: "ALL", reason: "ai_official_instagram_handle" }
+      ]
+    }),
     aiResolver: adsAiResolverFromEvidence(),
     country: "ES",
     now: new Date("2026-06-05T00:00:00Z")
@@ -3246,7 +3362,7 @@ test("does not verify Meta ads from Apify social-only matches", async () => {
     }
   };
   const apify = {
-    maxChargedResults: 10,
+    maxChargedResults: 1,
     async runFacebookAdsLibrary() {
       return [
         {
@@ -3274,7 +3390,11 @@ test("does not verify Meta ads from Apify social-only matches", async () => {
     firecrawl,
     apify,
     apifyFallbackMode: "always",
-    aiDiscoveryPlanner: async () => ({}),
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "facebook.com/ion.proyectos", searchType: "keyword_unordered", country: "ES", reason: "ai_official_facebook_url" }
+      ]
+    }),
     aiResolver: adsAiResolverFromEvidence(),
     country: "ES",
     now: new Date("2026-06-05T00:00:00Z")
@@ -3297,7 +3417,7 @@ test("does not verify Meta ads from Apify domain-only matches", async () => {
     }
   };
   const apify = {
-    maxChargedResults: 10,
+    maxChargedResults: 1,
     async runFacebookAdsLibrary() {
       return [
         {
@@ -3326,7 +3446,11 @@ test("does not verify Meta ads from Apify domain-only matches", async () => {
     firecrawl,
     apify,
     apifyFallbackMode: "always",
-    aiDiscoveryPlanner: async () => ({}),
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "boudevin-abogadoslogrono.com", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain" }
+      ]
+    }),
     aiResolver: adsAiResolverFromEvidence(),
     country: "ES",
     now: new Date("2026-06-05T00:00:00Z")

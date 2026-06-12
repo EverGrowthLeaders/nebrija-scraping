@@ -49,15 +49,16 @@ export const config = {
     apiKey: process.env.APIFY_API_KEY || "",
     baseUrl: trimTrailingSlash(process.env.APIFY_BASE_URL || "https://api.apify.com/v2"),
     facebookAdsActorId:
-      process.env.APIFY_FACEBOOK_ADS_ACTOR_ID || "crawlerbros~facebook-ads-library-scraper",
+      process.env.APIFY_FACEBOOK_ADS_ACTOR_ID || "curious_coder~facebook-ads-library-scraper",
     googleAdsActorId:
       process.env.APIFY_GOOGLE_ADS_ACTOR_ID || "solidcode~ads-transparency-scraper",
     requestTimeoutMs: intFromEnv("APIFY_REQUEST_TIMEOUT_MS", 120000),
     runTimeoutSecs: intFromEnv("APIFY_RUN_TIMEOUT_SECS", 90),
-    maxChargedResults: intFromEnv("APIFY_MAX_CHARGED_RESULTS", 10)
+    maxChargedResults: intFromEnv("APIFY_MAX_CHARGED_RESULTS", 1)
   },
   adsEnrichment: {
-    apifyFallbackMode: process.env.ADS_APIFY_FALLBACK_MODE || "off"
+    apifyFallbackMode: process.env.ADS_APIFY_FALLBACK_MODE || "off",
+    apifyMetaMaxSources: intFromEnv("ADS_APIFY_META_MAX_SOURCES", 1)
   },
   adsActivityAi: {
     provider: "deepinfra",

@@ -102,10 +102,12 @@ ADS_APIFY_FALLBACK_MODE=off
 - `always`: recoge evidencia Apify siempre, pero DeepSeek sigue decidiendo.
 
 Cuando Apify esta habilitado, Meta usa primero las fuentes `plannedBy=ai` del
-plan de descubrimiento DeepSeek. Las semillas locales quedan como respaldo
-deduplicado para no aumentar llamadas de pago sin necesidad. Si el plan de
-descubrimiento DeepSeek falla o queda solo en semilla, Apify no se ejecuta aunque
-`ADS_APIFY_FALLBACK_MODE=always`.
+plan de descubrimiento DeepSeek. Por defecto no usa semillas locales como
+fallback de pago: una empresa hace como maximo una llamada Meta Apify
+(`ADS_APIFY_META_MAX_SOURCES=1`) y pide un solo resultado
+(`APIFY_MAX_CHARGED_RESULTS=1`) con `scrapeAdDetails=false`. Si el plan de
+descubrimiento DeepSeek falla o no propone una fuente Meta precisa, Apify no se
+ejecuta aunque `ADS_APIFY_FALLBACK_MODE=always`.
 
 Las respuestas IA guardan `usage` y `cost` estimado con precios DeepSeek V4
 Flash: $0.10/M tokens de entrada, $0.20/M tokens de salida y $0.02/M tokens de
@@ -329,6 +331,9 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `FIRECRAWL_API_KEY`
 - `APIFY_API_KEY` opcional; solo se usa si `ADS_APIFY_FALLBACK_MODE` no es `off`
 - `ADS_APIFY_FALLBACK_MODE` para controlar gasto Apify: `off`, `on_unknown` o `always`
+- `APIFY_FACEBOOK_ADS_ACTOR_ID`, por defecto `curious_coder~facebook-ads-library-scraper`
+- `APIFY_MAX_CHARGED_RESULTS`, por defecto `1`
+- `ADS_APIFY_META_MAX_SOURCES`, por defecto `1`
 - `DEEPINFRA_API_KEY` para resolver actividad Ads, landings Ads y decisor con DeepSeek V4 Flash
 - `GOOGLE_MAPS_API_KEY`
 - `NEBRIJA_API_KEY`

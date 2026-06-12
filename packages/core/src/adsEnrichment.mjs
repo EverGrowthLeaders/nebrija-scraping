@@ -975,7 +975,8 @@ function apifyGoogleItemMatchesDomain(item = {}, domain) {
 }
 
 async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery, discoveryPlan }) {
-  const sources = buildApifyMetaSources(business, country, discoveryPlan);
+  const sources = buildApifyMetaSources(business, country, discoveryPlan)
+    .slice(0, apifyMetaMaxSources(apify));
   const attempts = [];
   let fallback = null;
 
@@ -2031,11 +2032,6 @@ function isStrongMetaApifyResult(result = {}) {
 
 function buildApifyMetaSources(business, country, discoveryPlan) {
   const sources = [];
-  const domain = extractDomain(business.website);
-  const facebook = firstValue(business.facebook, business.custom_fields?.facebook, business.custom_fields?.facebook_url, business.custom_fields?.fb);
-  const instagram = firstValue(business.instagram, business.custom_fields?.instagram, business.custom_fields?.instagram_url, business.custom_fields?.ig);
-  const facebookHandle = extractSocialHandle(facebook, "facebook");
-  const instagramHandle = extractSocialHandle(instagram, "instagram");
   const metaCountry = country || DEFAULT_COUNTRY;
 
   const aiPlannedMetaUrls = discoveryPlan?.ai?.status === "planned"
@@ -2073,56 +2069,10 @@ function buildApifyMetaSources(business, country, discoveryPlan) {
       discoveryReason: probe.discoveryReason || `${probe.plannedBy || "seed"}_ads_discovery`
     });
   }
-  if (instagramHandle) {
-    addApifySource(sources, {
-      strategy: "instagram_handle_apify",
-      query: `@${instagramHandle}`,
-      searchType: "keyword_unordered",
-      country: "ALL",
-      sourceUrl: buildMetaAdsLibraryUrl({ query: `@${instagramHandle}`, country: "ALL" }),
-      confidence: 0.9,
-      plannedBy: "seed",
-      discoveryReason: "seed_instagram_handle_apify"
-    });
-  }
-  if (domain) {
-    addApifySource(sources, {
-      strategy: "website_domain_apify",
-      query: domain,
-      searchType: "keyword_unordered",
-      country: "ALL",
-      sourceUrl: buildMetaAdsLibraryUrl({ query: domain, country: "ALL" }),
-      confidence: 0.86,
-      plannedBy: "seed",
-      discoveryReason: "seed_domain_apify"
-    });
-  }
-  if (facebook) {
-    addApifySource(sources, {
-      strategy: "facebook_page_apify",
-      query: facebookHandle || facebook,
-      searchType: "page",
-      country: metaCountry,
-      sourceUrl: buildMetaAdsLibraryUrl({ query: facebookHandle || facebook, country: metaCountry, searchType: "page" }),
-      confidence: 0.92,
-      plannedBy: "seed",
-      discoveryReason: "seed_facebook_page_apify"
-    });
-  }
-  if (business.name) {
-    addApifySource(sources, {
-      strategy: "business_name_apify",
-      query: business.name,
-      searchType: "keyword_unordered",
-      country: "ALL",
-      sourceUrl: buildMetaAdsLibraryUrl({ query: business.name, country: "ALL" }),
-      confidence: 0.68,
-      plannedBy: "seed",
-      discoveryReason: "seed_business_name_apify"
-    });
-  }
 
-  return sources.slice(0, 4);
+  return sources
+    .filter((source) => source.plannedBy === "ai")
+    .sort((a, b) => rankApifyMetaSource(b, business) - rankApifyMetaSource(a, business));
 }
 
 function addApifySource(sources, source) {
@@ -2136,7 +2086,7 @@ function addApifySource(sources, source) {
 }
 
 function buildApifyMetaInput(source, apify) {
-  const maxChargedResults = Math.max(1, Number(apify?.maxChargedResults || 10));
+  const maxResults = apifyMetaMaxResults(apify);
   if (isCrawlerbrosFacebookAdsActor(apify?.facebookAdsActorId)) {
     return {
       searchTerms: [metaApifySearchTerm(source)].filter(Boolean),
@@ -2144,21 +2094,48 @@ function buildApifyMetaInput(source, apify) {
       adActiveStatus: "active",
       adType: "all",
       mediaType: "all",
-      resultsPerSearch: Math.min(10, maxChargedResults),
+      resultsPerSearch: maxResults,
       runTag: "lexington-meta-active-check"
     };
   }
   return {
     urls: [{ url: source.sourceUrl }],
-    limitPerSource: 1,
-    count: Math.max(10, maxChargedResults),
-    scrapeAdDetails: true,
+    limitPerSource: maxResults,
+    count: maxResults,
+    scrapeAdDetails: false,
     "scrapePageAds.period": "",
     "scrapePageAds.activeStatus": "active",
     "scrapePageAds.sortBy": "most_recent",
     "scrapePageAds.countryCode": source.country || "ALL",
     runTag: "lexington-meta-active-check"
   };
+}
+
+function apifyMetaMaxResults(apify) {
+  const configured = Number(apify?.maxChargedResults || 1);
+  return Math.min(3, Math.max(1, Number.isFinite(configured) ? configured : 1));
+}
+
+function apifyMetaMaxSources(apify) {
+  const configured = Number(apify?.metaMaxSources ?? config.adsEnrichment?.apifyMetaMaxSources ?? 1);
+  return Math.min(3, Math.max(1, Number.isFinite(configured) ? configured : 1));
+}
+
+function rankApifyMetaSource(source = {}, business = {}) {
+  const query = String(source.query || "");
+  const strategy = String(source.strategy || "");
+  const searchType = String(source.searchType || "");
+  const sourceUrl = String(source.sourceUrl || "");
+  const domain = extractDomain(business.website);
+  let score = Number(source.confidence || 0) * 10;
+  if (source.plannedBy === "ai") score += 30;
+  if (searchType === "page" || /page/i.test(strategy)) score += 18;
+  if (/page_id=|\/ads\/library\/\?id=/i.test(sourceUrl)) score += 16;
+  if (/^@[\w.]+$/i.test(query)) score += 14;
+  if (domain && normalizeText(query) === normalizeText(domain)) score += 12;
+  if (/facebook|instagram|handle|domain|url/i.test(strategy)) score += 8;
+  if (/business_name|name_city|brand/i.test(strategy)) score -= 12;
+  return score;
 }
 
 function metaApifySearchTerm(source = {}) {
@@ -2178,9 +2155,10 @@ function apifyMetaCountry(country) {
 }
 
 function isApifyMetaItemActive(item = {}) {
-  if (item?.is_active === true) return true;
-  if (item?.is_active === false) return false;
-  const status = normalizeText(item?.status || item?.ad_status || item?.active_status || "");
+  const explicit = firstDefined(item?.is_active, item?.isActive, item?.active, item?.isCurrentlyActive);
+  if (explicit === true || normalizeText(explicit) === "true") return true;
+  if (explicit === false || normalizeText(explicit) === "false") return false;
+  const status = normalizeText(item?.status || item?.ad_status || item?.active_status || item?.activeStatus || item?.state || "");
   if (status.includes("inactive")) return false;
   if (status.includes("active")) return true;
   return true;
@@ -2210,7 +2188,7 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       status: "active",
       active: true,
       confidence: Math.max(Number(source.confidence || 0), bestMatch.match.confidence),
-      sourceUrl: bestMatch.item.ad_library_url || bestMatch.item.ad_snapshot_url || source.sourceUrl,
+      sourceUrl: apifyMetaItemUrl(bestMatch.item) || source.sourceUrl,
       reason: "apify_active_ad_matched",
       latestDetectedDate,
       context: {
@@ -2220,7 +2198,7 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
         total: apifyTotal(items),
         matchedItems: matchedItems.length,
         samplePageName: samplePageName(bestMatch.item),
-        adArchiveId: bestMatch.item.ad_archive_id || bestMatch.item.ad_id || null,
+        adArchiveId: apifyMetaItemAdId(bestMatch.item),
         landingUrls,
         spendEstimate,
         evidenceSnippet
@@ -2394,25 +2372,50 @@ function collectApifyItemStrings(item = {}) {
   const body = typeof snapshot.body === "string" ? snapshot.body : snapshot.body?.text;
   return [
     item.page_name,
+    item.pageName,
     item.page_id,
+    item.pageId,
     item.ad_archive_id,
+    item.adArchiveId,
+    item.adArchiveID,
     item.ad_id,
+    item.adId,
     item.ad_library_url,
+    item.adLibraryUrl,
     item.ad_snapshot_url,
+    item.adSnapshotUrl,
     item.url,
     item.status,
+    item.activeStatus,
+    item.state,
     item.ad_text,
+    item.adText,
     item.link_url,
+    item.linkUrl,
+    item.targetUrl,
+    item.destinationUrl,
     item.cta_text,
+    item.ctaText,
     item.search_term,
+    item.searchTerm,
     Array.isArray(item.platforms) ? item.platforms.join(" ") : item.platforms,
+    Array.isArray(item.publisherPlatform) ? item.publisherPlatform.join(" ") : item.publisherPlatform,
+    item.publisher_platform,
     item.media_type,
+    item.mediaType,
+    item.advertiser,
+    item.advertiserName,
     snapshot.page_name,
+    snapshot.pageName,
     snapshot.page_profile_uri,
+    snapshot.pageProfileUri,
     snapshot.caption,
     snapshot.cta_text,
+    snapshot.ctaText,
     snapshot.link_url,
+    snapshot.linkUrl,
     snapshot.link_description,
+    snapshot.linkDescription,
     snapshot.title,
     body,
     ...cards.flatMap((card) => [
@@ -2600,11 +2603,11 @@ function apifyTotal(items = []) {
 }
 
 function samplePageName(item = {}) {
-  return item?.page_name || item?.snapshot?.page_name || null;
+  return item?.page_name || item?.pageName || item?.snapshot?.page_name || item?.snapshot?.pageName || null;
 }
 
 function apifyItemDate(item = {}, now) {
-  const raw = item.start_date || item.end_date;
+  const raw = item.start_date || item.startDate || item.startDateFormatted || item.end_date || item.endDate;
   const number = Number(raw);
   const date = Number.isFinite(number) && number > 0
     ? new Date(number > 10_000_000_000 ? number : number * 1000)
@@ -2612,6 +2615,27 @@ function apifyItemDate(item = {}, now) {
   if (Number.isNaN(date.getTime())) return null;
   if (date.getTime() > now.getTime() + 86400_000 * 2) return null;
   return date.toISOString().slice(0, 10);
+}
+
+function apifyMetaItemUrl(item = {}) {
+  return firstValue(
+    item.ad_library_url,
+    item.adLibraryUrl,
+    item.ad_snapshot_url,
+    item.adSnapshotUrl,
+    item.url
+  ) || null;
+}
+
+function apifyMetaItemAdId(item = {}) {
+  return firstValue(
+    item.ad_archive_id,
+    item.adArchiveId,
+    item.adArchiveID,
+    item.ad_id,
+    item.adId,
+    item.id
+  ) || null;
 }
 
 function latestDateWithin(text, now, days) {
@@ -2918,6 +2942,10 @@ function cleanQuery(value) {
 
 function firstValue(...values) {
   return values.find((value) => String(value || "").trim()) || "";
+}
+
+function firstDefined(...values) {
+  return values.find((value) => value !== undefined && value !== null && value !== "");
 }
 
 function extractSocialHandle(value, provider) {
