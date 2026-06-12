@@ -113,6 +113,17 @@ export async function classifyAdsLandingIntent({
 
   const best = chooseBestClassification(evaluated);
   if (!best) {
+    const fallbackAi = await classifyUnavailableLanding({ business, enrichment, activeProviders, crawlCandidates, rejected, evaluated, aiClassifier, aiConfig });
+    if (fallbackAi) {
+      return {
+        ...fallbackAi,
+        checkedAt: now.toISOString(),
+        activeProviders,
+        rejected,
+        evaluated,
+        candidates: crawlCandidates.slice(0, 8)
+      };
+    }
     return emptyClassification({
       now,
       reason: "no_landing_page_classified",
@@ -148,6 +159,76 @@ export async function classifyAdsLandingIntent({
       ai: item.ai || null
     })),
     candidates: crawlCandidates.slice(0, 8)
+  };
+}
+
+async function classifyUnavailableLanding({ business = {}, enrichment = {}, activeProviders = [], crawlCandidates = [], rejected = [], evaluated = [], aiClassifier, aiConfig = config.adsFunnelAi } = {}) {
+  if (!canUseAiClassifier({ aiClassifier, aiConfig })) return null;
+  const evidence = {
+    task: "ads_funnel_classification_without_crawlable_landing",
+    business: {
+      name: business.name || null,
+      city: business.city || null,
+      niche: business.niche || business.category || null,
+      website: business.website || null
+    },
+    activeProviders,
+    ads: Object.fromEntries(activeProviders.map((provider) => {
+      const item = enrichment?.[provider] || {};
+      return [provider, {
+        active: item.active,
+        sourceProvider: item.sourceProvider || null,
+        sourceUrl: item.sourceUrl || null,
+        reason: item.reason || null,
+        landingUrls: item.landingUrls || [],
+        samplePageName: item.samplePageName || null
+      }];
+    })),
+    candidates: crawlCandidates.slice(0, 8),
+    rejected: rejected.slice(0, 8),
+    evaluated: evaluated.slice(0, 4).map((item) => ({
+      type: item.type,
+      reason: item.reason,
+      landingUrl: item.landingUrl,
+      confidence: item.confidence
+    })),
+    rules: [
+      "If this is a local services business and active ads point to quote, call, WhatsApp, appointment, estimate, reformas or service pages, classify as lead_generation.",
+      "Classify ecommerce only when the evidence points to direct catalog/cart/checkout purchase intent.",
+      "Use other for brand awareness, informational pages, recruitment, or insufficient commercial action."
+    ]
+  };
+  const rawResult = aiClassifier
+    ? await aiClassifier({ evidence, aiConfig })
+    : await classifyLandingWithDeepInfra({ evidence, aiConfig });
+  const normalized = normalizeAiClassification(rawResult);
+  if (!normalized) return null;
+  return {
+    type: normalized.type,
+    confidence: normalized.confidence,
+    landingUrl: crawlCandidates[0]?.url || business.website || null,
+    reason: normalized.reason || "ai_unavailable_landing_classification",
+    provider: activeProviders[0] || null,
+    source: "ai_unavailable_landing_fallback",
+    scores: normalized.scores || { lead_generation: 0, ecommerce: 0, other: 0 },
+    signals: [{
+      target: normalized.type,
+      id: "ai_unavailable_landing_classifier",
+      label: "Clasificador DeepSeek sin landing crawlable",
+      weight: 2,
+      snippet: normalized.summary || normalized.reason
+    }],
+    ai: {
+      status: "classified",
+      provider: aiConfig?.provider || "deepinfra",
+      model: aiConfig?.model || null,
+      evidenceChars: JSON.stringify(evidence).length,
+      deterministicType: "unknown",
+      deterministicConfidence: 0.2,
+      summary: normalized.summary || null,
+      usage: rawResult?.usage || null,
+      cost: estimateDeepseekUsageCost(rawResult?.usage)
+    }
   };
 }
 
