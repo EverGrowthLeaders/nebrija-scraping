@@ -625,7 +625,7 @@ test("builds enough Google discovery queries for requested campaign limits", () 
     requested_limit: 100
   });
 
-  assert.equal(queries.length >= 5, true);
+  assert.equal(queries.length >= 15, true);
   assert.equal(queries[0], "empresas de reformas en Madrid");
   assert.equal(new Set(queries).size, queries.length);
   assert.equal(queries.some((query) => query.includes("Salamanca")), true);

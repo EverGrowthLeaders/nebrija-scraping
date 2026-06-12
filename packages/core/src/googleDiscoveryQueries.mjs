@@ -32,7 +32,7 @@ export function buildGoogleDiscoveryQueries(extractionJob = {}, options = {}) {
   const requestedLimit = positiveInt(options.requestedLimit, positiveInt(extractionJob.requested_limit, 20));
   const maxResultCount = positiveInt(options.maxResultCount, 20);
   const minQueries = Math.max(1, Math.ceil(requestedLimit / maxResultCount));
-  const targetQueries = Math.min(Math.max(minQueries + 3, 1), positiveInt(options.maxQueries, 16));
+  const targetQueries = Math.min(Math.max(minQueries * 3, minQueries + 3, 1), positiveInt(options.maxQueries, 16));
   const variants = unique([
     base,
     ...base.split(/[,/|]/).map((item) => item.trim()),
