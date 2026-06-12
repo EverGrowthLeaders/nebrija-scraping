@@ -1875,6 +1875,9 @@ function applyAdsActivityVerification({ providerEvidence = {}, resolved = {}, ra
 
     const normalized = normalizeAiProviderVerification(rawVerification?.[provider], current.active);
     if (!normalized) {
+      if (isAuthoritativeExactAdsDecision(current)) {
+        return [provider, aiVerificationConfirmedByExactEvidence({ provider, current, rawVerification, aiConfig, phase })];
+      }
       return [provider, aiVerificationInvalidProviderResult({ provider, current, rawVerification, aiConfig, phase })];
     }
     if (normalized.confirmed !== true || normalized.active !== current.active) {
@@ -1904,7 +1907,7 @@ function applyAdsActivityVerification({ providerEvidence = {}, resolved = {}, ra
   }));
 }
 
-function aiVerificationConfirmedByExactEvidence({ provider, current, rawVerification, aiConfig, phase, normalized }) {
+function aiVerificationConfirmedByExactEvidence({ provider, current, rawVerification, aiConfig, phase, normalized = {} }) {
   return {
     ...current,
     confidence: Math.max(0.78, Math.min(current.confidence ?? 0.78, 0.92)),
