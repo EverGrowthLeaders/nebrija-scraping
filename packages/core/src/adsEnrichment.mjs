@@ -1617,7 +1617,7 @@ async function verifyAdsActivityResolution({
     const rawVerification = aiVerifier
       ? await aiVerifier({ business, evidence: verificationEvidence, providerEvidence, resolved, aiConfig, phase, previousResult })
       : await verifyAdsActivityWithDeepInfra({ evidence: verificationEvidence, aiConfig });
-    return applyAdsActivityVerification({
+    const verified = applyAdsActivityVerification({
       providerEvidence,
       resolved,
       rawVerification,
@@ -1625,6 +1625,25 @@ async function verifyAdsActivityResolution({
       now,
       phase
     });
+    if (needsAdsVerificationAdjudication({ before: resolved, after: verified }) && !aiVerifier) {
+      const rawAdjudication = await verifyAdsActivityWithDeepInfra({
+        evidence: { ...verificationEvidence, previousVerification: rawVerification },
+        aiConfig,
+        adjudication: true
+      });
+      return applyAdsActivityVerification({
+        providerEvidence,
+        resolved,
+        rawVerification: {
+          ...rawAdjudication,
+          usage: combineAiUsage(rawVerification?.usage, rawAdjudication?.usage)
+        },
+        aiConfig,
+        now,
+        phase
+      });
+    }
+    return verified;
   } catch (error) {
     return Object.fromEntries(ADS_ACTIVITY_PROVIDERS.map((provider) => {
       const current = resolved?.[provider];
@@ -1634,7 +1653,7 @@ async function verifyAdsActivityResolution({
   }
 }
 
-async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsActivityAi } = {}) {
+async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsActivityAi, adjudication = false } = {}) {
   const baseUrl = String(aiConfig?.baseUrl || "https://api.deepinfra.com/v1/openai").replace(/\/+$/, "");
   const model = aiConfig?.model || "deepseek-ai/DeepSeek-V4-Flash";
   const body = {
@@ -1650,8 +1669,11 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
           "Use only the supplied evidence and proposed decision.",
           "Confirm a proposed active=true or active=false only when the exact business identity and current ads state are proven by official or directly relevant evidence.",
           "Reject when advertiser identity, domain, social handle, recency, selected attempts, or official library context are ambiguous.",
+          adjudication
+            ? "As final adjudicator, treat exact-domain Google Transparency evidence and exact-page/exact-handle Meta Apify evidence as directly relevant when the business domain, page, handle or landing identity matches; confirm active=false for exact-domain Apify zero-result evidence unless another selected attempt proves active ads."
+            : "",
           "Return unknown when more evidence is needed. Return only valid JSON."
-        ].join(" ")
+        ].filter(Boolean).join(" ")
       },
       {
         role: "user",
@@ -1927,6 +1949,16 @@ function aiVerificationRejectedProviderResult({ provider, current, rawVerificati
       })
     }
   };
+}
+
+function needsAdsVerificationAdjudication({ before = {}, after = {} } = {}) {
+  return ADS_ACTIVITY_PROVIDERS.some((provider) => {
+    const proposed = before?.[provider];
+    const verified = after?.[provider];
+    return typeof proposed?.active === "boolean" &&
+      verified?.active == null &&
+      ["verification_rejected", "verification_unknown"].includes(verified?.ai?.status);
+  });
 }
 
 function aiVerificationFailedProviderResult({ provider, current, error, aiConfig, phase }) {
