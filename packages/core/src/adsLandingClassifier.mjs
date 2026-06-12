@@ -589,9 +589,50 @@ async function classifyLandingWithDeepInfra({ evidence, aiConfig = config.adsFun
     delete fallbackBody.response_format;
     json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
   }
+  const parsed = parseAiJson(json?.choices?.[0]?.message?.content);
+  if (normalizeAiClassification(parsed)) {
+    return {
+      ...parsed,
+      usage: json?.usage || null
+    };
+  }
+
+  const repairBody = {
+    model,
+    temperature: 0,
+    max_tokens: 500,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You repair an ads landing page classification into strict JSON.",
+          "Return exactly one JSON object with type, confidence, reason, scores, winningSignals, rejectedSignals, landingSummary.",
+          "type must be one of: lead_generation, ecommerce, other.",
+          "Do not include markdown or extra keys."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          previousInvalidResult: parsed || json?.choices?.[0]?.message?.content || null,
+          evidence
+        })
+      }
+    ]
+  };
+  let repairedJson;
+  try {
+    repairedJson = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: repairBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+  } catch (error) {
+    if (!/response_format|json_object|unsupported/i.test(error.message)) throw error;
+    const fallbackRepairBody = { ...repairBody };
+    delete fallbackRepairBody.response_format;
+    repairedJson = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackRepairBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+  }
   return {
-    ...parseAiJson(json?.choices?.[0]?.message?.content),
-    usage: json?.usage || null
+    ...parseAiJson(repairedJson?.choices?.[0]?.message?.content),
+    usage: combineUsage(json?.usage, repairedJson?.usage)
   };
 }
 
@@ -730,8 +771,25 @@ function parseAiJson(content) {
     return JSON.parse(raw);
   } catch {
     const match = raw.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
   }
+}
+
+function combineUsage(...usages) {
+  const valid = usages.filter((usage) => usage && typeof usage === "object");
+  if (!valid.length) return null;
+  const total = {};
+  for (const usage of valid) {
+    for (const [key, value] of Object.entries(usage)) {
+      if (typeof value === "number") total[key] = (total[key] || 0) + value;
+    }
+  }
+  return Object.keys(total).length ? total : null;
 }
 
 export function extractLandingUrlsFromText(text, { business = {} } = {}) {
