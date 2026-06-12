@@ -99,6 +99,8 @@ const queues = {
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
+const reformasMadridJobs = new Map();
+
 await ensureRuntimeSchema();
 
 const server = http.createServer(async (req, res) => {
@@ -646,6 +648,19 @@ const server = http.createServer(async (req, res) => {
         const testId = json.testId || json.test_id || `codex-${Date.now()}`;
 
         if (type === "reformas_madrid_enrichment" || type === "reformas-madrid-enrichment") {
+          if (parseBoolean(json.async ?? json.asyncMode ?? json.async_mode ?? false)) {
+            const job = startReformasMadridAsyncJob({ json, testId, log: logger });
+            return sendJson(res, 202, {
+              testJob: {
+                type,
+                testId,
+                done: false,
+                status: job.status,
+                statusUrl: `/api/test-jobs/reformas-madrid/${encodeURIComponent(testId)}`,
+                reportPath: job.reportPath || null
+              }
+            });
+          }
           try {
             const { runReformasMadridEnrichmentJob } = await import("../../../scripts/reformas-madrid-enrichment-job.mjs");
             const report = await runReformasMadridEnrichmentJob({
@@ -869,6 +884,13 @@ const server = http.createServer(async (req, res) => {
           error: "unsupported_test_job_type",
           supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign", "reformas_madrid_enrichment"]
         });
+      }
+
+      const reformasMadridJobMatch = matchPath(url.pathname, /^\/api\/test-jobs\/reformas-madrid\/([^/]+)$/);
+      if (req.method === "GET" && reformasMadridJobMatch) {
+        const testJob = reformasMadridJobs.get(decodeURIComponent(reformasMadridJobMatch[1]));
+        if (!testJob) return sendJson(res, 404, { error: "test_job_not_found" });
+        return sendJson(res, 200, compactReformasMadridJob(testJob));
       }
 
       const testBusinessMatch = matchPath(url.pathname, /^\/api\/test-jobs\/businesses\/([^/]+)$/);
@@ -1607,6 +1629,84 @@ function parseBoolean(value) {
   if (typeof value === "number") return value !== 0;
   if (typeof value === "string") return ["1", "true", "yes", "on", "si", "sí"].includes(value.trim().toLowerCase());
   return false;
+}
+
+function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
+  const existing = reformasMadridJobs.get(testId);
+  if (existing && ["queued", "running"].includes(existing.status)) return existing;
+
+  const reportPath = json.outputPath || json.output_path ||
+    path.resolve(process.cwd(), "reports", `reformas-madrid-enrichment-${safePathSegment(testId)}.json`);
+  const job = {
+    type: "reformas_madrid_enrichment",
+    testId,
+    status: "queued",
+    done: false,
+    ok: false,
+    createdAt: new Date().toISOString(),
+    startedAt: null,
+    finishedAt: null,
+    reportPath,
+    report: null,
+    error: null
+  };
+  reformasMadridJobs.set(testId, job);
+
+  setImmediate(async () => {
+    job.status = "running";
+    job.startedAt = new Date().toISOString();
+    try {
+      const { runReformasMadridEnrichmentJob } = await import("../../../scripts/reformas-madrid-enrichment-job.mjs");
+      const report = await runReformasMadridEnrichmentJob({
+        limit: json.limit || json.requestedLimit || json.requested_limit || 100,
+        requireDecisionMaker: parseBoolean(json.requireDecisionMaker ?? json.require_decision_maker ?? false),
+        maxDeepseekUsd: json.maxDeepseekUsd ?? json.max_deepseek_usd ?? 5,
+        maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
+        apifyFallbackMode: json.apifyFallbackMode || json.apify_fallback_mode || config.adsEnrichment.apifyFallbackMode,
+        outputPath: reportPath,
+        logger: log
+      });
+      job.report = report;
+      job.ok = report.failures.length === 0;
+      job.status = job.ok ? "completed" : "failed";
+      job.reportPath = report.outputPath || reportPath;
+    } catch (error) {
+      log.error({ error, testId }, "async reformas Madrid enrichment test job failed");
+      job.status = "failed";
+      job.error = {
+        code: error.code || "job_error",
+        message: error.message,
+        missing: error.missing || undefined
+      };
+    } finally {
+      job.done = true;
+      job.finishedAt = new Date().toISOString();
+    }
+  });
+
+  return job;
+}
+
+function compactReformasMadridJob(job = {}) {
+  return {
+    testJob: {
+      type: job.type || "reformas_madrid_enrichment",
+      testId: job.testId,
+      status: job.status,
+      done: job.done === true,
+      ok: job.ok === true,
+      createdAt: job.createdAt || null,
+      startedAt: job.startedAt || null,
+      finishedAt: job.finishedAt || null,
+      reportPath: job.reportPath || null,
+      error: job.error || null
+    },
+    report: job.report ? compactReformasMadridReport(job.report) : null
+  };
+}
+
+function safePathSegment(value) {
+  return String(value || "job").replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120) || "job";
 }
 
 function compactReformasMadridReport(report = {}) {
