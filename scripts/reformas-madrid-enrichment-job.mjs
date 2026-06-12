@@ -68,6 +68,7 @@ if (isCliRun()) {
       maxDeepseekUsdPerBusiness: args.maxDeepseekUsdPerBusiness,
       apifyFallbackMode: args.apifyFallbackMode,
       apifyMetaMaxSources: args.apifyMetaMaxSources,
+      metaApifyFirst: args.metaApifyFirst,
       googleApifyFallbackEnabled: args.googleApifyFallbackEnabled,
       outputPath: args.out
     });
@@ -90,6 +91,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   const maxDeepseekUsd = numberOrNull(options.maxDeepseekUsd);
   const maxDeepseekUsdPerBusiness = numberOrNull(options.maxDeepseekUsdPerBusiness);
   const apifyFallbackMode = normalizeApifyFallbackMode(options.apifyFallbackMode || config.adsEnrichment.apifyFallbackMode || "off");
+  const metaApifyFirst = Boolean(options.metaApifyFirst);
   const googleApifyFallbackEnabled = options.googleApifyFallbackEnabled === true;
   const apifyMetaMaxSources = positiveInt(options.apifyMetaMaxSources, null);
   const outputPath = options.outputPath
@@ -119,6 +121,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         requireDecisionMaker,
         apifyFallbackMode,
         apifyMetaMaxSources,
+        metaApifyFirst,
         concurrency
       }), null);
     }
@@ -158,6 +161,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     requireDecisionMaker,
     apifyFallbackMode,
     apifyMetaMaxSources,
+    metaApifyFirst,
     concurrency,
     outputPath,
     active: {
@@ -187,6 +191,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         requireDecisionMaker,
         apifyFallbackMode,
         apifyMetaMaxSources,
+        metaApifyFirst,
         concurrency,
         outputPath,
         active: {
@@ -200,7 +205,8 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         firecrawl,
         apify,
         country: "ES",
-        apifyFallbackMode
+        apifyFallbackMode,
+        metaApifyFirst
       });
       await options.onProgress?.(buildProgressReport({
         limit,
@@ -211,6 +217,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         requireDecisionMaker,
         apifyFallbackMode,
         apifyMetaMaxSources,
+        metaApifyFirst,
         concurrency,
         outputPath,
         active: {
@@ -277,6 +284,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
       requireDecisionMaker,
       apifyFallbackMode,
       apifyMetaMaxSources,
+      metaApifyFirst,
       concurrency
     });
     partialReport.outputPath = outputPath;
@@ -303,6 +311,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     requireDecisionMaker,
     apifyFallbackMode,
     apifyMetaMaxSources,
+    metaApifyFirst,
     concurrency
   });
   report.outputPath = outputPath;
@@ -374,6 +383,7 @@ function buildProgressReport({
   requireDecisionMaker,
   apifyFallbackMode,
   apifyMetaMaxSources,
+  metaApifyFirst,
   concurrency,
   outputPath,
   active
@@ -387,6 +397,7 @@ function buildProgressReport({
     requireDecisionMaker,
     apifyFallbackMode,
     apifyMetaMaxSources,
+    metaApifyFirst,
     concurrency
   });
   report.outputPath = outputPath;
@@ -396,7 +407,7 @@ function buildProgressReport({
   return report;
 }
 
-function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, concurrency }) {
+function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, metaApifyFirst, concurrency }) {
   return {
     generatedAt: new Date().toISOString(),
     outputPath,
@@ -408,6 +419,7 @@ function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMak
       requireDecisionMaker,
       apifyFallbackMode,
       apifyMetaMaxSources: apifyMetaMaxSources || null,
+      metaApifyFirst: metaApifyFirst === true,
       concurrency: concurrency || null
     },
     status: "running_discovery",
@@ -629,7 +641,7 @@ function summarizeBusinessResult({ ads, decisionMaker, apifyStats, deepseek }) {
   };
 }
 
-function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, concurrency }) {
+function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, metaApifyFirst, concurrency }) {
   const deepseek = summarizeDeepseekCostItems(
     results.flatMap((row) => (row.summary?.deepseek?.items || []).map((item) => ({
       ...item,
@@ -653,6 +665,7 @@ function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseek
       requireDecisionMaker,
       apifyFallbackMode,
       apifyMetaMaxSources: apifyMetaMaxSources || null,
+      metaApifyFirst: metaApifyFirst === true,
       concurrency: concurrency || null
     },
     summary: {
@@ -759,6 +772,8 @@ function parseArgs(argv) {
     } else if (arg === "--apify-meta-max-sources") {
       parsed.apifyMetaMaxSources = argv[index + 1];
       index += 1;
+    } else if (arg === "--meta-apify-first") {
+      parsed.metaApifyFirst = true;
     } else if (arg === "--google-apify-fallback-enabled") {
       parsed.googleApifyFallbackEnabled = true;
     }

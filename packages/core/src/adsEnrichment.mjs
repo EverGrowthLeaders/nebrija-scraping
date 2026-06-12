@@ -30,7 +30,8 @@ export async function enrichBusinessAds({
   aiConfig = config.adsActivityAi,
   landingAiClassifier,
   landingAiConfig = config.adsFunnelAi,
-  apifyFallbackMode = config.adsEnrichment?.apifyFallbackMode || "off"
+  apifyFallbackMode = config.adsEnrichment?.apifyFallbackMode || "off",
+  metaApifyFirst = false
 }) {
   if (!firecrawl) throw new Error("firecrawl_client_required");
   const socialDiscovery = await discoverSocialsForAds({ business, firecrawl, aiConfig });
@@ -48,7 +49,14 @@ export async function enrichBusinessAds({
     discoveryPlan?.ai?.status === "planned" ||
     discoveryPlan?.ai?.status === "seed";
   const restrictToAiPlannedTargets = requirePlannedEvidence && discoveryPlan?.ai?.status === "planned";
-  const firecrawlMeta = shouldInspectAdsLibraries
+  const canInspectMetaApifyFirst = metaApifyFirst &&
+    apify?.enabled !== false &&
+    typeof apify?.runFacebookAdsLibrary === "function" &&
+    discoveryPlan?.ai?.status === "planned";
+  const apifyFirstMeta = canInspectMetaApifyFirst
+    ? await inspectMetaAdsWithApify({ business: enrichedBusiness, apify, country, now, socialDiscovery, discoveryPlan })
+    : null;
+  const firecrawlMeta = shouldInspectAdsLibraries && !apifyFirstMeta
     ? await inspectMetaAds({ business: enrichedBusiness, firecrawl, country, now, socialDiscovery, discoveryPlan, requirePlannedEvidence: restrictToAiPlannedTargets })
     : aiDiscoveryPlanRequiredProviderEvidence({ provider: "meta", business: enrichedBusiness, country, now, discoveryPlan, socialDiscovery });
   const firecrawlGoogle = shouldInspectAdsLibraries
@@ -56,16 +64,17 @@ export async function enrichBusinessAds({
     : aiDiscoveryPlanRequiredProviderEvidence({ provider: "google", business: enrichedBusiness, country, now, discoveryPlan });
   let resolved = await resolveAdsActivity({
     business: enrichedBusiness,
-    providerEvidence: { meta: firecrawlMeta, google: firecrawlGoogle },
+    providerEvidence: { meta: mergeProviderEvidence(firecrawlMeta, apifyFirstMeta), google: firecrawlGoogle },
     aiResolver,
     aiVerifier,
     aiConfig,
     now,
-    phase: "firecrawl"
+    phase: apifyFirstMeta ? "firecrawl_apify" : "firecrawl"
   });
 
   if (shouldRunApifyAdsFallback({ resolved, apify, mode: apifyFallbackMode, aiResolver, aiConfig, discoveryPlan })) {
     const shouldCollectMetaApify = shouldCollectApifyProvider({ provider: "meta", resolved, mode: apifyFallbackMode }) &&
+      !apifyFirstMeta &&
       typeof apify?.runFacebookAdsLibrary === "function";
     const shouldCollectGoogleApify = shouldCollectApifyProvider({ provider: "google", resolved, mode: apifyFallbackMode }) &&
       (apify?.googleFallbackEnabled === true || config.adsEnrichment?.apifyGoogleFallbackEnabled === true) &&
@@ -79,7 +88,7 @@ export async function enrichBusinessAds({
     resolved = await resolveAdsActivity({
       business: enrichedBusiness,
       providerEvidence: {
-        meta: mergeProviderEvidence(firecrawlMeta, apifyMeta),
+        meta: mergeProviderEvidence(mergeProviderEvidence(firecrawlMeta, apifyFirstMeta), apifyMeta),
         google: mergeProviderEvidence(firecrawlGoogle, apifyGoogle)
       },
       aiResolver,
