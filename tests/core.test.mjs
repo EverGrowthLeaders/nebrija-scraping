@@ -188,6 +188,23 @@ handle"
   assert.equal(parsed.metaProbes[0].reason, "official page\nhandle");
 });
 
+test("repairs AI JSON with missing commas between properties", () => {
+  const parsed = parseAiJson(`{
+    "metaProbes": [
+      {
+        "query": "reformashoymadrid"
+        "searchType": "page"
+        "country": "ES"
+      }
+    ],
+    "googleUrls": []
+  }`);
+
+  assert.equal(parsed.metaProbes[0].query, "reformashoymadrid");
+  assert.equal(parsed.metaProbes[0].searchType, "page");
+  assert.equal(parsed.metaProbes[0].country, "ES");
+});
+
 test("estimates Deepseek V4 Flash usage cost with cached tokens", () => {
   const cost = estimateDeepseekUsageCost({
     prompt_tokens: 1_000_000,

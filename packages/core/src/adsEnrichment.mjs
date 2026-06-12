@@ -2,6 +2,7 @@ import { classifyAdsLandingIntent, extractLandingUrlsFromText } from "./adsLandi
 import { estimateDeepseekUsageCost } from "./aiUsage.mjs";
 import { config } from "./config.mjs";
 import { postDeepInfraJson } from "./deepinfraClient.mjs";
+import { jsonrepair } from "jsonrepair";
 
 const DEFAULT_COUNTRY = "ES";
 const GOOGLE_RECENT_DAYS = 30;
@@ -2843,6 +2844,8 @@ export function parseAiJson(content) {
   const candidates = unique([
     raw,
     objectMatch ? objectMatch[0] : "",
+    repairJsonWithLibrary(raw),
+    objectMatch ? repairJsonWithLibrary(objectMatch[0]) : "",
     ...jsonRepairCandidates(raw),
     ...(objectMatch ? jsonRepairCandidates(objectMatch[0]) : [])
   ]);
@@ -2857,6 +2860,14 @@ export function parseAiJson(content) {
   }
   if (lastError) throw lastError;
   return null;
+}
+
+function repairJsonWithLibrary(value) {
+  try {
+    return jsonrepair(String(value || ""));
+  } catch {
+    return "";
+  }
 }
 
 function jsonRepairCandidates(raw) {

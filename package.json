@@ -19,6 +19,7 @@
   "dependencies": {
     "bullmq": "^5.48.0",
     "ioredis": "^5.5.0",
+    "jsonrepair": "^3.14.0",
     "pg": "^8.13.1",
     "pino": "^9.6.0"
   }
