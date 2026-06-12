@@ -657,7 +657,8 @@ const server = http.createServer(async (req, res) => {
                 done: false,
                 status: job.status,
                 statusUrl: `/api/test-jobs/reformas-madrid/${encodeURIComponent(testId)}`,
-                reportPath: job.reportPath || null
+                reportPath: job.reportPath || null,
+                progress: job.progress || null
               }
             });
           }
@@ -1648,6 +1649,13 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
     finishedAt: null,
     reportPath,
     report: null,
+    progress: {
+      processed: 0,
+      ok: 0,
+      failed: 0,
+      total: Number(json.limit || json.requestedLimit || json.requested_limit || 100) || 100,
+      lastBusiness: null
+    },
     error: null
   };
   reformasMadridJobs.set(testId, job);
@@ -1660,11 +1668,27 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
       const report = await runReformasMadridEnrichmentJob({
         limit: json.limit || json.requestedLimit || json.requested_limit || 100,
         requireDecisionMaker: parseBoolean(json.requireDecisionMaker ?? json.require_decision_maker ?? false),
+        concurrency: json.concurrency || json.parallelism || json.maxConcurrency || json.max_concurrency,
         maxDeepseekUsd: json.maxDeepseekUsd ?? json.max_deepseek_usd ?? 5,
         maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
         apifyFallbackMode: json.apifyFallbackMode || json.apify_fallback_mode || config.adsEnrichment.apifyFallbackMode,
         outputPath: reportPath,
-        logger: log
+        logger: log,
+        onProgress: async (partialReport, row) => {
+          job.report = partialReport;
+          job.progress = {
+            processed: partialReport.summary?.processed || 0,
+            ok: partialReport.summary?.ok || 0,
+            failed: partialReport.summary?.failed || 0,
+            total: partialReport.target?.requestedLimit || job.progress.total,
+            lastBusiness: row?.business?.name || null,
+            metaActive: partialReport.summary?.metaActive ?? null,
+            googleActive: partialReport.summary?.googleActive ?? null,
+            decisionMakersFound: partialReport.summary?.decisionMakersFound ?? null,
+            apify: partialReport.summary?.apify || null,
+            deepseek: partialReport.summary?.deepseek || null
+          };
+        }
       });
       job.report = report;
       job.ok = report.failures.length === 0;
@@ -1699,6 +1723,7 @@ function compactReformasMadridJob(job = {}) {
       startedAt: job.startedAt || null,
       finishedAt: job.finishedAt || null,
       reportPath: job.reportPath || null,
+      progress: job.progress || null,
       error: job.error || null
     },
     report: job.report ? compactReformasMadridReport(job.report) : null

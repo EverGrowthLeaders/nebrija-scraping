@@ -25,6 +25,7 @@ const { FirecrawlClient } = await import("../packages/core/src/firecrawl.mjs");
 const { GooglePlacesClient } = await import("../packages/core/src/googlePlaces.mjs");
 
 const DEFAULT_LIMIT = 100;
+const DEFAULT_CONCURRENCY = 5;
 const DEFAULT_OUT_DIR = "reports";
 const REFORMAS_MADRID_QUERIES = [
   "empresas de reformas Madrid",
@@ -62,6 +63,7 @@ if (isCliRun()) {
     const report = await runReformasMadridEnrichmentJob({
       limit: args.limit,
       requireDecisionMaker: args.requireDecisionMaker,
+      concurrency: args.concurrency,
       maxDeepseekUsd: args.maxDeepseekUsd,
       maxDeepseekUsdPerBusiness: args.maxDeepseekUsdPerBusiness,
       apifyFallbackMode: args.apifyFallbackMode,
@@ -81,6 +83,7 @@ if (isCliRun()) {
 
 export async function runReformasMadridEnrichmentJob(options = {}) {
   const limit = positiveInt(options.limit, DEFAULT_LIMIT);
+  const concurrency = boundedConcurrency(options.concurrency, DEFAULT_CONCURRENCY);
   const requireDecisionMaker = Boolean(options.requireDecisionMaker);
   const maxDeepseekUsd = numberOrNull(options.maxDeepseekUsd);
   const maxDeepseekUsdPerBusiness = numberOrNull(options.maxDeepseekUsdPerBusiness);
@@ -126,9 +129,11 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   const results = [];
   const failures = [];
 
-  logger?.log?.(`[job] Processing ${selectedBusinesses.length} reformas businesses in Madrid.`);
+  logger?.log?.(`[job] Processing ${selectedBusinesses.length} reformas businesses in Madrid with concurrency=${concurrency}.`);
 
-  for (const [index, business] of selectedBusinesses.entries()) {
+  let nextIndex = 0;
+  async function processOne(index) {
+    const business = selectedBusinesses[index];
     const label = `${index + 1}/${selectedBusinesses.length} ${business.name}`;
     logger?.log?.(`\n[job] ${label}`);
     const { apify, apifyStats } = createCountingApifyClient(apifyFallbackMode);
@@ -170,7 +175,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         ads,
         decisionMaker
       };
-      results.push(row);
+      results[index] = row;
       logger?.log?.(JSON.stringify(row.summary, null, 2));
     } catch (error) {
       const failure = {
@@ -180,21 +185,52 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         message: error.message
       };
       failures.push(failure);
-      results.push({
+      results[index] = {
         index: index + 1,
         business,
         startedAt,
         finishedAt: new Date().toISOString(),
         ok: false,
         failures: [failure]
-      });
+      };
       logger?.error?.(JSON.stringify(failure, null, 2));
     }
 
-    await writeReport(outputPath, buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode }));
+    const partialReport = buildReport({
+      limit,
+      selectedBusinesses,
+      results: orderedResults(results),
+      failures,
+      maxDeepseekUsd,
+      requireDecisionMaker,
+      apifyFallbackMode,
+      concurrency
+    });
+    partialReport.outputPath = outputPath;
+    await writeReport(outputPath, partialReport);
+    await options.onProgress?.(partialReport, results[index]);
   }
 
-  const report = buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode });
+  async function worker() {
+    while (nextIndex < selectedBusinesses.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      await processOne(index);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, selectedBusinesses.length) }, () => worker()));
+
+  const report = buildReport({
+    limit,
+    selectedBusinesses,
+    results: orderedResults(results),
+    failures,
+    maxDeepseekUsd,
+    requireDecisionMaker,
+    apifyFallbackMode,
+    concurrency
+  });
   report.outputPath = outputPath;
   await writeReport(outputPath, report);
   return report;
@@ -425,7 +461,7 @@ function summarizeBusinessResult({ ads, decisionMaker, apifyStats, deepseek }) {
   };
 }
 
-function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode }) {
+function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode, concurrency }) {
   const deepseek = summarizeDeepseekCostItems(
     results.flatMap((row) => (row.summary?.deepseek?.items || []).map((item) => ({
       ...item,
@@ -447,7 +483,8 @@ function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseek
       requestedLimit: limit,
       processedLimit: selectedBusinesses.length,
       requireDecisionMaker,
-      apifyFallbackMode
+      apifyFallbackMode,
+      concurrency: concurrency || null
     },
     summary: {
       processed: results.length,
@@ -503,6 +540,10 @@ function dedupeFailures(failures = []) {
   return deduped;
 }
 
+function orderedResults(results = []) {
+  return results.filter(Boolean).sort((left, right) => Number(left.index || 0) - Number(right.index || 0));
+}
+
 async function writeReport(filePath, report) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
@@ -540,6 +581,9 @@ function parseArgs(argv) {
       index += 1;
     } else if (arg === "--require-decision-maker") {
       parsed.requireDecisionMaker = true;
+    } else if (arg === "--concurrency") {
+      parsed.concurrency = argv[index + 1];
+      index += 1;
     } else if (arg === "--apify-fallback-mode") {
       parsed.apifyFallbackMode = argv[index + 1];
       index += 1;
@@ -551,6 +595,11 @@ function parseArgs(argv) {
 function positiveInt(value, fallback) {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function boundedConcurrency(value, fallback) {
+  const parsed = positiveInt(value, fallback);
+  return Math.min(10, Math.max(1, parsed));
 }
 
 function numberOrNull(value) {
