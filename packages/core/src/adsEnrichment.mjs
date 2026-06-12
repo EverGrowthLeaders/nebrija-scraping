@@ -1047,7 +1047,7 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
 
   try {
     const input = buildApifyGoogleInput({ domain, country, apify });
-    const items = await apify.runGoogleAdsTransparency(input);
+    const items = await runGoogleAdsTransparencyWithRetry(apify, input);
     const apifyResult = inferApifyGoogleActivity({ items, business, domain, country, now });
     attempts.push(adAttempt(
       {
@@ -1108,6 +1108,19 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
     ));
     return withAttempts(result, attempts);
   }
+}
+
+async function runGoogleAdsTransparencyWithRetry(apify, input) {
+  let lastError = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      return await apify.runGoogleAdsTransparency(input);
+    } catch (error) {
+      lastError = error;
+      if (isExternalQuotaError(error)) throw error;
+    }
+  }
+  throw lastError;
 }
 
 function buildApifyGoogleInput({ domain, country, apify }) {
