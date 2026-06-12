@@ -2792,11 +2792,12 @@ test("normalizes AI Meta page URLs before sending them to Apify", async () => {
     facebookAdsActorId: "curious_coder~facebook-ads-library-scraper",
     async runFacebookAdsLibrary(input) {
       apifyUrls.push(input.urls[0].url);
-      const parsed = new URL(input.urls[0].url);
-      assert.equal(parsed.searchParams.get("active_status"), "active");
-      assert.equal(parsed.searchParams.get("q"), "planned_handle");
-      assert.equal(parsed.searchParams.get("search_type"), "page");
-      assert.equal(parsed.searchParams.has("view_all_page_id"), false);
+      assert.equal(input.urls[0].url, "https://www.facebook.com/planned_handle");
+      assert.equal(input.limitPerSource, 1);
+      assert.equal(input.count, 1);
+      assert.equal(input.scrapeAdDetails, false);
+      assert.equal(input["scrapePageAds.activeStatus"], "active");
+      assert.equal(input["scrapePageAds.countryCode"], "ES");
       return [];
     }
   };
@@ -2820,6 +2821,55 @@ test("normalizes AI Meta page URLs before sending them to Apify", async () => {
   });
 
   assert.equal(apifyUrls.length, 1);
+});
+
+test("uses Facebook page URLs for AI-planned Meta page probes with Curious actor", async () => {
+  const apifyInputs = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://planned.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    facebookAdsActorId: "curious_coder~facebook-ads-library-scraper",
+    async runFacebookAdsLibrary(input) {
+      apifyInputs.push(input);
+      assert.equal(input.urls[0].url, "https://www.facebook.com/reformashoymadrid");
+      assert.equal(input.limitPerSource, 1);
+      assert.equal(input.count, 1);
+      assert.equal(input.scrapeAdDetails, false);
+      return [];
+    }
+  };
+
+  await enrichBusinessAds({
+    business: { name: "Reformas Hoy", website: "https://reformashoy.com", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        {
+          query: "reformashoymadrid",
+          searchType: "page",
+          country: "ES",
+          reason: "ai_official_facebook_handle"
+        }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyInputs.length, 1);
 });
 
 test("keeps CrawlerBros Facebook Ads actor fallback capped when configured", async () => {

@@ -2107,12 +2107,19 @@ function buildApifyMetaSources(business, country, discoveryPlan) {
     : [];
 
   for (const entry of aiPlannedMetaUrls) {
-    const sourceUrl = normalizeApifyMetaSourceUrl(entry.url, entry.country || metaCountry);
-    if (!sourceUrl) continue;
+    const normalizedUrl = normalizeApifyMetaSourceUrl(entry.url, entry.country || metaCountry);
+    if (!normalizedUrl) continue;
+    const searchType = metaSearchTypeFromUrl(normalizedUrl);
+    const query = entry.query || metaApifySearchTerm({ sourceUrl: normalizedUrl });
+    const sourceUrl = facebookPageUrlFromMetaSource({
+      query,
+      searchType,
+      sourceUrl: normalizedUrl
+    }) || normalizedUrl;
     addApifySource(sources, {
       strategy: entry.strategy || "ai_planned_meta_url_apify",
-      query: entry.query || metaApifySearchTerm({ sourceUrl }),
-      searchType: metaSearchTypeFromUrl(sourceUrl),
+      query,
+      searchType,
       country: entry.country || metaCountry,
       sourceUrl,
       confidence: 0.88,
@@ -2121,16 +2128,21 @@ function buildApifyMetaSources(business, country, discoveryPlan) {
     });
   }
   for (const probe of aiPlannedMetaProbes) {
+    const libraryUrl = buildMetaAdsLibraryUrl({
+      query: probe.query,
+      country: probe.country || "ALL",
+      searchType: probe.searchType
+    });
     addApifySource(sources, {
       strategy: probe.strategy || `${probe.plannedBy || "seed"}_meta_probe_apify`,
       query: probe.query,
       searchType: probe.searchType,
       country: probe.country || "ALL",
-      sourceUrl: buildMetaAdsLibraryUrl({
+      sourceUrl: facebookPageUrlFromMetaSource({
         query: probe.query,
-        country: probe.country || "ALL",
-        searchType: probe.searchType
-      }),
+        searchType: probe.searchType,
+        sourceUrl: libraryUrl
+      }) || libraryUrl,
       confidence: probe.confidence || (probe.plannedBy === "ai" ? 0.86 : 0.7),
       plannedBy: probe.plannedBy || "seed",
       discoveryReason: probe.discoveryReason || `${probe.plannedBy || "seed"}_ads_discovery`
@@ -2207,6 +2219,40 @@ function metaSearchTypeFromUrl(value) {
     return normalizeMetaSearchType(new URL(value).searchParams.get("search_type"));
   } catch {
     return "keyword_unordered";
+  }
+}
+
+function facebookPageUrlFromMetaSource({ query, searchType, sourceUrl } = {}) {
+  const normalizedSearchType = normalizeMetaSearchType(searchType || metaSearchTypeFromUrl(sourceUrl || ""));
+  if (normalizedSearchType !== "page") return "";
+  return facebookPageUrlFromQuery(query || metaApifySearchTerm({ sourceUrl }));
+}
+
+function facebookPageUrlFromQuery(value) {
+  const raw = cleanQuery(value).replace(/^@+/, "");
+  if (!raw || /\s/.test(raw) || /^\d+$/.test(raw)) return "";
+  const parsedFacebookUrl = parseFacebookPageUrl(raw);
+  if (parsedFacebookUrl) return parsedFacebookUrl;
+  if (!/^[a-z0-9][a-z0-9._-]{1,79}$/i.test(raw)) return "";
+  if (/\.[a-z]{2,}$/i.test(raw)) return "";
+  return `https://www.facebook.com/${encodeURIComponent(raw)}`;
+}
+
+function parseFacebookPageUrl(value) {
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "facebook.com" && host !== "fb.com") return "";
+    const pathParts = parsed.pathname.split("/").filter(Boolean);
+    if (pathParts[0] === "profile.php" && /^\d+$/.test(parsed.searchParams.get("id") || "")) {
+      return `https://www.facebook.com/profile.php?id=${parsed.searchParams.get("id")}`;
+    }
+    const handle = pathParts[0] || "";
+    if (!handle || /^(ads|ad|share|sharer|groups|events|marketplace|watch|reel|reels|stories)$/i.test(handle)) return "";
+    if (!/^[a-z0-9][a-z0-9._-]{1,79}$/i.test(handle)) return "";
+    return `https://www.facebook.com/${encodeURIComponent(handle)}`;
+  } catch {
+    return "";
   }
 }
 
