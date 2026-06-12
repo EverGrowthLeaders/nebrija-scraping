@@ -1889,6 +1889,7 @@ function buildAdsActivityEvidencePack({
       "A provider is inactive only when official library evidence clearly says no active/current ads for this exact business query.",
       "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
       "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
+      "For Meta, an Apify active result from a page-scoped Facebook source URL is exact page evidence; keyword or domain searches are not page-scoped and still need identity proof.",
       "Copy landing URLs only from the evidence. Never invent URLs, advertiser names, profile names or dates."
     ]
   };
@@ -1936,6 +1937,7 @@ function buildAdsActivityVerificationPack({
       "Confirm only the exact proposed boolean decision for each provider.",
       "confirmed=true requires a selected attempt or source URL that supports the same active boolean for the exact business identity.",
       "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
+      "For Meta, accept active=true when the selected evidence is an Apify active result from a page-scoped Facebook source URL for the planned page; do not apply this to keyword or domain searches.",
       "Reject inactive when the evidence only shows a failed scrape, blocked page, generic no-results text, or an unverified query.",
       "Use unknown when the evidence is insufficient and set needsMoreEvidence=true."
     ]
@@ -2360,6 +2362,39 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
   }
 
   const evidenceSnippet = compactSnippet(activeItems.map((item) => collectApifyItemStrings(item).join("\n")).join("\n---\n"), 1800);
+  if (activeItems.length && isPageScopedApifyMetaSource(source)) {
+    const latestDetectedDate = apifyItemDate(activeItems[0], now);
+    const landingUrls = activeItems.flatMap((item) => collectApifyLandingUrls(item, business)).slice(0, 8);
+    const spendEstimate = estimateMetaSpendFromApifyItems({
+      matchedItems: activeItems.map((item) => ({
+        item,
+        match: { confidence: 0.9, fields: ["facebook_handle"] }
+      })),
+      business,
+      now
+    });
+    return evidence({
+      provider: "meta",
+      status: "active",
+      active: true,
+      confidence: Math.max(Number(source.confidence || 0), 0.9),
+      sourceUrl: apifyMetaItemUrl(activeItems[0]) || source.sourceUrl,
+      reason: "apify_active_items_for_page_scoped_source",
+      latestDetectedDate,
+      context: {
+        ...source,
+        matchedFields: ["facebook_handle"],
+        itemsSeen: items.length,
+        total: apifyTotal(items),
+        matchedItems: activeItems.length,
+        samplePageName: samplePageName(activeItems[0]),
+        adArchiveId: apifyMetaItemAdId(activeItems[0]),
+        landingUrls,
+        spendEstimate,
+        evidenceSnippet: evidenceSnippet || "Apify returned active Meta Ads Library items for a page-scoped Facebook source URL."
+      }
+    });
+  }
   if (!activeItems.length && isPreciseApifyMetaSource(source)) {
     return evidence({
       provider: "meta",
@@ -2392,6 +2427,24 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       evidenceSnippet
     }
   });
+}
+
+function isPageScopedApifyMetaSource(source = {}) {
+  const sourceUrl = String(source.sourceUrl || "");
+  const searchType = String(source.searchType || "").toLowerCase();
+  if (parseFacebookPageUrl(sourceUrl)) return true;
+  try {
+    const parsed = new URL(sourceUrl);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "facebook.com" && host !== "fb.com") return false;
+    if (!/\/ads\/library\/?$/i.test(parsed.pathname)) return false;
+    if (parsed.searchParams.get("view_all_page_id") || parsed.searchParams.get("page_id") || parsed.searchParams.get("id")) {
+      return true;
+    }
+    return searchType === "page" && /^[a-z0-9][a-z0-9._-]{1,79}$/i.test(String(source.query || ""));
+  } catch {
+    return false;
+  }
 }
 
 function isPreciseApifyMetaSource(source = {}) {
