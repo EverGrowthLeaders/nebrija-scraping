@@ -326,7 +326,7 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 
 - `DATABASE_URL`
 - `REDIS_URL`
-- `TEST_JOBS_API_KEYS`
+- `TEST_JOBS_API_KEYS` o `TEST_JOBS_API_KEY_SHA256S` para proteger `/api/test-jobs/*`
 - `GOOGLE_OAUTH_CLIENT_ID`
 - `GOOGLE_OAUTH_CLIENT_SECRET`
 - `FIRECRAWL_BASE_URL`
@@ -347,6 +347,12 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 ## API interna de test
 
 Los endpoints `/api/test-jobs/*` requieren `x-api-key` o `Authorization: Bearer`.
+Puedes configurar `TEST_JOBS_API_KEYS` con claves en claro, o `TEST_JOBS_API_KEY_SHA256S`
+con hashes SHA-256 separados por coma para no persistir la clave:
+
+```bash
+printf '%s' "$TEST_JOBS_API_KEY" | shasum -a 256
+```
 
 Health interno:
 
