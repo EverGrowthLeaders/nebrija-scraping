@@ -294,6 +294,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
 
   async function worker() {
     while (nextIndex < selectedBusinesses.length) {
+      if (await options.shouldCancel?.()) break;
       const index = nextIndex;
       nextIndex += 1;
       await processOne(index);
@@ -314,6 +315,10 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     metaApifyFirst,
     concurrency
   });
+  if (await options.shouldCancel?.()) {
+    report.cancelled = true;
+    report.status = "canceled";
+  }
   report.outputPath = outputPath;
   await writeReport(outputPath, report);
   return report;

@@ -931,6 +931,13 @@ const server = http.createServer(async (req, res) => {
         if (!testJob) return sendJson(res, 404, { error: "test_job_not_found" });
         return sendJson(res, 200, compactReformasMadridJob(testJob));
       }
+      if (req.method === "DELETE" && reformasMadridJobMatch) {
+        const testJob = reformasMadridJobs.get(decodeURIComponent(reformasMadridJobMatch[1]));
+        if (!testJob) return sendJson(res, 404, { error: "test_job_not_found" });
+        testJob.cancelRequested = true;
+        if (!testJob.done && testJob.status !== "completed") testJob.status = "canceling";
+        return sendJson(res, 202, compactReformasMadridJob(testJob));
+      }
 
       const testBusinessMatch = matchPath(url.pathname, /^\/api\/test-jobs\/businesses\/([^/]+)$/);
       if (req.method === "GET" && testBusinessMatch) {
@@ -1710,6 +1717,7 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
       total: Number(json.limit || json.requestedLimit || json.requested_limit || 100) || 100,
       lastBusiness: null
     },
+    cancelRequested: false,
     error: null
   };
   reformasMadridJobs.set(testId, job);
@@ -1731,6 +1739,7 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
         metaApifyFirst: parseBoolean(json.metaApifyFirst ?? json.meta_apify_first ?? false),
         outputPath: reportPath,
         logger: log,
+        shouldCancel: () => job.cancelRequested === true,
         onProgress: async (partialReport, row) => {
           job.report = partialReport;
           job.progress = {
@@ -1752,8 +1761,8 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
         }
       });
       job.report = report;
-      job.ok = report.failures.length === 0;
-      job.status = job.ok ? "completed" : "failed";
+      job.ok = report.cancelled === true ? false : report.failures.length === 0;
+      job.status = report.cancelled === true ? "canceled" : (job.ok ? "completed" : "failed");
       job.reportPath = report.outputPath || reportPath;
     } catch (error) {
       log.error({ error, testId }, "async reformas Madrid enrichment test job failed");
@@ -1785,6 +1794,7 @@ function compactReformasMadridJob(job = {}) {
       finishedAt: job.finishedAt || null,
       reportPath: job.reportPath || null,
       progress: job.progress || null,
+      cancelRequested: job.cancelRequested === true,
       error: job.error || null
     },
     report: job.report ? compactReformasMadridReport(job.report) : null
