@@ -303,9 +303,69 @@ async function planDecisionMakerSearchWithDeepInfra({
     });
   }
 
+  const parsed = parseAiJson(json?.choices?.[0]?.message?.content);
+  if (normalizeAiDecisionMakerSearchPlan(parsed)?.queries?.length) {
+    return {
+      ...parsed,
+      usage: json?.usage || null
+    };
+  }
+
+  const repairBody = {
+    model,
+    temperature: 0,
+    max_tokens: 550,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "Repair or regenerate a LinkedIn decision-maker search plan as strict JSON.",
+          "Return exactly one JSON object with a queries array.",
+          "Each query must be a precise Google/Firecrawl search string for LinkedIn personal or company evidence.",
+          "Do not include markdown or extra text."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          previousInvalidResult: parsed || json?.choices?.[0]?.message?.content || null,
+          business: compactObject({
+            name: business.name,
+            cleanName: cleanCompanyName(business.name),
+            brandName: brandCompanyName(business.name),
+            city: business.city,
+            niche: business.niche || business.category,
+            website: business.website
+          }),
+          seedQueries: (seedPlan?.queries || []).slice(0, 10),
+          outputSchema: { queries: [{ query: "site:linkedin.com/in ...", reason: "short_snake_case_reason" }] }
+        })
+      }
+    ]
+  };
+  let repaired;
+  try {
+    repaired = await postDeepInfraJson({
+      baseUrl,
+      apiKey: aiConfig?.apiKey,
+      body: repairBody,
+      timeoutMs: aiConfig?.requestTimeoutMs || 30000
+    });
+  } catch (error) {
+    if (!/response_format|json_object|unsupported/i.test(error.message)) throw error;
+    const fallbackRepairBody = { ...repairBody };
+    delete fallbackRepairBody.response_format;
+    repaired = await postDeepInfraJson({
+      baseUrl,
+      apiKey: aiConfig?.apiKey,
+      body: fallbackRepairBody,
+      timeoutMs: aiConfig?.requestTimeoutMs || 30000
+    });
+  }
   return {
-    ...parseAiJson(json?.choices?.[0]?.message?.content),
-    usage: json?.usage || null
+    ...parseAiJson(repaired?.choices?.[0]?.message?.content),
+    usage: combineAiUsage(json?.usage, repaired?.usage)
   };
 }
 
@@ -1286,8 +1346,25 @@ function parseAiJson(content) {
     return JSON.parse(raw);
   } catch {
     const match = raw.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+    if (!match) return null;
+    try {
+      return JSON.parse(match[0]);
+    } catch {
+      return null;
+    }
   }
+}
+
+function combineAiUsage(primary, secondary) {
+  if (!primary) return secondary || null;
+  if (!secondary) return primary;
+  return {
+    prompt_tokens: Number(primary.prompt_tokens || 0) + Number(secondary.prompt_tokens || 0),
+    completion_tokens: Number(primary.completion_tokens || 0) + Number(secondary.completion_tokens || 0),
+    total_tokens: Number(primary.total_tokens || 0) + Number(secondary.total_tokens || 0),
+    prompt_cache_hit_tokens: Number(primary.prompt_cache_hit_tokens || 0) + Number(secondary.prompt_cache_hit_tokens || 0),
+    prompt_cache_miss_tokens: Number(primary.prompt_cache_miss_tokens || 0) + Number(secondary.prompt_cache_miss_tokens || 0)
+  };
 }
 
 function enforceEvidenceBudget(evidence, maxEvidenceChars) {
