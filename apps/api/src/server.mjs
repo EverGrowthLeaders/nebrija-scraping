@@ -1733,6 +1733,7 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
           job.report = partialReport;
           job.progress = {
             phase: partialReport.phase || (partialReport.summary?.processed ? "enrichment" : "discovery"),
+            active: partialReport.active || null,
             processed: partialReport.summary?.processed || 0,
             ok: partialReport.summary?.ok || 0,
             failed: partialReport.summary?.failed || 0,

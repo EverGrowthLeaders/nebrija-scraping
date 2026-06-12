@@ -149,6 +149,22 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   const failures = [];
 
   logger?.log?.(`[job] Processing ${selectedBusinesses.length} reformas businesses in Madrid with concurrency=${concurrency}.`);
+  await options.onProgress?.(buildProgressReport({
+    limit,
+    selectedBusinesses,
+    results,
+    failures,
+    maxDeepseekUsd,
+    requireDecisionMaker,
+    apifyFallbackMode,
+    apifyMetaMaxSources,
+    concurrency,
+    outputPath,
+    active: {
+      step: "enrichment_start",
+      message: `Processing ${selectedBusinesses.length} businesses`
+    }
+  }), null);
 
   let nextIndex = 0;
   async function processOne(index) {
@@ -162,6 +178,23 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     const startedAt = new Date().toISOString();
 
     try {
+      await options.onProgress?.(buildProgressReport({
+        limit,
+        selectedBusinesses,
+        results,
+        failures,
+        maxDeepseekUsd,
+        requireDecisionMaker,
+        apifyFallbackMode,
+        apifyMetaMaxSources,
+        concurrency,
+        outputPath,
+        active: {
+          step: "ads",
+          index: index + 1,
+          business: business.name
+        }
+      }), { index: index + 1, business, step: "ads" });
       const ads = await enrichBusinessAds({
         business,
         firecrawl,
@@ -169,6 +202,23 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         country: "ES",
         apifyFallbackMode
       });
+      await options.onProgress?.(buildProgressReport({
+        limit,
+        selectedBusinesses,
+        results,
+        failures,
+        maxDeepseekUsd,
+        requireDecisionMaker,
+        apifyFallbackMode,
+        apifyMetaMaxSources,
+        concurrency,
+        outputPath,
+        active: {
+          step: "decision_maker",
+          index: index + 1,
+          business: business.name
+        }
+      }), { index: index + 1, business, step: "decision_maker" });
       const decisionMaker = await enrichDecisionMaker({
         business,
         contacts: contactsForBusiness(business),
@@ -313,6 +363,37 @@ async function discoverBusinesses({ googlePlaces, limit, logger = console, onPro
     });
   }
   return [...byKey.values()];
+}
+
+function buildProgressReport({
+  limit,
+  selectedBusinesses,
+  results,
+  failures,
+  maxDeepseekUsd,
+  requireDecisionMaker,
+  apifyFallbackMode,
+  apifyMetaMaxSources,
+  concurrency,
+  outputPath,
+  active
+}) {
+  const report = buildReport({
+    limit,
+    selectedBusinesses,
+    results: orderedResults(results),
+    failures,
+    maxDeepseekUsd,
+    requireDecisionMaker,
+    apifyFallbackMode,
+    apifyMetaMaxSources,
+    concurrency
+  });
+  report.outputPath = outputPath;
+  report.status = "running_enrichment";
+  report.phase = "enrichment";
+  report.active = active || null;
+  return report;
 }
 
 function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, concurrency }) {
