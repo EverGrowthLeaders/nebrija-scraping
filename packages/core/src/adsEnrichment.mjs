@@ -341,6 +341,7 @@ async function planAdsDiscoveryWithDeepInfra({
         content: [
           "You plan how Firecrawl should locate official Meta Ads Library and Google Ads Transparency evidence for a local business.",
           "Return only valid JSON. Do not include markdown.",
+          "The whole response must be one JSON object with double-quoted keys and no trailing commas.",
           "Use business identifiers, domain, discovered Facebook/Instagram URLs, city and brand variants.",
           "Prefer precise probes that reduce false positives and avoid unnecessary scraping.",
           "Do not decide ad activity. Only propose search queries, Meta Library probes and official library URLs to collect evidence."
@@ -408,9 +409,72 @@ async function planAdsDiscoveryWithDeepInfra({
     delete fallbackBody.response_format;
     json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
   }
+  const content = json?.choices?.[0]?.message?.content;
+  const parsed = await parseAdsDiscoveryJsonOrRepair({ content, baseUrl, model, aiConfig });
   return {
-    ...parseAiJson(json?.choices?.[0]?.message?.content),
-    usage: json?.usage || null
+    ...parsed.plan,
+    usage: combineAiUsage(json?.usage, parsed.repairUsage)
+  };
+}
+
+async function parseAdsDiscoveryJsonOrRepair({ content, baseUrl, model, aiConfig }) {
+  try {
+    return { plan: parseAiJson(content), repairUsage: null };
+  } catch (error) {
+    const repairBody = {
+      model,
+      temperature: 0,
+      max_tokens: 700,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: [
+            "Repair malformed JSON for an Ads Library discovery plan.",
+            "Return only one valid JSON object with keys metaProbes, metaUrls, googleSearchQueries and googleUrls.",
+            "Do not add explanations, markdown, trailing commas or comments."
+          ].join(" ")
+        },
+        {
+          role: "user",
+          content: JSON.stringify({
+            malformedJson: String(content || "").slice(0, 12000),
+            parseError: error.message,
+            outputSchema: {
+              metaProbes: [{ query: "", searchType: "keyword_unordered|page", country: "ES|ALL|null", reason: "" }],
+              metaUrls: [{ url: "", reason: "" }],
+              googleSearchQueries: [{ query: "", reason: "" }],
+              googleUrls: [{ url: "", reason: "" }]
+            }
+          })
+        }
+      ]
+    };
+    let repaired;
+    try {
+      repaired = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: repairBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+    } catch (repairError) {
+      if (!/response_format|json_object|unsupported/i.test(repairError.message)) throw repairError;
+      const fallbackRepairBody = { ...repairBody };
+      delete fallbackRepairBody.response_format;
+      repaired = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackRepairBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+    }
+    return {
+      plan: parseAiJson(repaired?.choices?.[0]?.message?.content),
+      repairUsage: repaired?.usage || null
+    };
+  }
+}
+
+function combineAiUsage(primary, secondary) {
+  if (!primary) return secondary || null;
+  if (!secondary) return primary;
+  return {
+    prompt_tokens: Number(primary.prompt_tokens || 0) + Number(secondary.prompt_tokens || 0),
+    completion_tokens: Number(primary.completion_tokens || 0) + Number(secondary.completion_tokens || 0),
+    total_tokens: Number(primary.total_tokens || 0) + Number(secondary.total_tokens || 0),
+    prompt_cache_hit_tokens: Number(primary.prompt_cache_hit_tokens || 0) + Number(secondary.prompt_cache_hit_tokens || 0),
+    prompt_cache_miss_tokens: Number(primary.prompt_cache_miss_tokens || 0) + Number(secondary.prompt_cache_miss_tokens || 0)
   };
 }
 
