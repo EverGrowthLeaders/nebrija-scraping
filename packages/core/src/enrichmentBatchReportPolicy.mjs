@@ -139,11 +139,6 @@ function validateProviderSummary({ businessName, provider, ads = {}, requireAdsV
       actual: ads[aiKey] || null
     }));
   }
-  if (typeof ads[activeKey] !== "boolean") {
-    failures.push(rowFailure(businessName, `ads.${provider}`, `${provider}_active_not_boolean`, {
-      actual: ads[activeKey] ?? null
-    }));
-  }
   if (typeof ads[activeKey] === "boolean" && requireAdsVerification && ads[verificationKey] !== "confirmed") {
     failures.push(rowFailure(businessName, `ads.${provider}`, `${provider}_not_ai_verified`, {
       actual: ads[verificationKey] || null

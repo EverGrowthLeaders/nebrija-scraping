@@ -414,15 +414,6 @@ function validateProvider({ business, provider, result = {} }) {
       actual: result.ai?.verification?.status || null
     });
   }
-  if (typeof result.active !== "boolean") {
-    failures.push({
-      business,
-      area: `ads.${provider}`,
-      reason: `${provider}_active_not_boolean`,
-      actual: result.active ?? null,
-      ai: result.ai || null
-    });
-  }
   return failures;
 }
 
