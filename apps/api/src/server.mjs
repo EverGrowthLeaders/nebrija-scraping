@@ -1285,7 +1285,7 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
   const metaHasDomain = fields.includes("domain");
   const metaHasPageName = fields.includes("page_name");
   const metaHasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
-  const metaHasStrongIdentity = (metaHasDomain && (metaHasPageName || metaHasSocial)) || (metaHasPageName && metaHasSocial);
+  const metaHasStrongIdentity = auditMetaHasStrongIdentity(detail, fields);
 
   if (active && provider === "google" && !googleHasIdentity) {
     reasons.push("google_active_without_identity_match");
@@ -1347,13 +1347,20 @@ function isWeakAttempt(provider, attempt = {}) {
   }
   if (provider === "meta") {
     const hasDomain = fields.includes("domain");
-    const hasPageName = fields.includes("page_name");
-    const hasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
     if (attempt.sourceProvider === "apify" && fields.length === 1 && fields[0] === "domain") return true;
-    if (attempt.sourceProvider === "apify" && !((hasDomain && (hasPageName || hasSocial)) || (hasPageName && hasSocial))) return true;
+    if (attempt.sourceProvider === "apify" && !auditMetaHasStrongIdentity(attempt, fields)) return true;
     if (attempt.sourceProvider === "firecrawl" && !fields.length && !attempt.adArchiveId) return true;
   }
   return false;
+}
+
+function auditMetaHasStrongIdentity(detail = {}, fields = []) {
+  const hasDomain = fields.includes("domain");
+  const hasPageName = fields.includes("page_name");
+  const hasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
+  const sourceUrl = String(detail.sourceUrl || "");
+  const pageScopedFacebookSource = /^https?:\/\/(www\.)?facebook\.com\/(?!ads\/library\b)[^/?#]+/i.test(sourceUrl);
+  return (hasDomain && (hasPageName || hasSocial)) || (hasPageName && hasSocial) || (pageScopedFacebookSource && hasSocial);
 }
 
 function auditGoogleSourceIsVerified(detail = {}) {
