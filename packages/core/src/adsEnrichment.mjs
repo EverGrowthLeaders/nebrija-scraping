@@ -2107,12 +2107,14 @@ function buildApifyMetaSources(business, country, discoveryPlan) {
     : [];
 
   for (const entry of aiPlannedMetaUrls) {
+    const sourceUrl = normalizeApifyMetaSourceUrl(entry.url, entry.country || metaCountry);
+    if (!sourceUrl) continue;
     addApifySource(sources, {
       strategy: entry.strategy || "ai_planned_meta_url_apify",
-      query: entry.query || "",
-      searchType: "keyword_unordered",
+      query: entry.query || metaApifySearchTerm({ sourceUrl }),
+      searchType: metaSearchTypeFromUrl(sourceUrl),
       country: entry.country || metaCountry,
-      sourceUrl: entry.url,
+      sourceUrl,
       confidence: 0.88,
       plannedBy: entry.plannedBy || "ai",
       discoveryReason: entry.discoveryReason || "ai_ads_discovery"
@@ -2176,6 +2178,38 @@ function buildApifyMetaInput(source, apify) {
   };
 }
 
+function normalizeApifyMetaSourceUrl(value, country = DEFAULT_COUNTRY) {
+  try {
+    const parsed = new URL(value);
+    const viewAllPageId = parsed.searchParams.get("view_all_page_id");
+    if (viewAllPageId && !/^\d+$/.test(viewAllPageId)) {
+      parsed.searchParams.delete("view_all_page_id");
+      parsed.searchParams.set("q", viewAllPageId);
+      parsed.searchParams.set("search_type", "page");
+    }
+    const query = parsed.searchParams.get("q");
+    const pageId = parsed.searchParams.get("page_id") || parsed.searchParams.get("view_all_page_id");
+    const archiveId = parsed.searchParams.get("id");
+    if (!query && !pageId && !archiveId) return "";
+    parsed.searchParams.set("active_status", "active");
+    parsed.searchParams.set("ad_type", parsed.searchParams.get("ad_type") || "all");
+    parsed.searchParams.set("country", normalizeCountryCode(parsed.searchParams.get("country")) || apifyMetaCountry(country));
+    parsed.searchParams.set("media_type", parsed.searchParams.get("media_type") || "all");
+    if (!parsed.searchParams.get("search_type") && query) parsed.searchParams.set("search_type", "keyword_unordered");
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function metaSearchTypeFromUrl(value) {
+  try {
+    return normalizeMetaSearchType(new URL(value).searchParams.get("search_type"));
+  } catch {
+    return "keyword_unordered";
+  }
+}
+
 function apifyMetaMaxResults(apify) {
   const configured = Number(apify?.maxChargedResults || 1);
   return Math.min(3, Math.max(1, Number.isFinite(configured) ? configured : 1));
@@ -2208,7 +2242,8 @@ function metaApifySearchTerm(source = {}) {
   if (query) return query;
   try {
     const parsed = new URL(source.sourceUrl);
-    return cleanQuery(parsed.searchParams.get("q") || parsed.searchParams.get("page_id") || "");
+    const viewAllPageId = parsed.searchParams.get("view_all_page_id") || "";
+    return cleanQuery(parsed.searchParams.get("q") || parsed.searchParams.get("page_id") || (/^\d+$/.test(viewAllPageId) ? viewAllPageId : "") || viewAllPageId || "");
   } catch {
     return cleanQuery(source.sourceUrl || "");
   }

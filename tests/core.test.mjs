@@ -2774,6 +2774,54 @@ test("uses Curious Coder Facebook Ads actor input and normalizes its output", as
   assert.deepEqual(enrichment.meta.landingUrls, ["https://planned.example/oferta"]);
 });
 
+test("normalizes AI Meta page URLs before sending them to Apify", async () => {
+  const apifyUrls = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://planned.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Ad Library loading", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    facebookAdsActorId: "curious_coder~facebook-ads-library-scraper",
+    async runFacebookAdsLibrary(input) {
+      apifyUrls.push(input.urls[0].url);
+      const parsed = new URL(input.urls[0].url);
+      assert.equal(parsed.searchParams.get("active_status"), "active");
+      assert.equal(parsed.searchParams.get("q"), "planned_handle");
+      assert.equal(parsed.searchParams.get("search_type"), "page");
+      assert.equal(parsed.searchParams.has("view_all_page_id"), false);
+      return [];
+    }
+  };
+
+  await enrichBusinessAds({
+    business: { name: "Planned Demo", website: "https://planned.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaUrls: [
+        {
+          url: "https://www.facebook.com/ads/library/?active_status=all&ad_type=all&country=ES&view_all_page_id=planned_handle&search_type=page&media_type=all",
+          reason: "ai_facebook_page_library"
+        }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyUrls.length, 1);
+});
+
 test("keeps CrawlerBros Facebook Ads actor fallback capped when configured", async () => {
   const apifyInputs = [];
   const firecrawl = {
