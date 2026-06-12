@@ -625,7 +625,11 @@ const server = http.createServer(async (req, res) => {
           },
           apify: {
             fallbackMode: config.adsEnrichment.apifyFallbackMode,
-            apiKeyConfigured: Boolean(config.apify.apiKey)
+            apiKeyConfigured: Boolean(config.apify.apiKey),
+            facebookAdsActorId: config.apify.facebookAdsActorId,
+            maxChargedResults: config.apify.maxChargedResults,
+            metaMaxSources: config.adsEnrichment.apifyMetaMaxSources,
+            googleFallbackEnabled: config.adsEnrichment.apifyGoogleFallbackEnabled
           },
           nebrija: {
             apiKeyConfigured: Boolean(config.nebrija.apiKey),

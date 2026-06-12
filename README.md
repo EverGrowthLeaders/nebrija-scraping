@@ -107,7 +107,9 @@ fallback de pago: una empresa hace como maximo una llamada Meta Apify
 (`ADS_APIFY_META_MAX_SOURCES=1`) y pide un solo resultado
 (`APIFY_MAX_CHARGED_RESULTS=1`) con `scrapeAdDetails=false`. Si el plan de
 descubrimiento DeepSeek falla o no propone una fuente Meta precisa, Apify no se
-ejecuta aunque `ADS_APIFY_FALLBACK_MODE=always`.
+ejecuta aunque `ADS_APIFY_FALLBACK_MODE=always`. El fallback Apify para Google
+queda apagado por defecto (`ADS_APIFY_GOOGLE_FALLBACK_ENABLED=false`) porque
+Firecrawl ya cubre la comprobacion por dominio de Google Ads Transparency.
 
 Las respuestas IA guardan `usage` y `cost` estimado con precios DeepSeek V4
 Flash: $0.10/M tokens de entrada, $0.20/M tokens de salida y $0.02/M tokens de
@@ -334,6 +336,7 @@ curl -X POST http://localhost:3100/businesses/<business-id>/call \
 - `APIFY_FACEBOOK_ADS_ACTOR_ID`, por defecto `curious_coder~facebook-ads-library-scraper`
 - `APIFY_MAX_CHARGED_RESULTS`, por defecto `1`
 - `ADS_APIFY_META_MAX_SOURCES`, por defecto `1`
+- `ADS_APIFY_GOOGLE_FALLBACK_ENABLED`, por defecto `false`
 - `DEEPINFRA_API_KEY` para resolver actividad Ads, landings Ads y decisor con DeepSeek V4 Flash
 - `GOOGLE_MAPS_API_KEY`
 - `NEBRIJA_API_KEY`

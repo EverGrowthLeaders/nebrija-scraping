@@ -2926,6 +2926,7 @@ test("passes empty precise Apify results as inactive evidence for Deepseek", asy
     maxChargedResults: 10,
     facebookAdsActorId: "actor/meta",
     googleAdsActorId: "actor/google",
+    googleFallbackEnabled: true,
     async runFacebookAdsLibrary() {
       return [];
     },
@@ -3105,6 +3106,7 @@ test("uses Apify Google Transparency fallback for recent domain ads", async () =
   const apify = {
     enabled: true,
     maxChargedResults: 3,
+    googleFallbackEnabled: true,
     async runFacebookAdsLibrary() {
       return [];
     },
@@ -3164,6 +3166,7 @@ test("uses Solidcode Google Ads actor input and normalizes its output", async ()
     enabled: true,
     maxChargedResults: 5,
     googleAdsActorId: "solidcode~ads-transparency-scraper",
+    googleFallbackEnabled: true,
     async runFacebookAdsLibrary() {
       return [];
     },

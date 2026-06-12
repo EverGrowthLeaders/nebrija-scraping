@@ -67,6 +67,7 @@ export async function enrichBusinessAds({
     const shouldCollectMetaApify = shouldCollectApifyProvider({ provider: "meta", resolved, mode: apifyFallbackMode }) &&
       typeof apify?.runFacebookAdsLibrary === "function";
     const shouldCollectGoogleApify = shouldCollectApifyProvider({ provider: "google", resolved, mode: apifyFallbackMode }) &&
+      (apify?.googleFallbackEnabled === true || config.adsEnrichment?.apifyGoogleFallbackEnabled === true) &&
       typeof apify?.runGoogleAdsTransparency === "function";
     const apifyMeta = shouldCollectMetaApify
       ? await inspectMetaAdsWithApify({ business: enrichedBusiness, apify, country, now, socialDiscovery, discoveryPlan })

@@ -58,7 +58,8 @@ export const config = {
   },
   adsEnrichment: {
     apifyFallbackMode: process.env.ADS_APIFY_FALLBACK_MODE || "off",
-    apifyMetaMaxSources: intFromEnv("ADS_APIFY_META_MAX_SOURCES", 1)
+    apifyMetaMaxSources: intFromEnv("ADS_APIFY_META_MAX_SOURCES", 1),
+    apifyGoogleFallbackEnabled: boolFromEnv("ADS_APIFY_GOOGLE_FALLBACK_ENABLED", false)
   },
   adsActivityAi: {
     provider: "deepinfra",
