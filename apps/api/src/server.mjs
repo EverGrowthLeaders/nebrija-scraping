@@ -919,9 +919,33 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        if (type === "campaign_discovery_rerun" || type === "campaign-discovery-rerun") {
+          const campaignId = json.campaignId || json.campaign_id || json.extractionJobId || json.extraction_job_id;
+          validateRequired({ campaignId }, ["campaignId"]);
+          const job = await findExtractionJobDetail(campaignId, { tenantId: auth.tenantId });
+          if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+          const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? true);
+          const queueJob = await queues.googleDiscovery.add("run", {
+            tenantId: auth.tenantId,
+            extractionJobId: job.id,
+            enrichAds,
+            testId
+          });
+          return sendJson(res, 202, {
+            testJob: {
+              id: job.id,
+              type,
+              testId,
+              statusUrl: `/api/test-jobs/campaigns/${job.id}`,
+              queue: { name: QUEUE_NAMES.googleDiscovery, id: queueJob.id }
+            },
+            campaign: job
+          });
+        }
+
         return sendJson(res, 400, {
           error: "unsupported_test_job_type",
-          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign", "reformas_madrid_enrichment"]
+          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign", "campaign_discovery_rerun", "reformas_madrid_enrichment"]
         });
       }
 

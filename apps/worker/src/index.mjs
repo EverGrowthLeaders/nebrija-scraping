@@ -6,6 +6,7 @@ import { createQueue, createWorker, QUEUE_NAMES, closeQueues } from "../../../pa
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
 import { ApifyClient } from "../../../packages/core/src/apify.mjs";
 import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs";
+import { buildGoogleDiscoveryQueries } from "../../../packages/core/src/googleDiscoveryQueries.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
@@ -95,16 +96,21 @@ async function runGoogleDiscovery(job) {
     started_at: new Date()
   });
 
-  const queries = buildGoogleQueries(extractionJob);
+  const requestedLimit = positiveInt(extractionJob.requested_limit, 20);
+  const queries = buildGoogleQueries(extractionJob, { requestedLimit });
+  const seenPlaceIds = new Set();
   let candidateCount = 0;
   let businessCount = 0;
 
   try {
     for (const queryText of queries) {
+      if (businessCount >= requestedLimit) break;
       const places = await googlePlaces.searchText({ query: queryText });
       candidateCount += places.length;
       for (const place of places) {
         if (!place.placeId) continue;
+        if (seenPlaceIds.has(place.placeId)) continue;
+        seenPlaceIds.add(place.placeId);
         await upsertGoogleCandidate({
           tenantId,
           extractionJobId,
@@ -161,6 +167,7 @@ async function runGoogleDiscovery(job) {
           extractionJobId,
           source: "google_places"
         });
+        if (businessCount >= requestedLimit) break;
       }
     }
 
@@ -563,13 +570,13 @@ async function runVoiceCall(job) {
   return { providerCallId: call.provider_call_id };
 }
 
-function buildGoogleQueries(extractionJob) {
-  const base = extractionJob.niche;
-  const city = extractionJob.city;
-  const variants = [base, ...String(base).split(/[,/]/).map((item) => item.trim())]
-    .filter(Boolean)
-    .filter((item, index, arr) => arr.indexOf(item) === index);
-  return variants.map((variant) => `${variant} en ${city}`);
+function buildGoogleQueries(extractionJob, options = {}) {
+  return buildGoogleDiscoveryQueries(extractionJob, options);
+}
+
+function positiveInt(value, fallback) {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function chooseOfficialWebsite(results, business) {

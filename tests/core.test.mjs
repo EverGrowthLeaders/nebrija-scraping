@@ -31,6 +31,7 @@ import {
   normalizeSearchResponse
 } from "../packages/core/src/firecrawl.mjs";
 import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
+import { buildGoogleDiscoveryQueries } from "../packages/core/src/googleDiscoveryQueries.mjs";
 import { isAuthorizedApiKey, parseApiKeyHashes, parseApiKeys } from "../packages/core/src/auth.mjs";
 import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
@@ -615,6 +616,19 @@ test("adds lead fields to Google Places field masks", () => {
   assert.equal(fieldMask.includes("places.websiteUri"), true);
   assert.equal(fieldMask.includes("places.internationalPhoneNumber"), true);
   assert.equal(fieldMask.includes("places.userRatingCount"), true);
+});
+
+test("builds enough Google discovery queries for requested campaign limits", () => {
+  const queries = buildGoogleDiscoveryQueries({
+    niche: "empresas de reformas",
+    city: "Madrid",
+    requested_limit: 100
+  });
+
+  assert.equal(queries.length >= 5, true);
+  assert.equal(queries[0], "empresas de reformas en Madrid");
+  assert.equal(new Set(queries).size, queries.length);
+  assert.equal(queries.some((query) => query.includes("Salamanca")), true);
 });
 
 test("normalizes Google Places lead fields", () => {
