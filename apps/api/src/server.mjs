@@ -1360,7 +1360,13 @@ function auditMetaHasStrongIdentity(detail = {}, fields = []) {
   const hasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
   const sourceUrl = String(detail.sourceUrl || "");
   const pageScopedFacebookSource = /^https?:\/\/(www\.)?facebook\.com\/(?!ads\/library\b)[^/?#]+/i.test(sourceUrl);
-  return (hasDomain && (hasPageName || hasSocial)) || (hasPageName && hasSocial) || (pageScopedFacebookSource && hasSocial);
+  const pageScopedLibrarySource =
+    /[?&]view_all_page_id=[^&#]+/i.test(sourceUrl) ||
+    /[?&]search_type=page\b/i.test(sourceUrl) ||
+    String(detail.strategy || "").includes("page_id");
+  return (hasDomain && (hasPageName || hasSocial)) ||
+    (hasPageName && hasSocial) ||
+    ((pageScopedFacebookSource || pageScopedLibrarySource) && hasSocial);
 }
 
 function auditGoogleSourceIsVerified(detail = {}) {
