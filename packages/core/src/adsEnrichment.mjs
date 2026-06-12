@@ -1136,8 +1136,9 @@ function isCrawlerbrosFacebookAdsActor(actorId) {
 
 function inferApifyGoogleActivity({ items = [], business = {}, domain, country, now }) {
   const evidenceSnippet = compactSnippet(items.map((item) => collectApifyGoogleItemStrings(item).join("\n")).join("\n---\n"), 1800);
+  const domainItems = items.filter((item) => apifyGoogleItemMatchesDomain(item, domain));
   const recentItems = items
-    .filter((item) => apifyGoogleItemMatchesDomain(item, domain))
+    .filter((item) => domainItems.includes(item))
     .filter((item) => apifyGoogleDateWithin(item?.lastShown || item?.last_shown_datetime, now, GOOGLE_RECENT_DAYS));
   if (!recentItems.length) {
     if (!items.length && domain) {
@@ -1161,6 +1162,30 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
           itemsSeen: 0,
           total: 0,
           evidenceSnippet: "Apify returned zero Google Ads Transparency items for this exact domain search."
+        }
+      });
+    }
+    if (domainItems.length) {
+      return evidence({
+        provider: "google",
+        status: "inactive",
+        active: false,
+        confidence: 0.7,
+        sourceUrl: buildGoogleAdsTransparencyUrl({ domain, country }),
+        reason: "apify_google_no_recent_domain_ads",
+        context: {
+          strategy: "domain_apify",
+          query: domain,
+          domain,
+          businessName: business.name,
+          country,
+          sourceProvider: "apify",
+          plannedBy: "ai",
+          discoveryReason: "apify_google_fallback_after_ai_unknown",
+          matchedFields: ["domain"],
+          itemsSeen: domainItems.length,
+          total: items.length,
+          evidenceSnippet: evidenceSnippet || "Apify returned Google Ads Transparency items for this exact domain, but none within the active recency window."
         }
       });
     }
@@ -2691,6 +2716,7 @@ function isExactDomainApifyMetaSource({ source = {}, business = {} } = {}) {
 function isPageScopedApifyMetaSource(source = {}) {
   const sourceUrl = String(source.sourceUrl || "");
   const searchType = String(source.searchType || "").toLowerCase();
+  if (parseFacebookPageUrl(source.query)) return true;
   if (parseFacebookPageUrl(sourceUrl)) return true;
   try {
     const parsed = new URL(sourceUrl);
@@ -2700,6 +2726,7 @@ function isPageScopedApifyMetaSource(source = {}) {
     if (parsed.searchParams.get("view_all_page_id") || parsed.searchParams.get("page_id") || parsed.searchParams.get("id")) {
       return true;
     }
+    if (parseFacebookPageUrl(parsed.searchParams.get("q") || "")) return true;
     return searchType === "page" && /^[a-z0-9][a-z0-9._-]{1,79}$/i.test(String(source.query || ""));
   } catch {
     return false;
