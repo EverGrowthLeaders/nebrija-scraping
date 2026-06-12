@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { normalizeSpanishPhone } from "../packages/core/src/phone.mjs";
 import {
   estimateDeepseekUsageCost,
@@ -30,7 +31,7 @@ import {
   normalizeSearchResponse
 } from "../packages/core/src/firecrawl.mjs";
 import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
-import { isAuthorizedApiKey, parseApiKeys } from "../packages/core/src/auth.mjs";
+import { isAuthorizedApiKey, parseApiKeyHashes, parseApiKeys } from "../packages/core/src/auth.mjs";
 import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
 import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
@@ -643,6 +644,12 @@ test("authorizes test job API keys from bearer or x-api-key headers", () => {
   assert.equal(isAuthorizedApiKey({ "x-api-key": "alpha" }, keys), true);
   assert.equal(isAuthorizedApiKey({ authorization: "Bearer bravo" }, keys), true);
   assert.equal(isAuthorizedApiKey({ authorization: "Bearer charlie" }, keys), false);
+});
+
+test("authorizes test job API keys from SHA-256 hashes", () => {
+  const hashes = parseApiKeyHashes(crypto.createHash("sha256").update("secret-key").digest("hex"));
+  assert.equal(isAuthorizedApiKey({ "x-api-key": "secret-key" }, [], hashes), true);
+  assert.equal(isAuthorizedApiKey({ "x-api-key": "wrong-key" }, [], hashes), false);
 });
 
 test("normalizes Nebrija assistants and extracts template variables", () => {

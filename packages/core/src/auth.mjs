@@ -7,6 +7,12 @@ export function parseApiKeys(value) {
     .filter(Boolean);
 }
 
+export function parseApiKeyHashes(value) {
+  return parseApiKeys(value)
+    .map((item) => item.toLowerCase())
+    .filter((item) => /^[a-f0-9]{64}$/.test(item));
+}
+
 export function getRequestApiKey(headers = {}) {
   const direct = headers["x-api-key"] || headers["x-test-api-key"];
   if (direct) return String(direct).trim();
@@ -16,10 +22,12 @@ export function getRequestApiKey(headers = {}) {
   return match ? match[1].trim() : "";
 }
 
-export function isAuthorizedApiKey(headers, expectedKeys) {
+export function isAuthorizedApiKey(headers, expectedKeys, expectedHashes = []) {
   const candidate = getRequestApiKey(headers);
-  if (!candidate || !expectedKeys?.length) return false;
-  return expectedKeys.some((expected) => safeEqual(candidate, expected));
+  if (!candidate || (!expectedKeys?.length && !expectedHashes?.length)) return false;
+  if (expectedKeys?.some((expected) => safeEqual(candidate, expected))) return true;
+  const digest = crypto.createHash("sha256").update(candidate).digest("hex");
+  return expectedHashes?.some((expected) => safeEqual(digest, expected));
 }
 
 function safeEqual(a, b) {

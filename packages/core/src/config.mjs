@@ -1,4 +1,4 @@
-import { parseApiKeys } from "./auth.mjs";
+import { parseApiKeyHashes, parseApiKeys } from "./auth.mjs";
 
 const intFromEnv = (name, fallback) => {
   const raw = process.env[name];
@@ -32,7 +32,8 @@ export const config = {
     autoDispatchVoice: boolFromEnv("AUTO_DISPATCH_VOICE", false)
   },
   testJobs: {
-    apiKeys: parseApiKeys(process.env.TEST_JOBS_API_KEYS || process.env.INTERNAL_API_KEYS)
+    apiKeys: parseApiKeys(process.env.TEST_JOBS_API_KEYS || process.env.INTERNAL_API_KEYS),
+    apiKeyHashes: parseApiKeyHashes(process.env.TEST_JOBS_API_KEY_SHA256S || process.env.TEST_JOBS_API_KEY_HASHES)
   },
   crawler: {
     provider: process.env.CRAWLER_PROVIDER || "firecrawl",

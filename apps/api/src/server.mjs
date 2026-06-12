@@ -110,7 +110,12 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
     if (req.method === "GET" && url.pathname === "/healthz") {
-      return sendJson(res, 200, { ok: true, service: "api" });
+      return sendJson(res, 200, {
+        ok: true,
+        service: "api",
+        env: config.env,
+        commit: process.env.DOKPLOY_GIT_COMMIT_SHA || process.env.GIT_COMMIT || process.env.COMMIT_SHA || null
+      });
     }
 
     if (req.method === "GET" && url.pathname === "/auth/google/status") {
@@ -1806,12 +1811,12 @@ function verifyWebhookSignature(raw, headers, secret) {
 }
 
 function requireTestJobAuth(req) {
-  if (!config.testJobs.apiKeys.length) {
+  if (!config.testJobs.apiKeys.length && !config.testJobs.apiKeyHashes.length) {
     const error = new Error("test_jobs_api_key_not_configured");
     error.statusCode = 503;
     throw error;
   }
-  if (!isAuthorizedApiKey(req.headers, config.testJobs.apiKeys)) {
+  if (!isAuthorizedApiKey(req.headers, config.testJobs.apiKeys, config.testJobs.apiKeyHashes)) {
     const error = new Error("unauthorized");
     error.statusCode = 401;
     throw error;
