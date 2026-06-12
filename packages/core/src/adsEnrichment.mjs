@@ -2137,7 +2137,7 @@ function providerEvidenceForAi(providerEvidence = {}, provider) {
     samplePageName: attempt.samplePageName || null,
     adArchiveId: attempt.adArchiveId || null,
     evidenceSnippet: compactSnippet(attempt.evidenceSnippet || "", 1100)
-  }));
+  })).sort((left, right) => rankAdsAiAttempt(right) - rankAdsAiAttempt(left));
   return {
     deterministicSummary: {
       statusSignal: providerEvidence?.status || null,
@@ -2150,6 +2150,25 @@ function providerEvidenceForAi(providerEvidence = {}, provider) {
     },
     attempts
   };
+}
+
+function rankAdsAiAttempt(attempt = {}) {
+  let score = 0;
+  if (attempt.sourceProvider === "apify") score += 80;
+  if (attempt.activeSignal === true) score += 70;
+  if (attempt.activeSignal === false) score += 55;
+  if (attempt.statusSignal === "active") score += 40;
+  if (attempt.statusSignal === "inactive") score += 30;
+  if (attempt.reasonSignal === "apify_active_items_for_page_scoped_source") score += 50;
+  if (attempt.reasonSignal === "apify_active_ad_matched") score += 45;
+  if (attempt.reasonSignal === "google_domain_ads_found") score += 45;
+  if (Array.isArray(attempt.matchedFields) && attempt.matchedFields.length) score += 20;
+  if (attempt.itemsSeen > 0) score += 10;
+  if (attempt.sourceUrl) score += 3;
+  if (attempt.statusSignal === "error") score -= 80;
+  if (attempt.reasonSignal === "no_strong_signal") score -= 20;
+  if (attempt.reasonSignal === "generic_ad_library_copy") score -= 15;
+  return score;
 }
 
 function enforceAdsEvidenceBudget(evidencePack, maxEvidenceChars) {
