@@ -2758,12 +2758,38 @@ function parseAiJson(content) {
     .replace(/```$/i, "")
     .trim();
   if (!raw) return null;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    const match = raw.match(/\{[\s\S]*\}/);
-    return match ? JSON.parse(match[0]) : null;
+  const objectMatch = raw.match(/\{[\s\S]*\}/);
+  const candidates = unique([
+    raw,
+    objectMatch ? objectMatch[0] : "",
+    ...jsonRepairCandidates(raw),
+    ...(objectMatch ? jsonRepairCandidates(objectMatch[0]) : [])
+  ]);
+  let lastError = null;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      return JSON.parse(candidate);
+    } catch (error) {
+      lastError = error;
+    }
   }
+  if (lastError) throw lastError;
+  return null;
+}
+
+function jsonRepairCandidates(raw) {
+  const compacted = String(raw || "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\/\/.*$/gm, "")
+    .replace(/,\s*([}\]])/g, "$1");
+  return [
+    compacted,
+    compacted
+      .replace(/}\s*(?={)/g, "},")
+      .replace(/\]\s*(?="[^"]+"\s*:)/g, "],")
+      .replace(/"\s*(?="[^"]+"\s*:)/g, "\",")
+  ];
 }
 
 function normalizeStringArray(value) {
