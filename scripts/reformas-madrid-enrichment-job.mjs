@@ -88,6 +88,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   const maxDeepseekUsd = numberOrNull(options.maxDeepseekUsd);
   const maxDeepseekUsdPerBusiness = numberOrNull(options.maxDeepseekUsdPerBusiness);
   const apifyFallbackMode = normalizeApifyFallbackMode(options.apifyFallbackMode || config.adsEnrichment.apifyFallbackMode || "off");
+  const googleApifyFallbackEnabled = options.googleApifyFallbackEnabled === true;
   const outputPath = options.outputPath
     ? path.resolve(process.cwd(), options.outputPath)
     : path.resolve(process.cwd(), DEFAULT_OUT_DIR, `reformas-madrid-enrichment-${timestampForFile()}.json`);
@@ -150,7 +151,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     const business = selectedBusinesses[index];
     const label = `${index + 1}/${selectedBusinesses.length} ${business.name}`;
     logger?.log?.(`\n[job] ${label}`);
-    const { apify, apifyStats } = createCountingApifyClient(apifyFallbackMode);
+    const { apify, apifyStats } = createCountingApifyClient(apifyFallbackMode, { googleApifyFallbackEnabled });
     const startedAt = new Date().toISOString();
 
     try {
@@ -361,7 +362,7 @@ function contactsForBusiness(business = {}) {
   return contacts;
 }
 
-function createCountingApifyClient(mode = config.adsEnrichment.apifyFallbackMode || "off") {
+function createCountingApifyClient(mode = config.adsEnrichment.apifyFallbackMode || "off", options = {}) {
   const stats = createApifyUsageStats(mode);
   if (mode === "off" || !config.apify.apiKey) return { apify: null, apifyStats: stats };
 
@@ -379,6 +380,9 @@ function createCountingApifyClient(mode = config.adsEnrichment.apifyFallbackMode
       },
       get maxChargedResults() {
         return client.maxChargedResults;
+      },
+      get googleFallbackEnabled() {
+        return options.googleApifyFallbackEnabled === true;
       },
       async runFacebookAdsLibrary(input = {}, options = {}) {
         recordApifyCall(stats, "meta", input);
