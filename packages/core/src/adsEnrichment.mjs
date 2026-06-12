@@ -33,7 +33,7 @@ export async function enrichBusinessAds({
   apifyFallbackMode = config.adsEnrichment?.apifyFallbackMode || "off"
 }) {
   if (!firecrawl) throw new Error("firecrawl_client_required");
-  const socialDiscovery = await discoverSocialsForAds({ business, firecrawl });
+  const socialDiscovery = await discoverSocialsForAds({ business, firecrawl, aiConfig });
   const enrichedBusiness = mergeDiscoveredSocials(business, socialDiscovery);
   const discoveryPlan = await planAdsLibraryDiscovery({
     business: enrichedBusiness,
@@ -232,29 +232,197 @@ export function inferAdsActivity({ provider, text, now = new Date(), sourceUrl, 
   return evidence({ provider, status: "unknown", active: null, confidence: 0.2, sourceUrl, reason: "no_strong_signal", context });
 }
 
-export async function discoverSocialsForAds({ business = {}, firecrawl }) {
-  if (!firecrawl || !business.website) return null;
+export async function discoverSocialsForAds({ business = {}, firecrawl, aiConfig = config.adsActivityAi }) {
+  if (!firecrawl || (!business.website && !business.name)) return null;
+  const candidates = [];
+  let websiteStatus = null;
   try {
-    const page = await firecrawl.scrape(business.website, {
-      formats: ["markdown", "html", "links"],
-      onlyMainContent: false,
-      waitFor: 2500
-    });
-    const links = extractSocialLinks(page);
-    if (!links.instagram && !links.facebook) return { status: "not_found", sourceUrl: business.website };
-    return {
-      status: "found",
-      sourceUrl: business.website,
-      instagram: links.instagram || null,
-      facebook: links.facebook || null
-    };
+    if (business.website) {
+      const page = await firecrawl.scrape(business.website, {
+        formats: ["markdown", "html", "links"],
+        onlyMainContent: false,
+        waitFor: 2500
+      });
+      const links = extractSocialLinks(page);
+      addSocialCandidate(candidates, links.facebook, "facebook", "website_link", business.website);
+      addSocialCandidate(candidates, links.instagram, "instagram", "website_link", business.website);
+      websiteStatus = "scraped";
+    }
   } catch (error) {
+    websiteStatus = "error";
+    addSocialCandidate(candidates, business.facebook, "facebook", "business_field", business.website);
+    addSocialCandidate(candidates, business.instagram, "instagram", "business_field", business.website);
+  }
+
+  if (!candidates.some((item) => item.provider === "facebook")) {
+    await collectSocialSearchCandidates({ firecrawl, business, provider: "facebook", candidates });
+  }
+
+  const uniqueCandidates = uniqueSocialCandidates(candidates).slice(0, 16);
+  if (!uniqueCandidates.length) {
+    return { status: "not_found", sourceUrl: business.website || null, websiteStatus, candidates: [] };
+  }
+
+  if (!canUseAdsActivityAi({ aiConfig })) {
+    const facebook = uniqueCandidates.find((item) => item.provider === "facebook")?.url || null;
+    const instagram = uniqueCandidates.find((item) => item.provider === "instagram")?.url || null;
     return {
-      status: "error",
-      sourceUrl: business.website,
-      error: error.message
+      status: facebook || instagram ? "found" : "not_found",
+      sourceUrl: business.website || null,
+      websiteStatus,
+      facebook,
+      instagram,
+      candidates: uniqueCandidates,
+      ai: { status: "skipped" }
     };
   }
+
+  try {
+    const resolved = await resolveSocialProfilesWithDeepInfra({ business, candidates: uniqueCandidates, aiConfig });
+    return {
+      status: resolved.facebook || resolved.instagram ? "found" : "not_found",
+      sourceUrl: business.website || null,
+      websiteStatus,
+      facebook: resolved.facebook || null,
+      instagram: resolved.instagram || null,
+      candidates: uniqueCandidates,
+      ai: {
+        status: "resolved",
+        provider: aiConfig?.provider || "deepinfra",
+        model: aiConfig?.model || null,
+        confidence: resolved.confidence ?? null,
+        reason: resolved.reason || null,
+        usage: resolved.usage || null
+      }
+    };
+  } catch (error) {
+    const facebook = uniqueCandidates.find((item) => item.provider === "facebook" && item.sourceType === "website_link")?.url || null;
+    const instagram = uniqueCandidates.find((item) => item.provider === "instagram" && item.sourceType === "website_link")?.url || null;
+    return {
+      status: facebook || instagram ? "found" : "error",
+      sourceUrl: business.website || null,
+      websiteStatus,
+      facebook,
+      instagram,
+      candidates: uniqueCandidates,
+      ai: {
+        status: "failed",
+        provider: aiConfig?.provider || "deepinfra",
+        model: aiConfig?.model || null,
+        error: error.message
+      }
+    };
+  }
+}
+
+async function collectSocialSearchCandidates({ firecrawl, business = {}, provider, candidates }) {
+  if (!firecrawl || !business.name) return;
+  const site = provider === "facebook" ? "facebook.com" : "instagram.com";
+  const queries = [
+    `site:${site} ${business.name} ${business.city || ""}`.trim(),
+    `${business.name} ${business.city || ""} ${provider}`.trim()
+  ];
+  for (const query of unique(queries)) {
+    try {
+      const results = await firecrawl.search(query, { limit: 4 });
+      for (const result of results) {
+        addSocialCandidate(candidates, result.url, provider, "firecrawl_search", result.url, {
+          title: result.title || null,
+          description: result.description || null,
+          query
+        });
+      }
+    } catch {
+      // Social search is opportunistic; DeepSeek will decide from whatever candidates were collected.
+    }
+  }
+}
+
+function addSocialCandidate(candidates, value, provider, sourceType, sourceUrl, extra = {}) {
+  const url = cleanSocialUrl(value);
+  if (!url) return;
+  const host = hostname(url);
+  if (provider === "facebook" && !(host.endsWith("facebook.com") || host.endsWith("fb.com"))) return;
+  if (provider === "instagram" && !host.endsWith("instagram.com")) return;
+  candidates.push({
+    provider,
+    url,
+    sourceType,
+    sourceUrl: sourceUrl || url,
+    ...extra
+  });
+}
+
+function uniqueSocialCandidates(candidates = []) {
+  const seen = new Set();
+  const result = [];
+  for (const candidate of candidates) {
+    const key = `${candidate.provider}:${candidate.url}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(candidate);
+  }
+  return result;
+}
+
+async function resolveSocialProfilesWithDeepInfra({ business = {}, candidates = [], aiConfig = config.adsActivityAi } = {}) {
+  const baseUrl = String(aiConfig?.baseUrl || "https://api.deepinfra.com/v1/openai").replace(/\/+$/, "");
+  const model = aiConfig?.model || "deepseek-ai/DeepSeek-V4-Flash";
+  const body = {
+    model,
+    temperature: 0,
+    max_tokens: 500,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You select official social profiles for a local business.",
+          "Use only the supplied candidate URLs and business identifiers.",
+          "Reject login, share, post, reel, group, marketplace, unrelated, directory, and ambiguous profiles.",
+          "Return null when no candidate is clearly the official profile.",
+          "Return only valid JSON."
+        ].join(" ")
+      },
+      {
+        role: "user",
+        content: JSON.stringify({
+          outputSchema: {
+            facebook: "official Facebook page URL from candidates or null",
+            instagram: "official Instagram profile URL from candidates or null",
+            confidence: "number 0..1",
+            reason: "short snake_case reason"
+          },
+          business: compactObject({
+            name: business.name,
+            city: business.city,
+            niche: business.niche || business.category,
+            website: business.website,
+            domain: extractDomain(business.website)
+          }),
+          candidates
+        })
+      }
+    ]
+  };
+  let json;
+  try {
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+  } catch (error) {
+    if (!/response_format|json_object|unsupported/i.test(error.message)) throw error;
+    const fallbackBody = { ...body };
+    delete fallbackBody.response_format;
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackBody, timeoutMs: aiConfig?.requestTimeoutMs || 45000 });
+  }
+  const parsed = parseAiJson(json?.choices?.[0]?.message?.content) || {};
+  const candidateUrls = new Set(candidates.map((item) => item.url));
+  return {
+    facebook: candidateUrls.has(cleanSocialUrl(parsed.facebook)) ? cleanSocialUrl(parsed.facebook) : null,
+    instagram: candidateUrls.has(cleanSocialUrl(parsed.instagram)) ? cleanSocialUrl(parsed.instagram) : null,
+    confidence: clamp01(parsed.confidence),
+    reason: String(parsed.reason || "").slice(0, 120),
+    usage: json?.usage || null
+  };
 }
 
 async function planAdsLibraryDiscovery({
@@ -3232,6 +3400,12 @@ function firstValue(...values) {
 
 function firstDefined(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function clamp01(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.min(1, Math.max(0, number));
 }
 
 function extractSocialHandle(value, provider) {
