@@ -28,7 +28,10 @@ export const config = {
   redisUrl: process.env.REDIS_URL || "redis://localhost:6379",
   queues: {
     prefix: process.env.QUEUE_PREFIX || "lexington",
-    concurrency: intFromEnv("WORKER_CONCURRENCY", 4),
+    concurrency: intFromEnv("WORKER_CONCURRENCY", 8),
+    crawlConcurrency: intFromEnv("CRAWL_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 8)),
+    adsConcurrency: intFromEnv("ADS_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 8)),
+    decisionMakerConcurrency: intFromEnv("DECISION_MAKER_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 8)),
     autoDispatchVoice: boolFromEnv("AUTO_DISPATCH_VOICE", false)
   },
   testJobs: {

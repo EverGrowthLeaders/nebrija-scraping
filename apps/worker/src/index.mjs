@@ -53,12 +53,12 @@ const queues = {
 };
 
 const workers = [
-  createWorker(QUEUE_NAMES.googleDiscovery, runGoogleDiscovery),
-  createWorker(QUEUE_NAMES.webDiscovery, runWebDiscovery),
-  createWorker(QUEUE_NAMES.businessCrawl, runBusinessCrawl),
-  createWorker(QUEUE_NAMES.scoring, runScoring),
-  createWorker(QUEUE_NAMES.adsEnrichment, runAdsEnrichment, { concurrency: 2 }),
-  createWorker(QUEUE_NAMES.decisionMakerEnrichment, runDecisionMakerEnrichment, { concurrency: 2 }),
+  createWorker(QUEUE_NAMES.googleDiscovery, runGoogleDiscovery, { concurrency: config.queues.concurrency }),
+  createWorker(QUEUE_NAMES.webDiscovery, runWebDiscovery, { concurrency: config.queues.concurrency }),
+  createWorker(QUEUE_NAMES.businessCrawl, runBusinessCrawl, { concurrency: config.queues.crawlConcurrency }),
+  createWorker(QUEUE_NAMES.scoring, runScoring, { concurrency: config.queues.concurrency }),
+  createWorker(QUEUE_NAMES.adsEnrichment, runAdsEnrichment, { concurrency: config.queues.adsConcurrency }),
+  createWorker(QUEUE_NAMES.decisionMakerEnrichment, runDecisionMakerEnrichment, { concurrency: config.queues.decisionMakerConcurrency }),
   createWorker(QUEUE_NAMES.voiceCall, runVoiceCall, { concurrency: 2 })
 ];
 
