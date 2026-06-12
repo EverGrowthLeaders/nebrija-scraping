@@ -2531,11 +2531,13 @@ function rankApifyMetaSource(source = {}, business = {}) {
   const domain = extractDomain(business.website);
   let score = Number(source.confidence || 0) * 10;
   if (source.plannedBy === "ai") score += 30;
-  if (searchType === "page" || /page/i.test(strategy)) score += 18;
-  if (/page_id=|\/ads\/library\/\?id=/i.test(sourceUrl)) score += 16;
-  if (/^@[\w.]+$/i.test(query)) score += 14;
+  if (searchType === "page" || /page/i.test(strategy)) score += 60;
+  if (parseFacebookPageUrl(query) || parseFacebookPageUrl(sourceUrl)) score += 55;
+  if (/page_id=|view_all_page_id=|\/ads\/library\/\?id=/i.test(sourceUrl)) score += 45;
+  if (/^@[\w.]+$/i.test(query)) score -= 8;
   if (domain && normalizeText(query) === normalizeText(domain)) score += 12;
   if (/facebook|instagram|handle|domain|url/i.test(strategy)) score += 8;
+  if (/instagram/i.test(strategy) || /^@/i.test(query)) score -= 10;
   if (/business_name|name_city|brand/i.test(strategy)) score -= 12;
   return score;
 }
