@@ -372,6 +372,26 @@ async function planDecisionMakerSearchWithDeepInfra({
 function mergeDecisionMakerSearchPlans(seedPlan, rawPlan, aiConfig) {
   const normalized = normalizeAiDecisionMakerSearchPlan(rawPlan);
   if (!normalized || !normalized.queries.length) {
+    const repairedSeedQueries = normalizeDecisionMakerQueryEntries(seedPlan.queries, "ai")
+      .map((entry) => ({
+        ...entry,
+        plannedBy: "ai",
+        discoveryReason: "ai_invalid_plan_repaired_to_seed_query"
+      }));
+    if (rawPlan?.usage && repairedSeedQueries.length) {
+      return {
+        ...seedPlan,
+        ai: {
+          status: "planned",
+          provider: aiConfig?.provider || "deepinfra",
+          model: aiConfig?.model || null,
+          warning: "invalid_response_repaired_to_seed_queries",
+          usage: rawPlan.usage,
+          cost: estimateDeepseekUsageCost(rawPlan.usage)
+        },
+        queries: uniqueDecisionMakerQueryEntries(repairedSeedQueries).slice(0, 18)
+      };
+    }
     return {
       ...seedPlan,
       ai: {
