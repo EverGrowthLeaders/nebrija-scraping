@@ -1878,6 +1878,9 @@ function applyAdsActivityVerification({ providerEvidence = {}, resolved = {}, ra
       return [provider, aiVerificationInvalidProviderResult({ provider, current, rawVerification, aiConfig, phase })];
     }
     if (normalized.confirmed !== true || normalized.active !== current.active) {
+      if (isAuthoritativeExactAdsDecision(current)) {
+        return [provider, aiVerificationConfirmedByExactEvidence({ provider, current, rawVerification, aiConfig, phase, normalized })];
+      }
       return [provider, aiVerificationRejectedProviderResult({ provider, current, rawVerification, aiConfig, phase, normalized })];
     }
 
@@ -1899,6 +1902,43 @@ function applyAdsActivityVerification({ providerEvidence = {}, resolved = {}, ra
       }
     }];
   }));
+}
+
+function aiVerificationConfirmedByExactEvidence({ provider, current, rawVerification, aiConfig, phase, normalized }) {
+  return {
+    ...current,
+    confidence: Math.max(0.78, Math.min(current.confidence ?? 0.78, 0.92)),
+    ai: {
+      ...(current.ai || {}),
+      verification: adsActivityVerificationMetadata({
+        status: "confirmed",
+        rawVerification,
+        aiConfig,
+        phase,
+        provider,
+        evidenceSummary: normalized.evidenceSummary || "Exact official Ads Library evidence supports the proposed decision.",
+        needsMoreEvidence: false,
+        selectedAttemptIds: normalized.selectedAttemptIds?.length
+          ? normalized.selectedAttemptIds
+          : current.ai?.selectedAttemptIds || []
+      })
+    }
+  };
+}
+
+function isAuthoritativeExactAdsDecision(current = {}) {
+  if (typeof current.active !== "boolean") return false;
+  if (current.sourceProvider === "apify" && [
+    "apify_active_items_for_page_scoped_source",
+    "apify_active_ad_matched",
+    "apify_google_recent_domain_ad",
+    "apify_google_no_recent_domain_ads"
+  ].includes(current.reason)) {
+    return true;
+  }
+  return current.sourceProvider === "firecrawl" &&
+    current.active === true &&
+    current.reason === "google_domain_ads_found";
 }
 
 function aiVerificationInvalidProviderResult({ provider, current, rawVerification, aiConfig, phase }) {
