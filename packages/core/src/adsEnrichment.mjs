@@ -2346,8 +2346,14 @@ function betterMetaFallback(current, next) {
 }
 
 function isStrongMetaApifyResult(result = {}) {
-  return result.active === true &&
-    (result.confidence || 0) >= 0.9 &&
+  if (result.active !== true) return false;
+  if ([
+    "apify_active_items_for_page_scoped_source",
+    "apify_active_ad_matched"
+  ].includes(result.reason)) {
+    return true;
+  }
+  return (result.confidence || 0) >= 0.9 &&
     Array.isArray(result.landingUrls) &&
     result.landingUrls.length > 0;
 }
@@ -2519,8 +2525,12 @@ function apifyMetaMaxResults(apify) {
 }
 
 function apifyMetaMaxSources(apify) {
-  const configured = Number(apify?.metaMaxSources ?? config.adsEnrichment?.apifyMetaMaxSources ?? 1);
-  return Math.min(3, Math.max(1, Number.isFinite(configured) ? configured : 1));
+  const configured = Number(apify?.metaMaxSources ?? config.adsEnrichment?.apifyMetaMaxSources);
+  const defaultSources = 3;
+  const sourceCount = Number.isFinite(configured)
+    ? Math.max(configured, defaultSources)
+    : defaultSources;
+  return Math.min(8, Math.max(1, sourceCount));
 }
 
 function rankApifyMetaSource(source = {}, business = {}) {
@@ -2645,39 +2655,6 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       }
     });
   }
-  if (activeItems.length && isExactDomainApifyMetaSource({ source, business })) {
-    const latestDetectedDate = apifyItemDate(activeItems[0], now);
-    const landingUrls = activeItems.flatMap((item) => collectApifyLandingUrls(item, business)).slice(0, 8);
-    const spendEstimate = estimateMetaSpendFromApifyItems({
-      matchedItems: activeItems.map((item) => ({
-        item,
-        match: { confidence: 0.82, fields: ["domain"] }
-      })),
-      business,
-      now
-    });
-    return evidence({
-      provider: "meta",
-      status: "active",
-      active: true,
-      confidence: Math.max(Number(source.confidence || 0), 0.82),
-      sourceUrl: apifyMetaItemUrl(activeItems[0]) || source.sourceUrl,
-      reason: "apify_active_items_for_exact_domain_source",
-      latestDetectedDate,
-      context: {
-        ...source,
-        matchedFields: ["domain"],
-        itemsSeen: items.length,
-        total: apifyTotal(items),
-        matchedItems: activeItems.length,
-        samplePageName: samplePageName(activeItems[0]),
-        adArchiveId: apifyMetaItemAdId(activeItems[0]),
-        landingUrls,
-        spendEstimate,
-        evidenceSnippet: evidenceSnippet || "Apify returned active Meta Ads Library items for an exact domain source query."
-      }
-    });
-  }
   if (!activeItems.length && isPreciseApifyMetaSource(source)) {
     return evidence({
       provider: "meta",
@@ -2731,8 +2708,8 @@ function isExactDomainApifyMetaSource({ source = {}, business = {} } = {}) {
 function isPageScopedApifyMetaSource(source = {}) {
   const sourceUrl = String(source.sourceUrl || "");
   const searchType = String(source.searchType || "").toLowerCase();
-  if (parseFacebookPageUrl(source.query)) return true;
   if (parseFacebookPageUrl(sourceUrl)) return true;
+  if (searchType === "page" && parseFacebookPageUrl(source.query)) return true;
   try {
     const parsed = new URL(sourceUrl);
     const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
@@ -2741,7 +2718,7 @@ function isPageScopedApifyMetaSource(source = {}) {
     if (parsed.searchParams.get("view_all_page_id") || parsed.searchParams.get("page_id") || parsed.searchParams.get("id")) {
       return true;
     }
-    if (parseFacebookPageUrl(parsed.searchParams.get("q") || "")) return true;
+    if (searchType === "page" && parseFacebookPageUrl(parsed.searchParams.get("q") || "")) return true;
     return searchType === "page" && /^[a-z0-9][a-z0-9._-]{1,79}$/i.test(String(source.query || ""));
   } catch {
     return false;

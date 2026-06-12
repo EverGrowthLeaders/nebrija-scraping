@@ -2682,7 +2682,7 @@ test("does not spend Apify when Deepseek discovery planning fails", async () => 
   });
 
   assert.equal(enrichment.discoveryPlan.ai.status, "failed");
-  assert.deepEqual(searches, []);
+  assert.deepEqual(searches, ["site:facebook.com Planner Fail Madrid", "Planner Fail Madrid facebook"]);
   assert.deepEqual(adsLibraryCalls, ["https://planner-fail.example"]);
   assert.equal(enrichment.meta.ai.phase, "firecrawl");
   assert.equal(enrichment.google.ai.phase, "firecrawl");
@@ -3426,7 +3426,7 @@ test("uses Solidcode Google Ads actor input and normalizes its output", async ()
   assert.equal(enrichment.google.latestDetectedDate, "2026-06-05");
 });
 
-test("continues Apify sources when the first active match has no landing URL", async () => {
+test("stops Meta Apify fallback after precise active source even without landing URL", async () => {
   const apifyCalls = [];
   const firecrawl = {
     async search() {
@@ -3457,6 +3457,62 @@ test("continues Apify sources when the first active match has no landing URL", a
           snapshot: { body: { text: "demo.example" } }
         }];
       }
+      return [{
+        is_active: true,
+        page_name: "Demo Factory",
+        snapshot: {
+          body: { text: "demo.example" }
+        }
+      }];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Demo Factory", website: "https://demo.example", facebook: "https://facebook.com/demofactory" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "demo.example", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain" },
+        { query: "demofactory", searchType: "page", country: "ES", reason: "ai_facebook_page_handle" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(apifyCalls.length, 1);
+  assert.equal(enrichment.meta.active, true);
+  assert.deepEqual(enrichment.meta.landingUrls, []);
+});
+
+test("tries next ordered Meta Apify source when first precise source has no active ads", async () => {
+  const apifyCalls = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://demo.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      if (url === "https://demo.example/landing") {
+        return {
+          markdown: "Solicita presupuesto y agenda una demo.",
+          html: '<form class="elementor-form"></form>',
+          links: []
+        };
+      }
+      return { markdown: "Ad Library", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    metaMaxSources: 2,
+    async runFacebookAdsLibrary(input) {
+      apifyCalls.push(input.urls[0].url);
+      if (apifyCalls.length === 1) return [];
       return [{
         ad_archive_id: "123456789",
         is_active: true,

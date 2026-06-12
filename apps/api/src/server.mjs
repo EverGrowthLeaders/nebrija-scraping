@@ -671,6 +671,7 @@ const server = http.createServer(async (req, res) => {
               maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
               apifyFallbackMode: json.apifyFallbackMode || json.apify_fallback_mode || config.adsEnrichment.apifyFallbackMode,
               googleApifyFallbackEnabled: parseBoolean(json.googleApifyFallbackEnabled ?? json.google_apify_fallback_enabled ?? false),
+              apifyMetaMaxSources: json.apifyMetaMaxSources ?? json.apify_meta_max_sources ?? json.metaMaxSources ?? json.meta_max_sources,
               outputPath: json.outputPath || json.output_path,
               logger: logger
             });
@@ -1674,6 +1675,7 @@ function startReformasMadridAsyncJob({ json = {}, testId, log = logger }) {
         maxDeepseekUsdPerBusiness: json.maxDeepseekUsdPerBusiness ?? json.max_deepseek_usd_per_business,
         apifyFallbackMode: json.apifyFallbackMode || json.apify_fallback_mode || config.adsEnrichment.apifyFallbackMode,
         googleApifyFallbackEnabled: parseBoolean(json.googleApifyFallbackEnabled ?? json.google_apify_fallback_enabled ?? false),
+        apifyMetaMaxSources: json.apifyMetaMaxSources ?? json.apify_meta_max_sources ?? json.metaMaxSources ?? json.meta_max_sources,
         outputPath: reportPath,
         logger: log,
         onProgress: async (partialReport, row) => {

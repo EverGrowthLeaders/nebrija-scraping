@@ -67,6 +67,8 @@ if (isCliRun()) {
       maxDeepseekUsd: args.maxDeepseekUsd,
       maxDeepseekUsdPerBusiness: args.maxDeepseekUsdPerBusiness,
       apifyFallbackMode: args.apifyFallbackMode,
+      apifyMetaMaxSources: args.apifyMetaMaxSources,
+      googleApifyFallbackEnabled: args.googleApifyFallbackEnabled,
       outputPath: args.out
     });
     if (report.failures.length) {
@@ -89,6 +91,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
   const maxDeepseekUsdPerBusiness = numberOrNull(options.maxDeepseekUsdPerBusiness);
   const apifyFallbackMode = normalizeApifyFallbackMode(options.apifyFallbackMode || config.adsEnrichment.apifyFallbackMode || "off");
   const googleApifyFallbackEnabled = options.googleApifyFallbackEnabled === true;
+  const apifyMetaMaxSources = positiveInt(options.apifyMetaMaxSources, null);
   const outputPath = options.outputPath
     ? path.resolve(process.cwd(), options.outputPath)
     : path.resolve(process.cwd(), DEFAULT_OUT_DIR, `reformas-madrid-enrichment-${timestampForFile()}.json`);
@@ -115,6 +118,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
         discovery,
         requireDecisionMaker,
         apifyFallbackMode,
+        apifyMetaMaxSources,
         concurrency
       }), null);
     }
@@ -151,7 +155,10 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     const business = selectedBusinesses[index];
     const label = `${index + 1}/${selectedBusinesses.length} ${business.name}`;
     logger?.log?.(`\n[job] ${label}`);
-    const { apify, apifyStats } = createCountingApifyClient(apifyFallbackMode, { googleApifyFallbackEnabled });
+    const { apify, apifyStats } = createCountingApifyClient(apifyFallbackMode, {
+      googleApifyFallbackEnabled,
+      apifyMetaMaxSources
+    });
     const startedAt = new Date().toISOString();
 
     try {
@@ -219,6 +226,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
       maxDeepseekUsd,
       requireDecisionMaker,
       apifyFallbackMode,
+      apifyMetaMaxSources,
       concurrency
     });
     partialReport.outputPath = outputPath;
@@ -244,6 +252,7 @@ export async function runReformasMadridEnrichmentJob(options = {}) {
     maxDeepseekUsd,
     requireDecisionMaker,
     apifyFallbackMode,
+    apifyMetaMaxSources,
     concurrency
   });
   report.outputPath = outputPath;
@@ -306,7 +315,7 @@ async function discoverBusinesses({ googlePlaces, limit, logger = console, onPro
   return [...byKey.values()];
 }
 
-function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMaker, apifyFallbackMode, concurrency }) {
+function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, concurrency }) {
   return {
     generatedAt: new Date().toISOString(),
     outputPath,
@@ -317,6 +326,7 @@ function buildDiscoveryReport({ limit, outputPath, discovery, requireDecisionMak
       processedLimit: 0,
       requireDecisionMaker,
       apifyFallbackMode,
+      apifyMetaMaxSources: apifyMetaMaxSources || null,
       concurrency: concurrency || null
     },
     status: "running_discovery",
@@ -380,6 +390,9 @@ function createCountingApifyClient(mode = config.adsEnrichment.apifyFallbackMode
       },
       get maxChargedResults() {
         return client.maxChargedResults;
+      },
+      get metaMaxSources() {
+        return options.apifyMetaMaxSources || client.metaMaxSources;
       },
       get googleFallbackEnabled() {
         return options.googleApifyFallbackEnabled === true;
@@ -535,7 +548,7 @@ function summarizeBusinessResult({ ads, decisionMaker, apifyStats, deepseek }) {
   };
 }
 
-function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode, concurrency }) {
+function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseekUsd, requireDecisionMaker, apifyFallbackMode, apifyMetaMaxSources, concurrency }) {
   const deepseek = summarizeDeepseekCostItems(
     results.flatMap((row) => (row.summary?.deepseek?.items || []).map((item) => ({
       ...item,
@@ -558,6 +571,7 @@ function buildReport({ limit, selectedBusinesses, results, failures, maxDeepseek
       processedLimit: selectedBusinesses.length,
       requireDecisionMaker,
       apifyFallbackMode,
+      apifyMetaMaxSources: apifyMetaMaxSources || null,
       concurrency: concurrency || null
     },
     summary: {
@@ -661,6 +675,11 @@ function parseArgs(argv) {
     } else if (arg === "--apify-fallback-mode") {
       parsed.apifyFallbackMode = argv[index + 1];
       index += 1;
+    } else if (arg === "--apify-meta-max-sources") {
+      parsed.apifyMetaMaxSources = argv[index + 1];
+      index += 1;
+    } else if (arg === "--google-apify-fallback-enabled") {
+      parsed.googleApifyFallbackEnabled = true;
     }
   }
   return parsed;
