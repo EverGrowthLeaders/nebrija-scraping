@@ -2058,6 +2058,7 @@ function buildAdsActivityEvidencePack({
       "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
       "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
       "For Meta, an Apify active result from a page-scoped Facebook source URL is exact page evidence; keyword or domain searches are not page-scoped and still need identity proof.",
+      "For Meta, an Apify active result from an exact business-domain source query is domain evidence; broad business-name keywords are not exact-domain evidence.",
       "Copy landing URLs only from the evidence. Never invent URLs, advertiser names, profile names or dates."
     ]
   };
@@ -2106,6 +2107,7 @@ function buildAdsActivityVerificationPack({
       "confirmed=true requires a selected attempt or source URL that supports the same active boolean for the exact business identity.",
       "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
       "For Meta, accept active=true when the selected evidence is an Apify active result from a page-scoped Facebook source URL for the planned page; do not apply this to keyword or domain searches.",
+      "For Meta, accept active=true when the selected evidence is an Apify active result from an exact business-domain source query; do not apply this to broad business-name keywords.",
       "Reject inactive when the evidence only shows a failed scrape, blocked page, generic no-results text, or an unverified query.",
       "Use unknown when the evidence is insufficient and set needsMoreEvidence=true."
     ]
@@ -2582,6 +2584,39 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       }
     });
   }
+  if (activeItems.length && isExactDomainApifyMetaSource({ source, business })) {
+    const latestDetectedDate = apifyItemDate(activeItems[0], now);
+    const landingUrls = activeItems.flatMap((item) => collectApifyLandingUrls(item, business)).slice(0, 8);
+    const spendEstimate = estimateMetaSpendFromApifyItems({
+      matchedItems: activeItems.map((item) => ({
+        item,
+        match: { confidence: 0.82, fields: ["domain"] }
+      })),
+      business,
+      now
+    });
+    return evidence({
+      provider: "meta",
+      status: "active",
+      active: true,
+      confidence: Math.max(Number(source.confidence || 0), 0.82),
+      sourceUrl: apifyMetaItemUrl(activeItems[0]) || source.sourceUrl,
+      reason: "apify_active_items_for_exact_domain_source",
+      latestDetectedDate,
+      context: {
+        ...source,
+        matchedFields: ["domain"],
+        itemsSeen: items.length,
+        total: apifyTotal(items),
+        matchedItems: activeItems.length,
+        samplePageName: samplePageName(activeItems[0]),
+        adArchiveId: apifyMetaItemAdId(activeItems[0]),
+        landingUrls,
+        spendEstimate,
+        evidenceSnippet: evidenceSnippet || "Apify returned active Meta Ads Library items for an exact domain source query."
+      }
+    });
+  }
   if (!activeItems.length && isPreciseApifyMetaSource(source)) {
     return evidence({
       provider: "meta",
@@ -2614,6 +2649,22 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
       evidenceSnippet
     }
   });
+}
+
+function isExactDomainApifyMetaSource({ source = {}, business = {} } = {}) {
+  const domain = extractDomain(business.website);
+  if (!domain) return false;
+  const query = normalizeText(source.query || metaApifySearchTerm(source));
+  if (query !== normalizeText(domain)) return false;
+  const searchType = String(source.searchType || "").toLowerCase();
+  if (searchType && searchType !== "keyword_unordered") return false;
+  try {
+    const parsed = new URL(source.sourceUrl || "");
+    const sourceQuery = normalizeText(parsed.searchParams.get("q") || "");
+    return !sourceQuery || sourceQuery === normalizeText(domain);
+  } catch {
+    return true;
+  }
 }
 
 function isPageScopedApifyMetaSource(source = {}) {
