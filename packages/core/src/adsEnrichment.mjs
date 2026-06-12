@@ -1764,15 +1764,21 @@ function normalizeAiProviderActivity(value) {
 
 function normalizeAiProviderVerification(value, expectedActive) {
   if (!value || typeof value !== "object") return null;
-  if (!Object.prototype.hasOwnProperty.call(value, "confirmed")) return null;
+  const rawStatus = String(value.status || "").toLowerCase();
+  if (!["confirmed", "rejected", "unknown"].includes(rawStatus)) return null;
+  const statusImpliedConfirmed = rawStatus === "confirmed"
+    ? true
+    : rawStatus === "rejected" || rawStatus === "unknown"
+      ? false
+      : undefined;
   const confirmed = value.confirmed === true
     ? true
     : value.confirmed === false
       ? false
-      : undefined;
+      : value.confirmed == null
+        ? statusImpliedConfirmed
+        : undefined;
   if (confirmed === undefined) return null;
-  const rawStatus = String(value.status || "").toLowerCase();
-  if (!["confirmed", "rejected", "unknown"].includes(rawStatus)) return null;
   if (confirmed === true && rawStatus !== "confirmed") return null;
   if (confirmed === false && rawStatus === "confirmed") return null;
   const active = value.active === true

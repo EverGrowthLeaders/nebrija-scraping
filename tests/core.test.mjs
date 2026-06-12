@@ -2468,6 +2468,75 @@ test("requires independent AI verification before keeping boolean Ads activity",
   assert.equal(enrichment.google.ai.verification.cost.estimatedUsd, 0.00015);
 });
 
+test("accepts Ads verification confirmed status without explicit confirmed boolean", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://planned.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "No ads found", html: "" };
+      if (url.includes("adstransparency.google.com")) {
+        return {
+          markdown: "planned.example Ce domaine inclut des résultats pour plusieurs comptes d'annonceur dont les annonces redirigent vers ce domaine.",
+          html: ""
+        };
+      }
+      return { markdown: "", html: "" };
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Planned Demo", website: "https://planned.example", city: "Madrid" },
+    firecrawl,
+    aiResolver: async ({ evidence }) => {
+      const googleAttempt = evidence.providers.google.attempts[0];
+      return {
+        meta: {
+          active: null,
+          status: "unknown",
+          confidence: 0.4,
+          reason: "ai_meta_unknown",
+          selectedAttemptIds: [],
+          landingUrls: [],
+          matchedFields: [],
+          sourceUrl: null,
+          evidenceSummary: "No Meta evidence.",
+          needsMoreEvidence: true
+        },
+        google: {
+          active: true,
+          status: "active",
+          confidence: 0.91,
+          reason: "ai_google_domain_ads_verified",
+          selectedAttemptIds: [googleAttempt.attemptId],
+          landingUrls: [],
+          matchedFields: ["domain", "business_name"],
+          sourceUrl: googleAttempt.sourceUrl,
+          evidenceSummary: "Official Google evidence shows active ads for the domain.",
+          needsMoreEvidence: false
+        }
+      };
+    },
+    aiVerifier: async ({ resolved }) => ({
+      google: {
+        status: "confirmed",
+        active: true,
+        confidence: 0.9,
+        reason: "google_domain_ads_confirmed",
+        selectedAttemptIds: resolved.google.ai.selectedAttemptIds,
+        evidenceSummary: "Confirmed by the selected official Google attempt.",
+        needsMoreEvidence: false
+      }
+    }),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(enrichment.google.active, true);
+  assert.equal(enrichment.google.ai.verification.status, "confirmed");
+});
+
 test("does not spend Apify fallback when Deepseek resolves Firecrawl evidence", async () => {
   const firecrawl = {
     async search() {
