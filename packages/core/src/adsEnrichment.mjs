@@ -2833,7 +2833,7 @@ function isExternalQuotaError(error) {
   return /quota|hard limit|usage limit|monthly usage|limit exceeded/i.test(text);
 }
 
-function parseAiJson(content) {
+export function parseAiJson(content) {
   const raw = String(content || "").trim()
     .replace(/^```(?:json)?/i, "")
     .replace(/```$/i, "")
@@ -2864,13 +2864,57 @@ function jsonRepairCandidates(raw) {
     .replace(/^\uFEFF/, "")
     .replace(/\/\/.*$/gm, "")
     .replace(/,\s*([}\]])/g, "$1");
+  const escapedControls = escapeJsonControlCharactersInStrings(compacted);
   return [
     compacted,
+    escapedControls,
     compacted
+      .replace(/}\s*(?={)/g, "},")
+      .replace(/\]\s*(?="[^"]+"\s*:)/g, "],")
+      .replace(/"\s*(?="[^"]+"\s*:)/g, "\","),
+    escapedControls
       .replace(/}\s*(?={)/g, "},")
       .replace(/\]\s*(?="[^"]+"\s*:)/g, "],")
       .replace(/"\s*(?="[^"]+"\s*:)/g, "\",")
   ];
+}
+
+function escapeJsonControlCharactersInStrings(value) {
+  let output = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of String(value || "")) {
+    if (!inString) {
+      output += char;
+      if (char === "\"") inString = true;
+      continue;
+    }
+    if (escaped) {
+      output += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      output += char;
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      output += char;
+      inString = false;
+      continue;
+    }
+    const code = char.charCodeAt(0);
+    if (code <= 0x1f) {
+      if (char === "\n") output += "\\n";
+      else if (char === "\r") output += "\\r";
+      else if (char === "\t") output += "\\t";
+      else output += `\\u${code.toString(16).padStart(4, "0")}`;
+      continue;
+    }
+    output += char;
+  }
+  return output;
 }
 
 function normalizeStringArray(value) {

@@ -35,7 +35,14 @@ import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
 import { buildCampaignCsv, buildCampaignXlsx, campaignExportFilename } from "../packages/core/src/exporters.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../packages/core/src/leadImport.mjs";
-import { buildMetaAdProbes, buildMetaAdsLibraryUrl, discoverSocialsForAds, enrichBusinessAds, inferAdsActivity } from "../packages/core/src/adsEnrichment.mjs";
+import {
+  buildMetaAdProbes,
+  buildMetaAdsLibraryUrl,
+  discoverSocialsForAds,
+  enrichBusinessAds,
+  inferAdsActivity,
+  parseAiJson
+} from "../packages/core/src/adsEnrichment.mjs";
 import {
   buildLinkedInDecisionMakerDork,
   buildLinkedInDecisionMakerQueries,
@@ -162,6 +169,23 @@ test("retries DeepInfra overloaded responses", async () => {
   assert.equal(calls, 2);
   assert.deepEqual(delays, [5]);
   assert.equal(result.usage.total_tokens, 1);
+});
+
+test("repairs AI JSON strings with literal control characters", () => {
+  const parsed = parseAiJson(`{
+    "metaProbes": [
+      {
+        "query": "reformashoymadrid",
+        "searchType": "page",
+        "reason": "official page
+handle"
+      }
+    ],
+    "googleUrls": []
+  }`);
+
+  assert.equal(parsed.metaProbes[0].query, "reformashoymadrid");
+  assert.equal(parsed.metaProbes[0].reason, "official page\nhandle");
 });
 
 test("estimates Deepseek V4 Flash usage cost with cached tokens", () => {
