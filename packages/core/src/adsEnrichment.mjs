@@ -1030,7 +1030,16 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         confidence: 0.2,
         sourceUrl: primaryUrl,
         reason: "apify_google_unavailable",
-        context: { strategy: "domain_apify", query: domain, domain, businessName: business.name, country, sourceProvider: "apify" }
+        context: {
+          strategy: "domain_apify",
+          query: domain,
+          domain,
+          businessName: business.name,
+          country,
+          sourceProvider: "apify",
+          plannedBy: "ai",
+          discoveryReason: "apify_google_fallback_after_ai_unknown"
+        }
       }),
       attempts
     );
@@ -1049,6 +1058,8 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         businessName: business.name,
         country,
         sourceProvider: "apify",
+        plannedBy: "ai",
+        discoveryReason: "apify_google_fallback_after_ai_unknown",
         actorId: apify.googleAdsActorId || null,
         datePreset: GOOGLE_RECENT_DATE_PRESET
       },
@@ -1073,6 +1084,8 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         businessName: business.name,
         country,
         sourceProvider: "apify",
+        plannedBy: "ai",
+        discoveryReason: "apify_google_fallback_after_ai_unknown",
         actorId: apify.googleAdsActorId || null
       }
     });
@@ -1085,6 +1098,8 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
         businessName: business.name,
         country,
         sourceProvider: "apify",
+        plannedBy: "ai",
+        discoveryReason: "apify_google_fallback_after_ai_unknown",
         actorId: apify.googleAdsActorId || null,
         datePreset: GOOGLE_RECENT_DATE_PRESET
       },
@@ -1140,6 +1155,8 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
           businessName: business.name,
           country,
           sourceProvider: "apify",
+          plannedBy: "ai",
+          discoveryReason: "apify_google_fallback_after_ai_unknown",
           matchedFields: ["domain"],
           itemsSeen: 0,
           total: 0,
@@ -1161,6 +1178,8 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
         businessName: business.name,
         country,
         sourceProvider: "apify",
+        plannedBy: "ai",
+        discoveryReason: "apify_google_fallback_after_ai_unknown",
         matchedFields: ["domain"],
         itemsSeen: items.length,
         total: items.length,
@@ -1184,6 +1203,8 @@ function inferApifyGoogleActivity({ items = [], business = {}, domain, country, 
       businessName: business.name,
       country,
       sourceProvider: "apify",
+      plannedBy: "ai",
+      discoveryReason: "apify_google_fallback_after_ai_unknown",
       matchedFields: ["domain"],
       itemsSeen: recentItems.length,
       total: items.length,
