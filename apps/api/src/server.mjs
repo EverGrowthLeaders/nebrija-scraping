@@ -1295,10 +1295,9 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
   }
   if (active && provider === "meta") {
     const apifyDomainOnly = detail?.sourceProvider === "apify" && fields.length === 1 && fields[0] === "domain";
-    const apifySocialOnly = detail?.sourceProvider === "apify" && metaHasSocial && !metaHasDomain && !metaHasPageName;
     const firecrawlNoIdentity = detail?.sourceProvider === "firecrawl" && !fields.length && !detail?.adArchiveId;
     if (apifyDomainOnly) reasons.push("meta_apify_domain_only_match");
-    if (apifySocialOnly || (detail?.sourceProvider === "apify" && !metaHasStrongIdentity)) {
+    if (detail?.sourceProvider === "apify" && !metaHasStrongIdentity) {
       reasons.push("meta_apify_without_strong_identity_match");
     }
     if (firecrawlNoIdentity) reasons.push("meta_firecrawl_active_without_identity_match");
