@@ -69,7 +69,7 @@ export const config = {
     fallbackMode: process.env.ADS_BROWSER_FALLBACK_MODE || "off",
     chromePath: process.env.ADS_BROWSER_CHROME_PATH || process.env.CHROME_PATH || "",
     requestTimeoutMs: intFromEnv("ADS_BROWSER_REQUEST_TIMEOUT_MS", 60000),
-    waitMs: intFromEnv("ADS_BROWSER_WAIT_MS", 7000)
+    waitMs: intFromEnv("ADS_BROWSER_WAIT_MS", 12000)
   },
   adsActivityAi: {
     provider: "deepinfra",

@@ -1455,11 +1455,16 @@ function compactAdAttempt(attempt = {}) {
     active: attempt.active ?? null,
     confidence: attempt.confidence ?? null,
     reason: attempt.reason || null,
+    error: attempt.error || null,
     sourceUrl: attempt.sourceUrl || null,
     matchedFields: attempt.matchedFields || null,
     samplePageName: attempt.samplePageName || null,
+    adArchiveId: attempt.adArchiveId || null,
+    landingUrl: attempt.landingUrl || null,
+    landingUrls: Array.isArray(attempt.landingUrls) ? attempt.landingUrls.slice(0, 5) : [],
     itemsSeen: attempt.itemsSeen ?? null,
-    total: attempt.total ?? null
+    total: attempt.total ?? null,
+    evidenceSnippet: attempt.evidenceSnippet || null
   };
 }
 

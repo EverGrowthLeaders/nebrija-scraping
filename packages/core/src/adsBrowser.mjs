@@ -27,20 +27,32 @@ export class AdsBrowserClient {
 
   async inspectMetaAdsLibrary({ domain, country = "ES" } = {}) {
     if (!domain) return null;
-    return await withBrowserSession({ chromePath: this.chromePath, timeoutMs: this.timeoutMs }, async (cdp) => {
+    return await withBrowserRetries(async () => await withBrowserSession({ chromePath: this.chromePath, timeoutMs: this.timeoutMs }, async (cdp) => {
       const url = buildMetaBrowserUrl({ domain, country });
       await navigateAndWait(cdp, url, this.waitMs);
-      return await evaluatePage(cdp, metaExtractionScript(domain));
-    });
+      return await evaluateUntilUseful({
+        cdp,
+        expression: metaExtractionScript(domain),
+        isUseful: (raw) => Array.isArray(raw?.ids) && raw.ids.length > 0 || raw?.hasNoResults === true,
+        attempts: 4,
+        delayMs: 3000
+      });
+    }));
   }
 
   async inspectGoogleAdsTransparency({ domain, country = "ES" } = {}) {
     if (!domain) return null;
-    return await withBrowserSession({ chromePath: this.chromePath, timeoutMs: this.timeoutMs }, async (cdp) => {
+    return await withBrowserRetries(async () => await withBrowserSession({ chromePath: this.chromePath, timeoutMs: this.timeoutMs }, async (cdp) => {
       const url = buildGoogleBrowserUrl({ domain, country });
       await navigateAndWait(cdp, url, this.waitMs);
-      return await evaluatePage(cdp, googleExtractionScript(domain));
-    });
+      return await evaluateUntilUseful({
+        cdp,
+        expression: googleExtractionScript(domain),
+        isUseful: (raw) => /Google Ads Transparency|Centro de transparencia|anuncios|ads/i.test(String(raw?.bodyText || "")),
+        attempts: 3,
+        delayMs: 2500
+      });
+    }));
   }
 }
 
@@ -73,6 +85,7 @@ async function withBrowserSession({ chromePath, timeoutMs }, fn) {
   if (!chromePath) throw new Error("ads_browser_chrome_missing");
   const profileDir = await mkdtemp(join(tmpdir(), "ads-browser-"));
   const port = 9600 + Math.floor(Math.random() * 500);
+  const stderr = [];
   const chrome = spawn(chromePath, [
     "--headless=new",
     "--disable-gpu",
@@ -80,10 +93,15 @@ async function withBrowserSession({ chromePath, timeoutMs }, fn) {
     "--disable-dev-shm-usage",
     "--no-first-run",
     "--no-default-browser-check",
+    "--remote-debugging-address=127.0.0.1",
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profileDir}`,
     "about:blank"
-  ], { stdio: ["ignore", "ignore", "ignore"] });
+  ], { stdio: ["ignore", "ignore", "pipe"] });
+  chrome.stderr?.on("data", (chunk) => {
+    stderr.push(String(chunk).slice(0, 1000));
+    if (stderr.length > 8) stderr.shift();
+  });
   const timer = setTimeout(() => chrome.kill("SIGTERM"), Math.max(10000, timeoutMs || 45000));
   try {
     await waitForJson(port, "/json/version");
@@ -95,11 +113,29 @@ async function withBrowserSession({ chromePath, timeoutMs }, fn) {
     const result = await fn(cdp);
     cdp.ws.close();
     return result;
+  } catch (error) {
+    const stderrText = compactProcessOutput(stderr.join("\n"));
+    if (!stderrText) throw error;
+    throw new Error(`${error.message}; chrome_stderr=${stderrText}`);
   } finally {
     clearTimeout(timer);
     chrome.kill("SIGTERM");
     await rm(profileDir, { recursive: true, force: true });
   }
+}
+
+async function withBrowserRetries(fn, attempts = 3) {
+  let lastError = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (/ads_browser_chrome_missing/i.test(error.message)) break;
+      await sleep(500 + attempt * 750);
+    }
+  }
+  throw lastError;
 }
 
 async function waitForJson(port, path) {
@@ -164,6 +200,26 @@ async function evaluatePage(cdp, expression) {
     returnByValue: true
   });
   return result.result?.value || null;
+}
+
+async function evaluateUntilUseful({ cdp, expression, isUseful, attempts, delayMs }) {
+  let latest = null;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    latest = await evaluatePage(cdp, expression);
+    if (isUseful(latest)) return latest;
+    if (attempt < attempts - 1) await sleep(delayMs);
+  }
+  return latest;
+}
+
+function compactProcessOutput(value = "") {
+  return String(value || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-5)
+    .join(" | ")
+    .slice(0, 1200);
 }
 
 function metaExtractionScript(domain) {
