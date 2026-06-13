@@ -1618,8 +1618,10 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
     .slice(0, apifyMetaMaxSources(apify));
   const attempts = [];
   let fallback = null;
+  let followupsAdded = 0;
 
-  for (const source of sources) {
+  for (let sourceIndex = 0; sourceIndex < sources.length; sourceIndex += 1) {
+    const source = sources[sourceIndex];
     const sourceWithActor = {
       ...source,
       actorId: apify.facebookAdsActorId || null
@@ -1630,6 +1632,11 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
       attempts.push(apifyAttempt(sourceWithActor, analyzed, items));
       fallback = betterMetaFallback(fallback, analyzed);
       if (isStrongMetaApifyResult(analyzed)) break;
+      const followup = buildApifyMetaFollowupSource({ items, business, source: sourceWithActor, country });
+      if (followup && followupsAdded < 1 && !sources.some((candidate) => candidate.sourceUrl === followup.sourceUrl)) {
+        followupsAdded += 1;
+        sources.push(followup);
+      }
     } catch (error) {
       const quotaExceeded = isExternalQuotaError(error);
       const result = evidence({
@@ -2980,6 +2987,44 @@ function addApifySource(sources, source) {
     discoveryReason: source.discoveryReason || "seed_apify_source",
     sourceProvider: "apify"
   });
+}
+
+function buildApifyMetaFollowupSource({ items = [], business = {}, source = {}, country = DEFAULT_COUNTRY } = {}) {
+  if (source.followup === true) return null;
+  if (!Array.isArray(items) || !items.length) return null;
+  const activeItems = items.filter((item) => isApifyMetaItemActive(item));
+  if (!activeItems.length) return null;
+  const candidate = activeItems.find((item) => {
+    const pageName = samplePageName(item);
+    const strings = collectApifyItemStrings(item).join("\n");
+    return strongNameMatch(pageName, business.name) || strongNameMatch(strings, business.name);
+  }) || activeItems[0];
+  const pageUrl = firstFacebookPageUrlFromApifyItem(candidate);
+  if (!pageUrl) return null;
+  const query = metaApifySearchTerm({ sourceUrl: pageUrl }) || pageUrl;
+  return {
+    strategy: "apify_candidate_page_followup",
+    query,
+    searchType: "page",
+    country: source.country || country || DEFAULT_COUNTRY,
+    sourceUrl: pageUrl,
+    confidence: Math.max(Number(source.confidence || 0), 0.9),
+    plannedBy: "ai",
+    discoveryReason: "apify_candidate_page_followup",
+    followup: true,
+    sourceProvider: "apify"
+  };
+}
+
+function firstFacebookPageUrlFromApifyItem(item = {}) {
+  const text = collectApifyItemStrings(item).join("\n");
+  const matches = text.matchAll(/https?:\/\/(?:www\.)?facebook\.com\/([a-z0-9._-]{2,80})\/?/gi);
+  for (const match of matches) {
+    const handle = match[1] || "";
+    if (/^(ads|ad|share|sharer|groups|events|marketplace|watch|reel|reels|stories|plugins|privacy|help)$/i.test(handle)) continue;
+    return `https://www.facebook.com/${encodeURIComponent(handle)}`;
+  }
+  return "";
 }
 
 function buildApifyMetaInput(source, apify) {
