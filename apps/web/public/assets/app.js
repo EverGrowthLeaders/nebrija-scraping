@@ -95,8 +95,7 @@ const renderAdsBadge = (value, label) => {
 };
 
 const renderAdsEvidenceBadge = (value, label, evidence = {}) => {
-  if (value === true) return `<span class="badge badge--green">${escape(label)} activo</span>`;
-  if (value === false) return `<span class="badge badge--zinc">${escape(label)} sin señal</span>`;
+  if (value === true || value === false) return renderAdsBadge(value, label);
   if (evidence.status === "error") return `<span class="badge badge--burgundy">${escape(label)} error</span>`;
   if (evidence.status === "unknown") return `<span class="badge badge--zinc">${escape(label)} sin señal fuerte</span>`;
   return `<span class="badge badge--zinc">${escape(label)} pendiente</span>`;
@@ -1125,12 +1124,24 @@ function formatCampaignLabel(job = {}) {
   return main || job.name || `Campaña ${String(job.id || "").slice(0, 8)}`;
 }
 
-function renderLeadPhoneCell(row = {}) {
+// Shared phone-cell renderer. `link: true` makes it a tel: anchor (CRM tables),
+// otherwise a plain span (leads table keeps row-click navigation).
+function renderPhoneCell(row = {}, { link = false } = {}) {
   const phone = row.phone_e164 || row.phone;
+  if (!phone) return `<span class="faint">—</span>`;
   const type = crmPhoneType(row);
-  return phone
-    ? `<div class="crm-phone-cell"><span class="mono crm-phone">${escape(phone)}</span>${type !== "none" ? `<span class="crm-phone-type crm-phone-type--${escape(type)}">${escape(crmPhoneLabel(type))}</span>` : ""}</div>`
-    : `<span class="faint">—</span>`;
+  const value = link
+    ? `<a class="mono crm-phone" href="tel:${escape(phone)}">${escape(phone)}</a>`
+    : `<span class="mono crm-phone">${escape(phone)}</span>`;
+  const typeTag =
+    type !== "none"
+      ? `<span class="crm-phone-type crm-phone-type--${escape(type)}">${escape(crmPhoneLabel(type))}</span>`
+      : "";
+  return `<div class="crm-phone-cell">${value}${typeTag}</div>`;
+}
+
+function renderLeadPhoneCell(row = {}) {
+  return renderPhoneCell(row);
 }
 
 function renderLeadCampaignCell(business = {}) {
@@ -2769,11 +2780,7 @@ function renderCrmBusinessCell(row) {
 }
 
 function renderCrmPhone(row) {
-  const phone = row.phone_e164 || row.phone;
-  const type = crmPhoneType(row);
-  return phone
-    ? `<div class="crm-phone-cell"><a class="mono crm-phone" href="tel:${escape(phone)}">${escape(phone)}</a>${type !== "none" ? `<span class="crm-phone-type crm-phone-type--${escape(type)}">${escape(crmPhoneLabel(type))}</span>` : ""}</div>`
-    : `<span class="faint">—</span>`;
+  return renderPhoneCell(row, { link: true });
 }
 
 function renderCrmWebsite(row) {

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Nebrija — Preview</title>
+    <link rel="icon" type="image/svg+xml" href="/apps/web/public/assets/favicon.svg" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/apps/web/public/assets/style.css" />
+    <script src="/scripts/ui-preview/mock-api.js"></script>
+  </head>
+  <body>
+    <div class="nebula" aria-hidden="true">
+      <div class="nebula__layer nebula__layer--gold"></div>
+      <div class="nebula__layer nebula__layer--burgundy"></div>
+      <div class="nebula__grain"></div>
+    </div>
+
+    <div class="app">
+      <aside class="sidebar">
+        <a class="brand" href="#/" aria-label="Nebrija Command Center">
+          <span class="brand__mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" width="22" height="22">
+              <defs>
+                <linearGradient id="bm" x1="0" y1="0" x2="1" y2="1">
+                  <stop offset="0%" stop-color="#FFD700" />
+                  <stop offset="55%" stop-color="#FF8A4C" />
+                  <stop offset="100%" stop-color="#A50021" />
+                </linearGradient>
+              </defs>
+              <path fill="url(#bm)" d="M16 2.5 4.5 8.7v9.7c0 6.6 4.7 10.7 11.5 13.1 6.8-2.4 11.5-6.5 11.5-13.1V8.7L16 2.5Zm0 4.4 7.5 4v7.5c0 4.5-3.1 7.5-7.5 9.4-4.4-1.9-7.5-4.9-7.5-9.4V10.9l7.5-4Z" />
+              <path fill="#FFD700" opacity=".9" d="M11.6 12.5h2.6l3.7 5.6V12.5h2.5v9h-2.5l-3.7-5.6v5.6h-2.6z" />
+            </svg>
+          </span>
+          <span class="brand__text">
+            <span class="brand__name">Nebrija</span>
+            <span class="brand__sub">Command Center</span>
+          </span>
+        </a>
+
+        <nav class="nav" aria-label="Principal">
+          <a class="nav__item" data-route="overview" href="#/"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 13h8V3H3v10Zm0 8h8v-6H3v6Zm10 0h8V11h-8v10Zm0-18v6h8V3h-8Z" /></svg><span>Overview</span></a>
+          <a class="nav__item" data-route="campaigns" href="#/campaigns"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 12a9 9 0 1 1 18 0 9 9 0 0 1-18 0Zm9-6.5L7 12l5 6.5L17 12l-5-6.5Z" /></svg><span>Campañas</span></a>
+          <a class="nav__item" data-route="leads" href="#/leads"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 12a4 4 0 1 0-4-4 4 4 0 0 0 4 4Zm0 2c-3.3 0-8 1.7-8 5v3h16v-3c0-3.3-4.7-5-8-5Z" /></svg><span>Leads</span></a>
+          <a class="nav__item" data-route="lists" href="#/lists"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 5h16v3H4V5Zm0 5h10v3H4v-3Zm0 5h16v3H4v-3Zm12-5h4v3h-4v-3Z" /></svg><span>Listas</span></a>
+          <a class="nav__item" data-route="analytics" href="#/analytics"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M4 19h16v2H4v-2Zm1-2V9h4v8H5Zm5 0V3h4v14h-4Zm5 0v-6h4v6h-4Z" /></svg><span>Analítica</span></a>
+          <a class="nav__item" data-route="scoring" href="#/scoring"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M12 2 9.2 8.6 2 9.3l5.5 4.8L5.8 21 12 17.3 18.2 21l-1.7-6.9L22 9.3l-7.2-.7L12 2Z" /></svg><span>Scoring</span></a>
+          <a class="nav__item" data-route="calls" href="#/calls"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.3a11 11 0 0 0 3.4.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.4 1 1 0 0 1-.3 1l-2.2 2.4Z" /></svg><span>Llamadas</span></a>
+          <a class="nav__item" data-route="settings" href="#/settings"><svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M19.4 13.5c.1-.5.1-1 .1-1.5s0-1-.1-1.5l2-1.5-2-3.5-2.4 1a7 7 0 0 0-2.6-1.5L14 2h-4l-.4 2.5A7 7 0 0 0 7 6L4.6 5 2.6 8.5l2 1.5c-.1.5-.1 1-.1 1.5s0 1 .1 1.5l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 2.6 1.5L10 22h4l.4-2.5A7 7 0 0 0 17 18l2.4 1 2-3.5-2-1.5ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" /></svg><span>Settings</span></a>
+        </nav>
+
+        <div class="sidebar__footer">
+          <div class="status">
+            <span class="status__dot" data-health="pending"></span>
+            <span class="status__label" data-bind="health-label">Conectando…</span>
+          </div>
+          <div class="brand__tagline">En español de verdad. Hecha para España.</div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div class="topbar__crumbs">
+            <span class="topbar__crumb" data-bind="crumb-section">Overview</span>
+            <span class="topbar__crumb topbar__crumb--current" data-bind="crumb-current"></span>
+          </div>
+          <div class="topbar__actions">
+            <div data-bind="session-chip" hidden></div>
+            <button class="btn btn--ghost" data-action="refresh" type="button" title="Recargar (R)"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7Z" /></svg>Actualizar</button>
+            <button class="btn btn--primary" data-action="new-campaign" type="button"><svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z" /></svg>Nueva campaña</button>
+          </div>
+        </header>
+
+        <section class="view" id="view"></section>
+      </main>
+    </div>
+
+    <div class="modal" id="modal" hidden>
+      <div class="modal__backdrop" data-action="close-modal"></div>
+      <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="modal-title"></div>
+    </div>
+
+    <div class="toast-host" id="toast-host" aria-live="polite"></div>
+
+    <script type="module" src="/apps/web/public/assets/app.js"></script>
+  </body>
+</html>
