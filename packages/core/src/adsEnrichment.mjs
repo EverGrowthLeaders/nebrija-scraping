@@ -77,7 +77,6 @@ export async function enrichBusinessAds({
       !apifyFirstMeta &&
       typeof apify?.runFacebookAdsLibrary === "function";
     const shouldCollectGoogleApify = shouldCollectApifyProvider({ provider: "google", resolved, mode: apifyFallbackMode }) &&
-      (apify?.googleFallbackEnabled === true || config.adsEnrichment?.apifyGoogleFallbackEnabled === true) &&
       typeof apify?.runGoogleAdsTransparency === "function";
     const apifyMeta = shouldCollectMetaApify
       ? await inspectMetaAdsWithApify({ business: enrichedBusiness, apify, country, now, socialDiscovery, discoveryPlan })
@@ -2604,13 +2603,22 @@ function buildApifyMetaInput(source, apify) {
     urls: [{ url: source.sourceUrl }],
     limitPerSource: maxResults,
     count: maxResults,
-    scrapeAdDetails: false,
+    scrapeAdDetails: shouldScrapeApifyMetaAdDetails(source),
     "scrapePageAds.period": "",
     "scrapePageAds.activeStatus": "active",
     "scrapePageAds.sortBy": "most_recent",
     "scrapePageAds.countryCode": source.country || "ALL",
     runTag: "lexington-meta-active-check"
   };
+}
+
+function shouldScrapeApifyMetaAdDetails(source = {}) {
+  const query = cleanQuery(source.query || metaApifySearchTerm(source));
+  const searchType = normalizeMetaSearchType(source.searchType || metaSearchTypeFromUrl(source.sourceUrl || ""));
+  if (searchType !== "keyword_unordered") return false;
+  if (!/^[a-z0-9.-]+\.[a-z]{2,}$/i.test(query)) return false;
+  if (parseFacebookPageUrl(source.sourceUrl || "")) return false;
+  return true;
 }
 
 function normalizeApifyMetaSourceUrl(value, country = DEFAULT_COUNTRY) {

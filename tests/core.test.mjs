@@ -2974,7 +2974,7 @@ test("uses Curious Coder Facebook Ads actor input and normalizes its output", as
       assert.match(input.urls[0].url, /q=planned\.example/);
       assert.equal(input.limitPerSource, 1);
       assert.equal(input.count, 1);
-      assert.equal(input.scrapeAdDetails, false);
+      assert.equal(input.scrapeAdDetails, true);
       assert.equal(input["scrapePageAds.activeStatus"], "active");
       assert.equal(input["scrapePageAds.sortBy"], "most_recent");
       assert.equal(input["scrapePageAds.countryCode"], "ES");
@@ -3416,6 +3416,79 @@ test("falls back to Apify for matched active Meta ads only", async () => {
   assert.ok(enrichment.google.attempts.length >= 1);
 });
 
+test("scrapes Meta ad details for exact domain Apify sources", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://reformasdepisos.es") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Meta Ads Library", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    async runFacebookAdsLibrary(input) {
+      assert.equal(input.limitPerSource, 1);
+      assert.equal(input.count, 1);
+      assert.equal(input.scrapeAdDetails, true);
+      assert.match(input.urls[0].url, /q=reformasdepisos\.es/);
+      return [
+        {
+          ad_archive_id: "111222333444555",
+          is_active: true,
+          page_name: "Reformas de Pisos Madrid",
+          total: 1,
+          ad_library_url: "https://www.facebook.com/ads/library/?id=111222333444555",
+          snapshot: {
+            page_name: "Reformas de Pisos Madrid",
+            caption: "reformasdepisos.es",
+            body: { text: "Presupuesto para reformas integrales en Madrid" },
+            link_url: "https://reformasdepisos.es/presupuesto/",
+            cards: [{ link_url: "https://reformasdepisos.es/reformas-integrales/" }]
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Reformas de Pisos Madrid", website: "https://reformasdepisos.es", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaUrls: [
+        {
+          url: "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&q=reformasdepisos.es&search_type=keyword_unordered&media_type=all",
+          country: "ES",
+          strategy: "seed_domain_meta_library_url",
+          reason: "seed_domain_meta_library_url"
+        }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
+      if (phase !== "firecrawl_apify") return;
+      const apifyAttempt = evidence.providers.meta.attempts.find((attempt) => attempt.sourceProvider === "apify");
+      assert.ok(apifyAttempt);
+      assert.equal(apifyAttempt.reasonSignal, "apify_meta_active_item_candidate");
+      assert.deepEqual(apifyAttempt.matchedFields, ["domain", "landing_domain", "page_name"]);
+      assert.deepEqual(apifyAttempt.landingUrls, [
+        "https://reformasdepisos.es/presupuesto/",
+        "https://reformasdepisos.es/reformas-integrales/"
+      ]);
+    }),
+    country: "ES",
+    now: new Date("2026-06-13T12:30:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.sourceProvider, "apify");
+  assert.deepEqual(enrichment.meta.matchedFields, ["domain", "landing_domain", "page_name"]);
+});
+
 test("does not treat Meta keyword domain searches as page-scoped active ads", async () => {
   const firecrawl = {
     async search() {
@@ -3431,6 +3504,7 @@ test("does not treat Meta keyword domain searches as page-scoped active ads", as
     maxChargedResults: 1,
     async runFacebookAdsLibrary(input) {
       assert.equal(input.urls[0].url.includes("q=reformasmadrid.eu"), true);
+      assert.equal(input.scrapeAdDetails, true);
       return [
         {
           is_active: true,
@@ -3522,7 +3596,6 @@ test("uses Apify Google Transparency fallback for recent domain ads", async () =
   const apify = {
     enabled: true,
     maxChargedResults: 3,
-    googleFallbackEnabled: true,
     async runFacebookAdsLibrary() {
       return [];
     },
