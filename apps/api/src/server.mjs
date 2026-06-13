@@ -20,6 +20,9 @@ import {
   campaignExportFilename
 } from "../../../packages/core/src/exporters.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
+import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
+import { ApifyClient } from "../../../packages/core/src/apify.mjs";
+import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
 import {
   CRM_CHECKPOINT_OPTIONS,
   CRM_OBJECTION_OPTIONS,
@@ -63,6 +66,7 @@ import {
   revokeTenantApiKey,
   revokeSession,
   updateBusinessFromCallReport,
+  updateBusinessAdsEnrichment,
   updateBusinessScoringNotes,
   updateExtractionJobVoiceSettings,
   updateLeadList,
@@ -103,6 +107,8 @@ const queues = {
   decisionMakerEnrichment: createQueue(QUEUE_NAMES.decisionMakerEnrichment),
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
+const directFirecrawl = new FirecrawlClient();
+const directApify = new ApifyClient();
 
 const reformasMadridJobs = new Map();
 
@@ -1034,6 +1040,42 @@ const server = http.createServer(async (req, res) => {
             .map((lead) => lead.id)
           : await listBusinessIdsForCampaign({ tenantId: auth.tenantId, campaignId });
         const priority = Number.isFinite(Number(json.priority)) ? Number(json.priority) : undefined;
+        const direct = parseBoolean(json.direct ?? false);
+        if (direct) {
+          const results = [];
+          for (const businessId of businessIds) {
+            const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
+            if (!business) {
+              results.push({ businessId, ok: false, error: "business_not_found" });
+              continue;
+            }
+            const enrichment = await enrichBusinessAds({
+              business,
+              firecrawl: directFirecrawl,
+              apify: directApify.enabled ? directApify : null
+            });
+            await updateBusinessAdsEnrichment({
+              tenantId: business.tenant_id,
+              businessId: business.id,
+              enrichment
+            });
+            await queues.scoring.add("score", { tenantId: business.tenant_id, businessId: business.id });
+            results.push({
+              businessId: business.id,
+              ok: true,
+              meta: enrichment.meta?.status || null,
+              google: enrichment.google?.status || null,
+              funnel: enrichment.classification?.type || null,
+              checkedAt: enrichment.checkedAt || null
+            });
+          }
+          return sendJson(res, 200, {
+            campaignId,
+            direct: true,
+            processed: results.length,
+            results
+          });
+        }
         const queueOptions = priority ? { priority } : undefined;
         const queueJobs = [];
         for (const businessId of businessIds) {
