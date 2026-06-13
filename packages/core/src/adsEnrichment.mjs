@@ -3240,6 +3240,19 @@ function isApifyMetaItemActive(item = {}) {
   const explicit = firstDefined(item?.is_active, item?.isActive, item?.active, item?.isCurrentlyActive);
   if (explicit === true || normalizeText(explicit) === "true") return true;
   if (explicit === false || normalizeText(explicit) === "false") return false;
+  const itemText = normalizeText(collectApifyItemStrings(item).join(" "));
+  if (itemText.includes("ads not found") ||
+    itemText.includes("ads_not_found") ||
+    itemText.includes("no ads found") ||
+    itemText.includes("no active ads") ||
+    itemText.includes("isnt currently running ads") ||
+    itemText.includes("isn't currently running ads") ||
+    itemText.includes("no esta publicando anuncios") ||
+    itemText.includes("no está publicando anuncios") ||
+    itemText.includes("no tiene anuncios en circulacion") ||
+    itemText.includes("no tiene anuncios en circulación")) {
+    return false;
+  }
   const status = normalizeText(item?.status || item?.ad_status || item?.active_status || item?.activeStatus || item?.state || "");
   if (status.includes("inactive")) return false;
   if (status.includes("active")) return true;

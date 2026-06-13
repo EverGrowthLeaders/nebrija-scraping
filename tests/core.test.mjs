@@ -4492,3 +4492,54 @@ test("verifies Meta ads from exact lead-domain Apify active items", async () => 
     attempt.matchedFields.includes("domain")
   ));
 });
+
+test("treats Apify Meta ADS_NOT_FOUND items as inactive for exact domains", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://reformasmadrid.eu") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          url: "https://www.facebook.com/ads/library/?q=reformasmadrid.eu",
+          error: "ADS_NOT_FOUND",
+          text: "Ads not found ADS_NOT_FOUND"
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: {
+      name: "Reformas Madrid | Baños, Cocinas o Reformas integrales",
+      website: "https://reformasmadrid.eu",
+      city: "Madrid"
+    },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "reformasmadrid.eu", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, false);
+  assert.equal(enrichment.meta.reason, "ai_meta_inactive_verified");
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.reason === "apify_no_active_items_for_precise_source"
+  ));
+});
