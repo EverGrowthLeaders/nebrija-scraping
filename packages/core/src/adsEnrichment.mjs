@@ -1489,6 +1489,10 @@ function isCrawlerbrosFacebookAdsActor(actorId) {
   return /crawlerbros~facebook-ads-library-scraper/i.test(String(actorId || ""));
 }
 
+function isCuriousCoderFacebookAdsActor(actorId) {
+  return /curious_coder~facebook-ads-library-scraper/i.test(String(actorId || ""));
+}
+
 function inferApifyGoogleActivity({ items = [], business = {}, domain, country, now }) {
   const evidenceSnippet = compactSnippet(items.map((item) => collectApifyGoogleItemStrings(item).join("\n")).join("\n---\n"), 1800);
   const domainItems = items.filter((item) => apifyGoogleItemMatchesDomain(item, domain));
@@ -3077,15 +3081,16 @@ function parseFacebookPageUrl(value) {
 
 function apifyMetaMaxResults(apify) {
   const configured = Number(apify?.maxChargedResults || 1);
+  if (isCuriousCoderFacebookAdsActor(apify?.facebookAdsActorId)) {
+    return Math.min(50, Math.max(10, Number.isFinite(configured) ? configured : 10));
+  }
   return Math.min(3, Math.max(1, Number.isFinite(configured) ? configured : 1));
 }
 
 function apifyMetaMaxSources(apify) {
   const configured = Number(apify?.metaMaxSources ?? config.adsEnrichment?.apifyMetaMaxSources);
   const defaultSources = 3;
-  const sourceCount = Number.isFinite(configured)
-    ? Math.max(configured, defaultSources)
-    : defaultSources;
+  const sourceCount = Number.isFinite(configured) ? configured : defaultSources;
   return Math.min(8, Math.max(1, sourceCount));
 }
 

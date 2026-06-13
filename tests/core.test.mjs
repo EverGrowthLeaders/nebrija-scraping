@@ -2972,8 +2972,8 @@ test("uses Curious Coder Facebook Ads actor input and normalizes its output", as
       apifyInputs.push(input);
       assert.equal(input.urls.length, 1);
       assert.match(input.urls[0].url, /q=planned\.example/);
-      assert.equal(input.limitPerSource, 1);
-      assert.equal(input.count, 1);
+      assert.equal(input.limitPerSource, 10);
+      assert.equal(input.count, 10);
       assert.equal(input.scrapeAdDetails, true);
       assert.equal(input["scrapePageAds.activeStatus"], "active");
       assert.equal(input["scrapePageAds.sortBy"], "most_recent");
@@ -3048,8 +3048,8 @@ test("normalizes AI Meta page URLs before sending them to Apify", async () => {
     async runFacebookAdsLibrary(input) {
       apifyUrls.push(input.urls[0].url);
       assert.equal(input.urls[0].url, "https://www.facebook.com/planned_handle");
-      assert.equal(input.limitPerSource, 1);
-      assert.equal(input.count, 1);
+      assert.equal(input.limitPerSource, 10);
+      assert.equal(input.count, 10);
       assert.equal(input.scrapeAdDetails, false);
       assert.equal(input["scrapePageAds.activeStatus"], "active");
       assert.equal(input["scrapePageAds.countryCode"], "ES");
@@ -3097,8 +3097,8 @@ test("uses Facebook page URLs for AI-planned Meta page probes with Curious actor
     async runFacebookAdsLibrary(input) {
       apifyInputs.push(input);
       assert.equal(input.urls[0].url, "https://www.facebook.com/reformashoymadrid");
-      assert.equal(input.limitPerSource, 1);
-      assert.equal(input.count, 1);
+      assert.equal(input.limitPerSource, 10);
+      assert.equal(input.count, 10);
       assert.equal(input.scrapeAdDetails, false);
       return [];
     }
