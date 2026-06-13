@@ -1549,6 +1549,17 @@ test("infers active ads from public transparency page signals", () => {
   assert.equal(frenchDomainGoogle.active, true);
   assert.equal(frenchDomainGoogle.reason, "google_domain_ads_found");
   assert.equal(frenchDomainGoogle.itemsSeen, 2);
+
+  const directDomainAnyDateGoogle = inferAdsActivity({
+    provider: "google",
+    now: new Date("2026-06-13T00:00:00Z"),
+    sourceUrl: "https://adstransparency.google.com/?region=ES&domain=globaloltenia.es",
+    context: { domain: "globaloltenia.es", businessName: "Global Oltenia - Reformas Integrales Madrid" },
+    text: "globaloltenia.es Este dominio incluye resultados de varias cuentas de anunciante con anuncios que se orientan a este dominio. 32 anuncios Cualquier fecha Global Oltenia SL Verificado"
+  });
+  assert.equal(directDomainAnyDateGoogle.active, true);
+  assert.equal(directDomainAnyDateGoogle.reason, "google_domain_ads_found");
+  assert.equal(directDomainAnyDateGoogle.itemsSeen, 32);
 });
 
 test("builds Meta ad probes from domain, Facebook and Instagram identifiers", () => {

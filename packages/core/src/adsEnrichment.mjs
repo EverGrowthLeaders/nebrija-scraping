@@ -3061,15 +3061,6 @@ function googleDomainAdsSignal({ text, context = {} }) {
   const normalized = normalizeText(text);
   const domain = extractDomain(context.domain || context.query || context.business?.website);
   if (!domain || !normalized.includes(normalizeText(domain))) return null;
-  const hasRecentFilter = normalizeText(context.datePreset).includes(normalizeText(GOOGLE_RECENT_DATE_PRESET)) ||
-    [
-      GOOGLE_RECENT_DATE_PRESET,
-      "ultimos 30 dias",
-      "últimos 30 días",
-      "last 30 days",
-      "30 derniers jours"
-    ].some((phrase) => normalized.includes(normalizeText(phrase)));
-  if (!hasRecentFilter) return null;
   const hasDomainResultsCopy = [
     "este dominio incluye resultados",
     "this domain includes results",
