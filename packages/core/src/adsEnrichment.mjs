@@ -74,16 +74,18 @@ export async function enrichBusinessAds({
     phase: apifyFirstMeta ? "firecrawl_apify" : "firecrawl"
   });
 
+  let apifyMeta = null;
+  let apifyGoogle = null;
   if (shouldRunApifyAdsFallback({ resolved, apify, mode: apifyFallbackMode, aiResolver, aiConfig, discoveryPlan })) {
     const shouldCollectMetaApify = shouldCollectApifyProvider({ provider: "meta", resolved, mode: apifyFallbackMode }) &&
       !apifyFirstMeta &&
       typeof apify?.runFacebookAdsLibrary === "function";
     const shouldCollectGoogleApify = shouldCollectApifyProvider({ provider: "google", resolved, mode: apifyFallbackMode }) &&
       typeof apify?.runGoogleAdsTransparency === "function";
-    const apifyMeta = shouldCollectMetaApify
+    apifyMeta = shouldCollectMetaApify
       ? await inspectMetaAdsWithApify({ business: enrichedBusiness, apify, country, now, socialDiscovery, discoveryPlan })
       : null;
-    const apifyGoogle = shouldCollectGoogleApify
+    apifyGoogle = shouldCollectGoogleApify
       ? await inspectGoogleAdsWithApify({ business: enrichedBusiness, apify, country, now })
       : null;
     resolved = await resolveAdsActivity({
@@ -101,15 +103,17 @@ export async function enrichBusinessAds({
     });
   }
 
+  let browserMeta = null;
+  let browserGoogle = null;
   if (shouldRunBrowserAdsFallback({ resolved, browser, mode: browserFallbackMode, aiResolver, aiConfig, discoveryPlan })) {
     const shouldCollectMetaBrowser = shouldCollectBrowserProvider({ provider: "meta", resolved, mode: browserFallbackMode }) &&
       typeof browser?.inspectMetaAdsLibrary === "function";
     const shouldCollectGoogleBrowser = shouldCollectBrowserProvider({ provider: "google", resolved, mode: browserFallbackMode }) &&
       typeof browser?.inspectGoogleAdsTransparency === "function";
-    const browserMeta = shouldCollectMetaBrowser
+    browserMeta = shouldCollectMetaBrowser
       ? await inspectMetaAdsWithBrowser({ business: enrichedBusiness, browser, country, now, socialDiscovery })
       : null;
-    const browserGoogle = shouldCollectGoogleBrowser
+    browserGoogle = shouldCollectGoogleBrowser
       ? await inspectGoogleAdsWithBrowser({ business: enrichedBusiness, browser, country, now })
       : null;
     resolved = await resolveAdsActivity({
@@ -123,6 +127,44 @@ export async function enrichBusinessAds({
       aiConfig,
       now,
       phase: "firecrawl_apify_browser",
+      previousResult: resolved
+    });
+  }
+
+  if (shouldRunLateMetaApifyFallback({
+    resolved,
+    apify,
+    mode: apifyFallbackMode,
+    aiResolver,
+    aiConfig,
+    discoveryPlan,
+    apifyMeta: mergeProviderEvidence(apifyFirstMeta, apifyMeta),
+    browserMeta
+  })) {
+    const lateApifyMeta = await inspectMetaAdsWithApify({
+      business: enrichedBusiness,
+      apify,
+      country,
+      now,
+      socialDiscovery,
+      discoveryPlan,
+      allowExactDomainFallback: true
+    });
+    apifyMeta = mergeProviderEvidence(apifyMeta, lateApifyMeta);
+    resolved = await resolveAdsActivity({
+      business: enrichedBusiness,
+      providerEvidence: {
+        meta: mergeProviderEvidence(
+          mergeProviderEvidence(mergeProviderEvidence(firecrawlMeta, apifyFirstMeta), apifyMeta),
+          browserMeta
+        ),
+        google: mergeProviderEvidence(mergeProviderEvidence(firecrawlGoogle, apifyGoogle), browserGoogle)
+      },
+      aiResolver,
+      aiVerifier,
+      aiConfig,
+      now,
+      phase: "firecrawl_browser_apify",
       previousResult: resolved
     });
   }
@@ -1583,8 +1625,8 @@ function apifyGoogleItemMatchesDomain(item = {}, domain) {
   return Boolean(firstValue(item.advertiserName, item.advertiser_name, item.advertiserId, item.advertiser_id, item.creativeId, item.creative_id, item.adUrl, item.ad_url));
 }
 
-async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery, discoveryPlan }) {
-  const sources = buildApifyMetaSources(business, country, discoveryPlan)
+async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery, discoveryPlan, allowExactDomainFallback = false }) {
+  const sources = buildApifyMetaSources(business, country, discoveryPlan, { allowExactDomainFallback })
     .slice(0, apifyMetaMaxSources(apify));
   const attempts = [];
   let fallback = null;
@@ -2774,6 +2816,19 @@ function shouldRunBrowserAdsFallback({ resolved = {}, browser, mode, aiResolver,
   return ADS_ACTIVITY_PROVIDERS.some((provider) => shouldCollectBrowserProvider({ provider, resolved, mode: normalizedMode }));
 }
 
+function shouldRunLateMetaApifyFallback({ resolved = {}, apify, mode, aiResolver, aiConfig, discoveryPlan, apifyMeta, browserMeta }) {
+  const normalizedMode = normalizeApifyFallbackMode(mode);
+  if (normalizedMode === "off") return false;
+  if (discoveryPlan?.ai?.status !== "planned") return false;
+  if (!apify || apify.enabled === false || typeof apify.runFacebookAdsLibrary !== "function") return false;
+  if (!canUseAdsActivityAi({ aiResolver, aiConfig })) return false;
+  if (apifyMetaHasAttempts(apifyMeta)) return false;
+  const meta = resolved?.meta;
+  if (!meta || meta.active !== null) return false;
+  const browserAttempts = Array.isArray(browserMeta?.attempts) ? browserMeta.attempts : [];
+  return browserAttempts.some((attempt) => attempt.reason === "browser_meta_no_results_unverified");
+}
+
 function shouldCollectBrowserProvider({ provider, resolved = {}, mode }) {
   const normalizedMode = normalizeApifyFallbackMode(mode);
   if (normalizedMode === "always") return true;
@@ -2787,6 +2842,11 @@ function shouldCollectApifyProvider({ provider, resolved = {}, mode }) {
   if (normalizedMode === "always") return true;
   const result = resolved?.[provider];
   return !result || result.active == null || result.ai?.needsMoreEvidence === true || result.reason === "ai_resolution_failed";
+}
+
+function apifyMetaHasAttempts(apifyMeta) {
+  return Array.isArray(apifyMeta?.attempts) &&
+    apifyMeta.attempts.some((attempt) => attempt?.sourceProvider === "apify");
 }
 
 function normalizeApifyFallbackMode(value) {
@@ -2852,7 +2912,7 @@ function isStrongMetaApifyResult(result = {}) {
     result.landingUrls.length > 0;
 }
 
-function buildApifyMetaSources(business, country, discoveryPlan) {
+function buildApifyMetaSources(business, country, discoveryPlan, { allowExactDomainFallback = false } = {}) {
   const sources = [];
   const metaCountry = country || DEFAULT_COUNTRY;
   const domain = extractDomain(business.website);
@@ -2906,7 +2966,7 @@ function buildApifyMetaSources(business, country, discoveryPlan) {
       discoveryReason: probe.discoveryReason || `${probe.plannedBy || "seed"}_ads_discovery`
     });
   }
-  if (!sources.length && (aiPlannedMetaUrls.length || aiPlannedMetaProbes.length) && domain) {
+  if (!sources.length && (allowExactDomainFallback || aiPlannedMetaUrls.length || aiPlannedMetaProbes.length) && domain) {
     addApifySource(sources, {
       strategy: "exact_domain_meta_probe_apify",
       query: domain,
