@@ -1016,10 +1016,22 @@ const server = http.createServer(async (req, res) => {
 
       const testCampaignAdsMatch = matchPath(url.pathname, /^\/api\/test-jobs\/campaigns\/([^/]+)\/ads-enrichment$/);
       if (req.method === "POST" && testCampaignAdsMatch) {
+        const { json } = await readJson(req);
         const campaignId = testCampaignAdsMatch[1];
         const job = await findExtractionJobDetail(campaignId, { tenantId: auth.tenantId });
         if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
-        const businessIds = await listBusinessIdsForCampaign({ tenantId: auth.tenantId, campaignId });
+        const onlyUnchecked = parseBoolean(json.onlyUnchecked ?? json.only_unchecked ?? false);
+        const businessIds = onlyUnchecked
+          ? (await auditAdsCampaignLeads({
+              tenantId: auth.tenantId,
+              campaignId,
+              limit: json.limit || json.leadLimit || json.lead_limit || 1200
+            }))
+            .filter((lead) => !lead.ads_last_checked_at)
+            .map((lead) => lead.id)
+          : await listBusinessIdsForCampaign({ tenantId: auth.tenantId, campaignId });
+        const priority = Number.isFinite(Number(json.priority)) ? Number(json.priority) : undefined;
+        const queueOptions = priority ? { priority } : undefined;
         const queueJobs = [];
         for (const businessId of businessIds) {
           queueJobs.push(
@@ -1028,12 +1040,14 @@ const server = http.createServer(async (req, res) => {
               businessId,
               campaignId,
               testTriggered: true
-            })
+            }, queueOptions)
           );
         }
         return sendJson(res, 202, {
           campaignId,
           queued: queueJobs.length,
+          onlyUnchecked,
+          priority: priority || null,
           queue: QUEUE_NAMES.adsEnrichment,
           jobIds: queueJobs.map((queueJob) => queueJob.id)
         });
