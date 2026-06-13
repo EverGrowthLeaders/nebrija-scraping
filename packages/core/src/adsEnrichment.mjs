@@ -3114,7 +3114,7 @@ function collectApifyItemStrings(item = {}) {
   const snapshot = item.snapshot || {};
   const cards = Array.isArray(snapshot.cards) ? snapshot.cards : [];
   const body = typeof snapshot.body === "string" ? snapshot.body : snapshot.body?.text;
-  return [
+  return unique([
     item.page_name,
     item.pageName,
     item.page_id,
@@ -3169,12 +3169,13 @@ function collectApifyItemStrings(item = {}) {
       card.link_url,
       card.title,
       card.cta_text
-    ])
-  ].filter(Boolean).map((value) => String(value));
+    ]),
+    ...collectStringLeaves(item)
+  ].filter(Boolean).map((value) => String(value))).slice(0, 160);
 }
 
 function collectApifyGoogleItemStrings(item = {}) {
-  return [
+  return unique([
     item.advertiserName,
     item.advertiser_name,
     item.advertiserId,
@@ -3201,8 +3202,29 @@ function collectApifyGoogleItemStrings(item = {}) {
     item.finalUrl,
     item.final_url,
     item.displayUrl,
-    item.display_url
-  ].filter(Boolean).map((value) => String(value));
+    item.display_url,
+    ...collectStringLeaves(item)
+  ].filter(Boolean).map((value) => String(value))).slice(0, 160);
+}
+
+function collectStringLeaves(value, depth = 0, output = []) {
+  if (output.length >= 160 || depth > 5 || value == null) return output;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value).trim();
+    if (text) output.push(text);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 80)) collectStringLeaves(item, depth + 1, output);
+    return output;
+  }
+  if (typeof value === "object") {
+    for (const [key, item] of Object.entries(value).slice(0, 120)) {
+      if (/^(image|images|thumbnail|thumbnails|video|videos|media)$/i.test(key)) continue;
+      collectStringLeaves(item, depth + 1, output);
+    }
+  }
+  return output;
 }
 
 function collectApifyLandingUrls(item, business) {

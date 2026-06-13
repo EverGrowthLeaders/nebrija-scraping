@@ -3448,6 +3448,9 @@ test("scrapes Meta ad details for exact domain Apify sources", async () => {
             body: { text: "Presupuesto para reformas integrales en Madrid" },
             link_url: "https://reformasdepisos.es/presupuesto/",
             cards: [{ link_url: "https://reformasdepisos.es/reformas-integrales/" }]
+          },
+          detailsPayload: {
+            unknownDestinationField: "https://reformasdepisos.es/contacto/"
           }
         }
       ];
@@ -3477,7 +3480,8 @@ test("scrapes Meta ad details for exact domain Apify sources", async () => {
       assert.deepEqual(apifyAttempt.matchedFields, ["domain", "landing_domain", "page_name"]);
       assert.deepEqual(apifyAttempt.landingUrls, [
         "https://reformasdepisos.es/presupuesto/",
-        "https://reformasdepisos.es/reformas-integrales/"
+        "https://reformasdepisos.es/reformas-integrales/",
+        "https://reformasdepisos.es/contacto/"
       ]);
     }),
     country: "ES",
