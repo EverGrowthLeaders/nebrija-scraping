@@ -3738,7 +3738,7 @@ test("does not verify browser Meta keyword results without business-owned ad evi
   assert.notEqual(enrichment.meta.active, true);
 });
 
-test("does not treat Meta keyword domain searches as page-scoped active ads", async () => {
+test("verifies Meta keyword domain active items as exact-domain evidence", async () => {
   const firecrawl = {
     async search() {
       return [];
@@ -3789,11 +3789,12 @@ test("does not treat Meta keyword domain searches as page-scoped active ads", as
     now: new Date("2026-06-13T00:00:00Z")
   });
 
-  assert.notEqual(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.active, true);
   assert.ok(enrichment.meta.attempts.some((attempt) =>
     attempt.sourceProvider === "apify" &&
-    attempt.active === null &&
-    attempt.reason === "apify_active_items_not_matched"
+    attempt.active === true &&
+    attempt.reason === "apify_meta_exact_domain_active_items" &&
+    attempt.matchedFields.includes("domain")
   ));
 });
 
@@ -4104,7 +4105,9 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
   };
   const apify = {
     maxChargedResults: 1,
-    async runFacebookAdsLibrary() {
+    async runFacebookAdsLibrary(input) {
+      const url = input.urls?.[0]?.url || "";
+      if (url.includes("q=disownedfactory.com")) return [];
       return [
         {
           ad_archive_id: "890683230705549",
@@ -4138,12 +4141,12 @@ test("ignores active Apify Meta ads that do not match the business", async () =>
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(enrichment.meta.active, null);
-  assert.equal(enrichment.meta.reason, "ai_meta_unknown");
+  assert.equal(enrichment.meta.active, false);
+  assert.equal(enrichment.meta.reason, "ai_meta_inactive_verified");
   assert.equal(enrichment.meta.ai.status, "resolved");
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.reason === "apify_active_items_not_matched"));
-  assert.equal(enrichment.meta.itemsSeen, 1);
-  assert.equal(enrichment.meta.samplePageName, "DT Lite");
+  assert.equal(enrichment.meta.itemsSeen, 0);
+  assert.equal(enrichment.meta.samplePageName, null);
   assert.equal(enrichment.meta.spendEstimate, null);
 });
 
@@ -4160,7 +4163,9 @@ test("does not verify Meta ads from Apify social-only matches", async () => {
   };
   const apify = {
     maxChargedResults: 1,
-    async runFacebookAdsLibrary() {
+    async runFacebookAdsLibrary(input) {
+      const url = input.urls?.[0]?.url || "";
+      if (url.includes("q=ionproyectos.com")) return [];
       return [
         {
           ad_archive_id: "1899459720673591",
@@ -4197,8 +4202,8 @@ test("does not verify Meta ads from Apify social-only matches", async () => {
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.notEqual(enrichment.meta.active, true);
-  assert.equal(enrichment.meta.reason, "ai_meta_unknown");
+  assert.equal(enrichment.meta.active, false);
+  assert.equal(enrichment.meta.reason, "ai_meta_inactive_verified");
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.reason === "apify_active_items_not_matched"));
 });
 
@@ -4224,7 +4229,9 @@ test("verifies Meta ads from Apify when the active ad is published by the owned 
   };
   const apify = {
     maxChargedResults: 10,
-    async runFacebookAdsLibrary() {
+    async runFacebookAdsLibrary(input) {
+      const url = input.urls?.[0]?.url || "";
+      if (url.includes("reformasbsm.com")) return [];
       return [
         {
           ad_archive_id: "846880424771815",
@@ -4262,7 +4269,10 @@ test("verifies Meta ads from Apify when the active ad is published by the owned 
       ]
     }),
     aiResolver: async ({ evidence }) => {
-      const attempt = evidence.providers.meta.attempts.find((item) => item.sourceProvider === "apify");
+      const attempt = evidence.providers.meta.attempts.find((item) =>
+        item.sourceProvider === "apify" &&
+        item.reasonSignal === "apify_meta_active_item_candidate"
+      );
       return {
         meta: {
           active: true,
@@ -4353,7 +4363,7 @@ test("rejects Meta active when Apify only proves a Facebook page without owned d
           page_name: "Borja Sánchez Muñoz",
           snapshot: {
             page_name: "Borja Sánchez Muñoz",
-            body: { text: "Contenido de la página sin reformasmadrid ni reformasbsm.com" }
+            body: { text: "Contenido de la página oficial sin enlace al sitio web del negocio" }
           }
         }
       ];
@@ -4377,7 +4387,10 @@ test("rejects Meta active when Apify only proves a Facebook page without owned d
       ]
     }),
     aiResolver: async ({ evidence }) => {
-      const attempt = evidence.providers.meta.attempts.find((item) => item.sourceProvider === "apify");
+      const attempt = evidence.providers.meta.attempts.find((item) =>
+        item.sourceProvider === "apify" &&
+        item.reasonSignal === "apify_meta_page_scoped_candidate"
+      );
       return {
         meta: {
           active: true,
@@ -4421,7 +4434,7 @@ test("rejects Meta active when Apify only proves a Facebook page without owned d
   ));
 });
 
-test("does not verify Meta ads from Apify domain-only matches", async () => {
+test("verifies Meta ads from exact lead-domain Apify active items", async () => {
   const firecrawl = {
     async search() {
       return [];
@@ -4471,7 +4484,11 @@ test("does not verify Meta ads from Apify domain-only matches", async () => {
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.notEqual(enrichment.meta.active, true);
-  assert.equal(enrichment.meta.reason, "ai_meta_unknown");
-  assert.ok(enrichment.meta.attempts.some((attempt) => attempt.reason === "apify_active_items_not_matched"));
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.reason, "ai_meta_active_verified");
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.reason === "apify_meta_exact_domain_active_items" &&
+    attempt.matchedFields.includes("domain")
+  ));
 });
