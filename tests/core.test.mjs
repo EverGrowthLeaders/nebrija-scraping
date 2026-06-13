@@ -2038,6 +2038,111 @@ test("uses AI discovery plan to locate Ads Library evidence with Firecrawl", asy
   assert.ok(enrichment.google.attempts.some((attempt) => attempt.plannedBy === "ai"));
 });
 
+test("always exposes exact Google domain Transparency evidence to AI resolver", async () => {
+  const scrapes = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      scrapes.push(url);
+      if (url === "https://interiorismosostenible.com") return { markdown: "", html: "", links: [] };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "No ads found", html: "" };
+      if (url.includes("adstransparency.google.com") && url.includes("domain=interiorismosostenible.com")) {
+        return {
+          markdown: [
+            "interiorismosostenible.com",
+            "Ce domaine inclut des résultats qui redirigent vers ce domaine.",
+            "22 annonces",
+            "Refórmalo by Jorge González SL"
+          ].join("\n"),
+          html: ""
+        };
+      }
+      return { markdown: "Google Ads Transparency Center", html: "" };
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Interiorismo Sostenible SL", website: "https://interiorismosostenible.com", city: "Madrid" },
+    firecrawl,
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [],
+      googleSearchQueries: [],
+      googleUrls: [],
+      usage: { prompt_tokens: 100, completion_tokens: 50 }
+    }),
+    aiResolver: async ({ evidence }) => {
+      const exactDomainAttempt = evidence.providers.google.attempts.find((attempt) =>
+        attempt.strategy === "direct_transparency" &&
+        attempt.query === "interiorismosostenible.com" &&
+        attempt.reasonSignal === "google_domain_ads_found"
+      );
+      assert.ok(exactDomainAttempt);
+      assert.equal(exactDomainAttempt.itemsSeen, 22);
+      assert.ok(exactDomainAttempt.matchedFields.includes("domain"));
+      return {
+        meta: {
+          active: null,
+          status: "unknown",
+          confidence: 0.2,
+          reason: "no_meta_domain_ad_evidence",
+          selectedAttemptIds: [],
+          landingUrls: [],
+          matchedFields: [],
+          sourceUrl: null,
+          evidenceSummary: "No Meta evidence.",
+          needsMoreEvidence: true
+        },
+        google: {
+          active: true,
+          status: "active",
+          confidence: 0.9,
+          reason: "ai_google_exact_domain_active",
+          selectedAttemptIds: [exactDomainAttempt.attemptId],
+          landingUrls: [],
+          matchedFields: exactDomainAttempt.matchedFields,
+          sourceUrl: exactDomainAttempt.sourceUrl,
+          evidenceSummary: "Official Google domain page shows 22 ads for the exact business domain.",
+          needsMoreEvidence: false
+        }
+      };
+    },
+    aiVerifier: async ({ evidence }) => {
+      assert.equal(evidence.proposedDecision.google.active, true);
+      return {
+        meta: {
+          confirmed: false,
+          status: "unknown",
+          active: null,
+          confidence: 0.2,
+          reason: "no_meta_decision",
+          selectedAttemptIds: [],
+          evidenceSummary: "Meta remains unknown.",
+          needsMoreEvidence: true
+        },
+        google: {
+          confirmed: true,
+          status: "confirmed",
+          active: true,
+          confidence: 0.88,
+          reason: "confirmed_exact_domain_google_ads",
+          selectedAttemptIds: evidence.proposedDecision.google.selectedAttemptIds,
+          evidenceSummary: "Exact Google Transparency domain evidence confirms active ads.",
+          needsMoreEvidence: false
+        }
+      };
+    },
+    aiConfig: { provider: "deepinfra", model: "deepseek-ai/DeepSeek-V4-Flash", requirePlannedEvidence: true },
+    country: "ES",
+    now: new Date("2026-06-13T11:20:00Z")
+  });
+
+  assert.equal(enrichment.google.active, true);
+  assert.equal(enrichment.google.reason, "ai_google_exact_domain_active");
+  assert.ok(scrapes.some((url) => url.includes("domain=interiorismosostenible.com")));
+});
+
 test("does not verify Ads activity from heuristics when activity AI is unavailable", async () => {
   const firecrawl = {
     async search() {

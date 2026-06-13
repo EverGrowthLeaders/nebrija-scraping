@@ -892,7 +892,7 @@ async function inspectGoogleAds({ business, firecrawl, country, now, discoveryPl
     if (!normalized || candidates.has(normalized)) return;
     candidates.set(normalized, context);
   };
-  if (domain && !requirePlannedEvidence) {
+  if (domain) {
     addCandidate(primaryUrl, {
       strategy: "direct_transparency",
       query: domain,
@@ -1541,6 +1541,7 @@ async function resolveAdsActivityWithDeepInfra({ evidence, aiConfig = config.ads
           "Use only the supplied Firecrawl and Apify evidence.",
           "Treat activeSignal/statusSignal/reasonSignal as scraper observations, never as final proof.",
           "Do not rely on generic scraper labels as proof. Verify advertiser identity, business/domain/social match, recency and official library context from raw evidence.",
+          "For Google, an official Google Ads Transparency domain page for the exact business domain that says the domain includes results and shows a positive active ads count is sufficient domain-owned evidence, even if the advertiser legal name differs from the lead name.",
           "For Meta, active=true requires active ad evidence tied to the business domain or an owned landing URL. A Facebook page, page id, profile, handle, or social identity alone is not enough.",
           "For Meta, exact page-scoped sourceIdentityEvidence may identify the advertiser, but it does not prove domain-owned active ads unless the selected ad item also includes the business domain or owned landing URL.",
           "For Meta, reject page-scoped Apify active items when scrapeAdDetails or the returned item does not expose a business-domain match or owned landing URL.",
@@ -1680,6 +1681,7 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
           "Use only the supplied evidence and proposed decision.",
           "Confirm a proposed active=true or active=false only when the exact business identity and current ads state are proven by official or directly relevant evidence.",
           "Treat the proposed decision and scraper activeSignal as claims to audit, not evidence by themselves.",
+          "For Google active=true, confirm exact-domain Google Ads Transparency evidence when the official page says that domain includes results and shows a positive ads count; do not reject only because the advertiser legal name differs from the business name.",
           "For Meta active=true, require selected ad evidence containing the business domain or an owned landing URL. Exact Facebook page/page id/profile/handle evidence alone is identity evidence, not active-ads proof.",
           "Reject exact page-scoped Meta Apify evidence when itemsSeen > 0 but the returned item has no business-domain or owned landing evidence.",
           "Reject when advertiser identity, domain, social handle, recency, selected attempts, or official library context are ambiguous.",
@@ -1767,7 +1769,11 @@ function applyAiProviderDecision({ provider, base, normalized, rawResult, aiConf
   if (normalized.active !== null && !selectedAttempts.length) {
     return aiUnbackedProviderResult({ provider, base, rawResult, aiConfig, phase, normalized });
   }
-  if (normalized.active !== null && requireAiPlannedEvidence && !selectedAttempts.some((attempt) => attempt.plannedBy === "ai")) {
+  if (
+    normalized.active !== null &&
+    requireAiPlannedEvidence &&
+    !selectedAttempts.some((attempt) => attempt.plannedBy === "ai" || isMandatoryExactDomainAttempt({ provider, attempt }))
+  ) {
     return aiUnplannedProviderResult({ provider, base, rawResult, aiConfig, phase, normalized });
   }
   const primary = selectedAttempts[0] || sourceMatchedAttempt || attempts[0] || {};
@@ -1871,6 +1877,15 @@ function hasOwnedAdsDomainEvidence({ provider, matchedFields = [], landingUrls =
     return fields.some((field) => ["domain", "landing_domain", "brand_domain"].includes(field)) || landingUrls.length > 0;
   }
   return true;
+}
+
+function isMandatoryExactDomainAttempt({ provider, attempt = {} } = {}) {
+  if (provider !== "google") return false;
+  if (attempt.sourceProvider !== "firecrawl") return false;
+  if (attempt.strategy !== "direct_transparency") return false;
+  if (attempt.reason !== "google_domain_ads_found" && attempt.reasonSignal !== "google_domain_ads_found") return false;
+  const fields = Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [];
+  return fields.includes("domain") || fields.includes("landing_domain") || fields.includes("brand_domain");
 }
 
 function aiDomainEvidenceRequiredProviderResult({ provider, base, rawResult, aiConfig, phase, normalized }) {
@@ -2249,6 +2264,7 @@ function buildAdsActivityEvidencePack({
       "A provider is active only when evidence proves active/current ads for this exact business domain or owned landing URL.",
       "A provider is inactive only when official library evidence clearly says no active/current ads for this exact business query.",
       "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
+      "For Google, exact Google Ads Transparency domain evidence with a positive ads count belongs to the business domain and may be active even when the displayed advertiser/legal entity name is different.",
       "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
       "For Meta, Apify sources are candidates until the model verifies both advertiser identity and business-domain ad evidence. Exact page/page_id/handle sourceIdentityEvidence is identity evidence only.",
       "For Meta, domain mentions inside unrelated ads are not owned landing evidence.",
@@ -2299,6 +2315,7 @@ function buildAdsActivityVerificationPack({
       "Confirm only the exact proposed boolean decision for each provider.",
       "confirmed=true requires a selected attempt or source URL that supports the same active boolean for the exact business identity.",
       "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
+      "For Google, do not reject selected exact-domain Transparency evidence only because the advertiser/legal entity name differs when the domain itself matches the business website.",
       "For Meta, accept active=true from Apify only when selected ad evidence includes the business domain or owned landing URL.",
       "For Meta, exact official page/page_id source identity plus itemsSeen > 0 is still unknown when scrapeAdDetails or returned item data lacks business-domain/landing evidence.",
       "For Meta, exact domain/keyword query hits are not enough when the returned page/ad identity is unrelated or only mentions the domain.",
