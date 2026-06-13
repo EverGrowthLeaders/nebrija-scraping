@@ -1351,11 +1351,11 @@ function inferBrowserMetaActivity({ raw = {}, business = {}, domain, country, no
   if (!ids.length && raw.hasNoResults) {
     return evidence({
       provider: "meta",
-      status: "inactive",
-      active: false,
-      confidence: 0.76,
+      status: "unknown",
+      active: null,
+      confidence: 0.34,
       sourceUrl,
-      reason: "browser_meta_no_active_items_for_domain",
+      reason: "browser_meta_no_results_unverified",
       context: {
         strategy: "browser_domain_meta_library",
         query: domain,
@@ -1368,7 +1368,7 @@ function inferBrowserMetaActivity({ raw = {}, business = {}, domain, country, no
         matchedFields: ["domain"],
         itemsSeen: 0,
         total: 0,
-        evidenceSnippet: compactSnippet(raw.bodyText || "Meta Ads Library returned no active ads for this exact domain query.", 1400)
+        evidenceSnippet: compactSnippet(raw.bodyText || "Meta Ads Library returned no results in this browser session; treat as unverified because Meta Library can vary by environment.", 1400)
       }
     });
   }
@@ -2855,6 +2855,7 @@ function isStrongMetaApifyResult(result = {}) {
 function buildApifyMetaSources(business, country, discoveryPlan) {
   const sources = [];
   const metaCountry = country || DEFAULT_COUNTRY;
+  const domain = extractDomain(business.website);
 
   const aiPlannedMetaUrls = discoveryPlan?.ai?.status === "planned"
     ? normalizeDiscoveryUrlEntries(discoveryPlan?.metaUrls || [], "meta", "ai").filter((entry) => entry.plannedBy === "ai")
@@ -2903,6 +2904,18 @@ function buildApifyMetaSources(business, country, discoveryPlan) {
       confidence: probe.confidence || (probe.plannedBy === "ai" ? 0.86 : 0.7),
       plannedBy: probe.plannedBy || "seed",
       discoveryReason: probe.discoveryReason || `${probe.plannedBy || "seed"}_ads_discovery`
+    });
+  }
+  if (!sources.length && (aiPlannedMetaUrls.length || aiPlannedMetaProbes.length) && domain) {
+    addApifySource(sources, {
+      strategy: "exact_domain_meta_probe_apify",
+      query: domain,
+      searchType: "keyword_unordered",
+      country: metaCountry,
+      sourceUrl: buildMetaAdsLibraryUrl({ query: domain, country: metaCountry, searchType: "keyword_unordered" }),
+      confidence: 0.9,
+      plannedBy: "ai",
+      discoveryReason: "ai_exact_domain_fallback_after_planned_meta_discovery"
     });
   }
 
