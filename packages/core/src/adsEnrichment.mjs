@@ -31,6 +31,8 @@ export async function enrichBusinessAds({
   landingAiClassifier,
   landingAiConfig = config.adsFunnelAi,
   apifyFallbackMode = config.adsEnrichment?.apifyFallbackMode || "off",
+  browser,
+  browserFallbackMode = config.adsBrowser?.fallbackMode || "off",
   metaApifyFirst = false
 }) {
   if (!firecrawl) throw new Error("firecrawl_client_required");
@@ -95,6 +97,32 @@ export async function enrichBusinessAds({
       aiConfig,
       now,
       phase: "firecrawl_apify",
+      previousResult: resolved
+    });
+  }
+
+  if (shouldRunBrowserAdsFallback({ resolved, browser, mode: browserFallbackMode, aiResolver, aiConfig, discoveryPlan })) {
+    const shouldCollectMetaBrowser = shouldCollectBrowserProvider({ provider: "meta", resolved, mode: browserFallbackMode }) &&
+      typeof browser?.inspectMetaAdsLibrary === "function";
+    const shouldCollectGoogleBrowser = shouldCollectBrowserProvider({ provider: "google", resolved, mode: browserFallbackMode }) &&
+      typeof browser?.inspectGoogleAdsTransparency === "function";
+    const browserMeta = shouldCollectMetaBrowser
+      ? await inspectMetaAdsWithBrowser({ business: enrichedBusiness, browser, country, now, socialDiscovery })
+      : null;
+    const browserGoogle = shouldCollectGoogleBrowser
+      ? await inspectGoogleAdsWithBrowser({ business: enrichedBusiness, browser, country, now })
+      : null;
+    resolved = await resolveAdsActivity({
+      business: enrichedBusiness,
+      providerEvidence: {
+        meta: mergeProviderEvidence(mergeProviderEvidence(mergeProviderEvidence(firecrawlMeta, apifyFirstMeta), resolved.meta?.sourceProvider === "apify" ? resolved.meta : null), browserMeta),
+        google: mergeProviderEvidence(mergeProviderEvidence(firecrawlGoogle, resolved.google?.sourceProvider === "apify" ? resolved.google : null), browserGoogle)
+      },
+      aiResolver,
+      aiVerifier,
+      aiConfig,
+      now,
+      phase: "firecrawl_apify_browser",
       previousResult: resolved
     });
   }
@@ -1118,6 +1146,286 @@ async function inspectGoogleAdsWithApify({ business, apify, country, now }) {
   }
 }
 
+async function inspectMetaAdsWithBrowser({ business, browser, country, now, socialDiscovery }) {
+  const domain = extractDomain(business.website);
+  const sourceUrl = domain ? buildMetaAdsLibraryUrl({ query: domain, country }) : null;
+  const attempts = [];
+  if (!browser?.enabled || !domain) {
+    return withAttempts(evidence({
+      provider: "meta",
+      status: "unknown",
+      active: null,
+      confidence: 0.2,
+      sourceUrl,
+      reason: "browser_meta_unavailable",
+      context: {
+        strategy: "browser_domain_meta_library",
+        query: domain || business.name,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown"
+      }
+    }), attempts, socialDiscovery);
+  }
+  try {
+    const raw = await browser.inspectMetaAdsLibrary({ domain, country, business });
+    const result = inferBrowserMetaActivity({ raw, business, domain, country, now });
+    attempts.push(adAttempt({
+      provider: "meta",
+      strategy: "browser_domain_meta_library",
+      query: domain,
+      domain,
+      businessName: business.name,
+      country,
+      sourceProvider: "browser",
+      plannedBy: "browser",
+      discoveryReason: "browser_fallback_after_ai_unknown"
+    }, result, result.sourceUrl || sourceUrl));
+    return withAttempts(result, attempts, socialDiscovery);
+  } catch (error) {
+    const result = evidence({
+      provider: "meta",
+      status: "error",
+      active: null,
+      confidence: 0,
+      sourceUrl,
+      reason: "browser_meta_error",
+      error: error.message,
+      context: {
+        strategy: "browser_domain_meta_library",
+        query: domain,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown"
+      }
+    });
+    attempts.push(adAttempt({ provider: "meta", strategy: "browser_domain_meta_library", query: domain, country, sourceProvider: "browser", plannedBy: "browser" }, result, sourceUrl));
+    return withAttempts(result, attempts, socialDiscovery);
+  }
+}
+
+async function inspectGoogleAdsWithBrowser({ business, browser, country, now }) {
+  const domain = extractDomain(business.website);
+  const sourceUrl = domain ? buildGoogleAdsTransparencyUrl({ domain, country }) : null;
+  const attempts = [];
+  if (!browser?.enabled || !domain) {
+    return withAttempts(evidence({
+      provider: "google",
+      status: "unknown",
+      active: null,
+      confidence: 0.2,
+      sourceUrl,
+      reason: "browser_google_unavailable",
+      context: {
+        strategy: "browser_domain_transparency",
+        query: domain || business.name,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown"
+      }
+    }), attempts);
+  }
+  try {
+    const raw = await browser.inspectGoogleAdsTransparency({ domain, country, business });
+    const text = raw?.bodyText || "";
+    const result = inferAdsActivity({
+      provider: "google",
+      text,
+      now,
+      sourceUrl: raw?.sourceUrl || sourceUrl,
+      context: {
+        strategy: "browser_domain_transparency",
+        query: domain,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown",
+        evidenceSnippet: compactSnippet(text, 1800)
+      }
+    });
+    attempts.push(adAttempt({
+      provider: "google",
+      strategy: "browser_domain_transparency",
+      query: domain,
+      domain,
+      businessName: business.name,
+      country,
+      sourceProvider: "browser",
+      plannedBy: "browser",
+      discoveryReason: "browser_fallback_after_ai_unknown"
+    }, result, result.sourceUrl || sourceUrl));
+    return withAttempts(result, attempts);
+  } catch (error) {
+    const result = evidence({
+      provider: "google",
+      status: "error",
+      active: null,
+      confidence: 0,
+      sourceUrl,
+      reason: "browser_google_error",
+      error: error.message,
+      context: {
+        strategy: "browser_domain_transparency",
+        query: domain,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown"
+      }
+    });
+    attempts.push(adAttempt({ provider: "google", strategy: "browser_domain_transparency", query: domain, country, sourceProvider: "browser", plannedBy: "browser" }, result, sourceUrl));
+    return withAttempts(result, attempts);
+  }
+}
+
+function inferBrowserMetaActivity({ raw = {}, business = {}, domain, country, now }) {
+  const cards = Array.isArray(raw.cards) ? raw.cards : [];
+  const anchors = Array.isArray(raw.anchors) ? raw.anchors : [];
+  const ids = Array.isArray(raw.ids) ? raw.ids : [];
+  const sourceUrl = raw.sourceUrl || buildMetaAdsLibraryUrl({ query: domain, country });
+  const decodedAnchors = anchors.map((anchor) => ({
+    ...anchor,
+    decodedHref: decodeFacebookRedirectUrl(anchor.href) || anchor.href
+  }));
+  const landingUrls = unique(decodedAnchors
+    .map((anchor) => anchor.decodedHref)
+    .filter((url) => isHttpUrl(url) && extractDomain(url) === domain)
+  ).slice(0, 8);
+  const matchedFields = [];
+  const cardText = cards.map((card) => card.text || "").join("\n---\n");
+  const normalizedCardText = normalizeText(cardText);
+  if (domain && normalizedCardText.includes(normalizeText(domain))) matchedFields.push("domain");
+  if (landingUrls.length) matchedFields.push("landing_domain");
+  if (cards.some((card) => browserMetaCardMatchesBusiness(card.text, business, domain))) matchedFields.push("page_name");
+  const evidenceSnippet = compactSnippet([
+    ...cards.slice(0, 8).map((card) => `Library ID ${card.id || ""}\n${card.text || ""}`),
+    ...decodedAnchors
+      .filter((anchor) => extractDomain(anchor.decodedHref) === domain)
+      .slice(0, 8)
+      .map((anchor) => `CTA ${anchor.text || ""} ${anchor.decodedHref}`)
+  ].join("\n---\n"), 2400);
+
+  if (ids.length && matchedFields.length) {
+    return evidence({
+      provider: "meta",
+      status: "unknown",
+      active: null,
+      confidence: matchedFields.includes("landing_domain") ? 0.82 : 0.72,
+      sourceUrl,
+      reason: "browser_meta_active_item_candidate",
+      latestDetectedDate: browserMetaLatestDate(cardText, now),
+      context: {
+        strategy: "browser_domain_meta_library",
+        query: domain,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown",
+        matchedFields,
+        itemsSeen: ids.length,
+        total: ids.length,
+        samplePageName: browserMetaSamplePageName(cards[0]?.text),
+        adArchiveId: ids[0] || null,
+        landingUrls,
+        identityValidationRequired: true,
+        scraperObservation: "browser_returned_active_meta_library_cards",
+        evidenceSnippet
+      }
+    });
+  }
+  if (!ids.length && raw.hasNoResults) {
+    return evidence({
+      provider: "meta",
+      status: "inactive",
+      active: false,
+      confidence: 0.76,
+      sourceUrl,
+      reason: "browser_meta_no_active_items_for_domain",
+      context: {
+        strategy: "browser_domain_meta_library",
+        query: domain,
+        domain,
+        businessName: business.name,
+        country,
+        sourceProvider: "browser",
+        plannedBy: "browser",
+        discoveryReason: "browser_fallback_after_ai_unknown",
+        matchedFields: ["domain"],
+        itemsSeen: 0,
+        total: 0,
+        evidenceSnippet: compactSnippet(raw.bodyText || "Meta Ads Library returned no active ads for this exact domain query.", 1400)
+      }
+    });
+  }
+  return evidence({
+    provider: "meta",
+    status: "unknown",
+    active: null,
+    confidence: ids.length ? 0.38 : 0.22,
+    sourceUrl,
+    reason: ids.length ? "browser_meta_items_not_matched" : "browser_meta_no_strong_signal",
+    context: {
+      strategy: "browser_domain_meta_library",
+      query: domain,
+      domain,
+      businessName: business.name,
+      country,
+      sourceProvider: "browser",
+      plannedBy: "browser",
+      discoveryReason: "browser_fallback_after_ai_unknown",
+      itemsSeen: ids.length,
+      total: ids.length,
+      evidenceSnippet: evidenceSnippet || compactSnippet(raw.bodyText || "", 1600)
+    }
+  });
+}
+
+function decodeFacebookRedirectUrl(value) {
+  try {
+    const parsed = new URL(value);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "l.facebook.com" && host !== "lm.facebook.com") return value;
+    return parsed.searchParams.get("u") || value;
+  } catch {
+    return value;
+  }
+}
+
+function browserMetaCardMatchesBusiness(text, business = {}, domain) {
+  const normalized = normalizeText(text);
+  if (!normalized) return false;
+  if (domain && normalized.includes(normalizeText(domain))) return true;
+  const root = rootDomainToken(domain);
+  if (root && root.length >= 5 && normalized.includes(normalizeText(root))) return true;
+  return strongNameMatch(text, business.name);
+}
+
+function browserMetaSamplePageName(text = "") {
+  const normalized = String(text || "").split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  const index = normalized.findIndex((line) => /^Ver detalles|^View details|^Voir les détails/i.test(line));
+  if (index >= 0 && normalized[index + 1]) return normalized[index + 1].slice(0, 160);
+  return null;
+}
+
+function browserMetaLatestDate(text = "", now = new Date()) {
+  return latestDateWithin(text, now, 365);
+}
+
 async function runGoogleAdsTransparencyWithRetry(apify, input) {
   let lastError = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -1879,12 +2187,20 @@ function hasOwnedAdsDomainEvidence({ provider, matchedFields = [], landingUrls =
 }
 
 function isMandatoryExactDomainAttempt({ provider, attempt = {} } = {}) {
-  if (provider !== "google") return false;
-  if (attempt.sourceProvider !== "firecrawl") return false;
-  if (attempt.strategy !== "direct_transparency") return false;
-  if (attempt.reason !== "google_domain_ads_found" && attempt.reasonSignal !== "google_domain_ads_found") return false;
   const fields = Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [];
-  return fields.includes("domain") || fields.includes("landing_domain") || fields.includes("brand_domain");
+  if (provider === "google") {
+    if (!["firecrawl", "browser"].includes(attempt.sourceProvider)) return false;
+    if (!["direct_transparency", "browser_domain_transparency"].includes(attempt.strategy)) return false;
+    if (attempt.reason !== "google_domain_ads_found" && attempt.reasonSignal !== "google_domain_ads_found") return false;
+    return fields.includes("domain") || fields.includes("landing_domain") || fields.includes("brand_domain");
+  }
+  if (provider === "meta") {
+    if (attempt.sourceProvider !== "browser") return false;
+    if (attempt.strategy !== "browser_domain_meta_library") return false;
+    if (attempt.reason !== "browser_meta_active_item_candidate" && attempt.reasonSignal !== "browser_meta_active_item_candidate") return false;
+    return fields.includes("domain") || fields.includes("landing_domain");
+  }
+  return false;
 }
 
 function aiDomainEvidenceRequiredProviderResult({ provider, base, rawResult, aiConfig, phase, normalized }) {
@@ -2445,6 +2761,23 @@ function shouldRunApifyAdsFallback({ resolved = {}, apify, mode, aiResolver, aiC
   if (!apifyAvailable || !canUseAdsActivityAi({ aiResolver, aiConfig })) return false;
   if (normalizedMode === "always") return true;
   return ADS_ACTIVITY_PROVIDERS.some((provider) => shouldCollectApifyProvider({ provider, resolved, mode: normalizedMode }));
+}
+
+function shouldRunBrowserAdsFallback({ resolved = {}, browser, mode, aiResolver, aiConfig, discoveryPlan }) {
+  const normalizedMode = normalizeApifyFallbackMode(mode);
+  if (normalizedMode === "off") return false;
+  if (discoveryPlan?.ai?.status !== "planned") return false;
+  if (!browser?.enabled || !canUseAdsActivityAi({ aiResolver, aiConfig })) return false;
+  if (normalizedMode === "always") return true;
+  return ADS_ACTIVITY_PROVIDERS.some((provider) => shouldCollectBrowserProvider({ provider, resolved, mode: normalizedMode }));
+}
+
+function shouldCollectBrowserProvider({ provider, resolved = {}, mode }) {
+  const normalizedMode = normalizeApifyFallbackMode(mode);
+  if (normalizedMode === "always") return true;
+  const result = resolved?.[provider];
+  if (!result) return true;
+  return result.active == null || result.ai?.needsMoreEvidence === true || result.reason === "ai_resolution_failed";
 }
 
 function shouldCollectApifyProvider({ provider, resolved = {}, mode }) {

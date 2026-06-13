@@ -5,6 +5,7 @@ import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { createQueue, createWorker, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
 import { ApifyClient } from "../../../packages/core/src/apify.mjs";
+import { AdsBrowserClient } from "../../../packages/core/src/adsBrowser.mjs";
 import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs";
 import { buildGoogleDiscoveryQueries } from "../../../packages/core/src/googleDiscoveryQueries.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
@@ -40,6 +41,7 @@ import {
 
 const firecrawl = new FirecrawlClient();
 const apify = new ApifyClient();
+const adsBrowser = new AdsBrowserClient();
 const googlePlaces = new GooglePlacesClient();
 await ensureRuntimeSchema();
 
@@ -425,7 +427,12 @@ async function runScoring(job) {
 async function runAdsEnrichment(job) {
   const business = await findBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
-  const enrichment = await enrichBusinessAds({ business, firecrawl, apify: apify.enabled ? apify : null });
+  const enrichment = await enrichBusinessAds({
+    business,
+    firecrawl,
+    apify: apify.enabled ? apify : null,
+    browser: adsBrowser.enabled ? adsBrowser : null
+  });
   const updated = await updateBusinessAdsEnrichment({
     tenantId: business.tenant_id,
     businessId: business.id,

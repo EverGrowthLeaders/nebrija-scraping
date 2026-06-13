@@ -22,6 +22,7 @@ import {
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
 import { ApifyClient } from "../../../packages/core/src/apify.mjs";
+import { AdsBrowserClient } from "../../../packages/core/src/adsBrowser.mjs";
 import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
 import {
   CRM_CHECKPOINT_OPTIONS,
@@ -109,6 +110,7 @@ const queues = {
 };
 const directFirecrawl = new FirecrawlClient();
 const directApify = new ApifyClient();
+const directAdsBrowser = new AdsBrowserClient();
 
 const reformasMadridJobs = new Map();
 
@@ -674,6 +676,11 @@ const server = http.createServer(async (req, res) => {
             metaMaxSources: config.adsEnrichment.apifyMetaMaxSources,
             googleFallbackEnabled: config.adsEnrichment.apifyGoogleFallbackEnabled
           },
+          browserAds: {
+            fallbackMode: config.adsBrowser.fallbackMode,
+            enabled: directAdsBrowser.enabled,
+            chromePathConfigured: Boolean(config.adsBrowser.chromePath || directAdsBrowser.chromePath)
+          },
           nebrija: {
             apiKeyConfigured: Boolean(config.nebrija.apiKey),
             assistantConfigured: Boolean(config.nebrija.assistantId),
@@ -1052,7 +1059,8 @@ const server = http.createServer(async (req, res) => {
             const enrichment = await enrichBusinessAds({
               business,
               firecrawl: directFirecrawl,
-              apify: directApify.enabled ? directApify : null
+              apify: directApify.enabled ? directApify : null,
+              browser: directAdsBrowser.enabled ? directAdsBrowser : null
             });
             await updateBusinessAdsEnrichment({
               tenantId: business.tenant_id,

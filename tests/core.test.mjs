@@ -3493,6 +3493,146 @@ test("scrapes Meta ad details for exact domain Apify sources", async () => {
   assert.deepEqual(enrichment.meta.matchedFields, ["domain", "landing_domain", "page_name"]);
 });
 
+test("uses browser Meta library evidence when CTA targets the business domain", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://aquitureforma.com") return { markdown: "", html: "", links: [] };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const browser = {
+    enabled: true,
+    async inspectMetaAdsLibrary({ domain }) {
+      assert.equal(domain, "aquitureforma.com");
+      return {
+        sourceUrl: "https://www.facebook.com/ads/library/?q=aquitureforma.com",
+        ids: ["2213943532702479"],
+        hasNoResults: false,
+        cards: [{
+          id: "2213943532702479",
+          text: "Activo\nIdentificador de la biblioteca: 2213943532702479\nAqui tu Reforma\nPublicidad\nPide Presupuesto\nApply Now"
+        }],
+        anchors: [{
+          text: "Pide Presupuesto Apply Now",
+          href: "https://l.facebook.com/l.php?u=https%3A%2F%2Fwww.aquitureforma.com%2F"
+        }],
+        bodyText: "Activo Identificador de la biblioteca: 2213943532702479 Aqui tu Reforma"
+      };
+    },
+    async inspectGoogleAdsTransparency() {
+      return { bodyText: "Google Ads Transparency Center" };
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Aqui tu Reforma Madrid Goya", website: "https://aquitureforma.com", city: "Madrid" },
+    firecrawl,
+    browser,
+    browserFallbackMode: "on_unknown",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [{ query: "aquitureforma.com", searchType: "keyword_unordered", country: "ES", reason: "domain" }],
+      googleUrls: []
+    }),
+    aiResolver: async ({ evidence, phase }) => {
+      if (phase === "firecrawl_apify_browser") {
+        const browserAttempt = evidence.providers.meta.attempts.find((attempt) => attempt.sourceProvider === "browser");
+        assert.ok(browserAttempt);
+        assert.equal(browserAttempt.reasonSignal, "browser_meta_active_item_candidate");
+        assert.deepEqual(browserAttempt.matchedFields, ["landing_domain"]);
+        return {
+          meta: {
+            active: true,
+            status: "active",
+            confidence: 0.94,
+            reason: "ai_meta_browser_domain_landing_verified",
+            selectedAttemptIds: [browserAttempt.attemptId],
+            landingUrls: browserAttempt.landingUrls,
+            matchedFields: browserAttempt.matchedFields,
+            sourceUrl: browserAttempt.sourceUrl,
+            evidenceSummary: "Browser evidence shows an active Meta ad with CTA to the business domain.",
+            needsMoreEvidence: false
+          },
+          google: {
+            active: null,
+            status: "unknown",
+            confidence: 0.2,
+            reason: "google_unknown",
+            selectedAttemptIds: [],
+            landingUrls: [],
+            matchedFields: [],
+            sourceUrl: null,
+            evidenceSummary: "No Google evidence.",
+            needsMoreEvidence: true
+          }
+        };
+      }
+      return adsAiResolverFromEvidence()({ evidence, phase });
+    },
+    country: "ES",
+    now: new Date("2026-06-13T12:45:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.sourceProvider, "browser");
+  assert.deepEqual(enrichment.meta.landingUrls, ["https://www.aquitureforma.com/"]);
+});
+
+test("does not verify browser Meta keyword results without business-owned ad evidence", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://reformasdepisos.es") return { markdown: "", html: "", links: [] };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const browser = {
+    enabled: true,
+    async inspectMetaAdsLibrary() {
+      return {
+        sourceUrl: "https://www.facebook.com/ads/library/?q=reformasdepisos.es",
+        ids: ["1658889952058107"],
+        hasNoResults: false,
+        cards: [{
+          id: "1658889952058107",
+          text: "Activo\nIdentificador de la biblioteca: 1658889952058107\nalexander_potichko\nPublicidad\nReformas en pisos, casas y locales comerciales"
+        }],
+        anchors: [],
+        bodyText: "Activo Identificador de la biblioteca: 1658889952058107 alexander_potichko"
+      };
+    },
+    async inspectGoogleAdsTransparency() {
+      return { bodyText: "Google Ads Transparency Center" };
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Reformas de Pisos Madrid", website: "https://reformasdepisos.es", city: "Madrid" },
+    firecrawl,
+    browser,
+    browserFallbackMode: "on_unknown",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [{ query: "reformasdepisos.es", searchType: "keyword_unordered", country: "ES", reason: "domain" }],
+      googleUrls: []
+    }),
+    aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
+      if (phase === "firecrawl_apify_browser") {
+        const browserAttempt = evidence.providers.meta.attempts.find((attempt) => attempt.sourceProvider === "browser");
+        assert.ok(browserAttempt);
+        assert.equal(browserAttempt.reasonSignal, "browser_meta_items_not_matched");
+      }
+    }),
+    country: "ES",
+    now: new Date("2026-06-13T12:45:00Z")
+  });
+
+  assert.notEqual(enrichment.meta.active, true);
+});
+
 test("does not treat Meta keyword domain searches as page-scoped active ads", async () => {
   const firecrawl = {
     async search() {

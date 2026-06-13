@@ -65,6 +65,12 @@ export const config = {
     apifyMetaMaxSources: intFromEnv("ADS_APIFY_META_MAX_SOURCES", 1),
     apifyGoogleFallbackEnabled: boolFromEnv("ADS_APIFY_GOOGLE_FALLBACK_ENABLED", false)
   },
+  adsBrowser: {
+    fallbackMode: process.env.ADS_BROWSER_FALLBACK_MODE || "off",
+    chromePath: process.env.ADS_BROWSER_CHROME_PATH || process.env.CHROME_PATH || "",
+    requestTimeoutMs: intFromEnv("ADS_BROWSER_REQUEST_TIMEOUT_MS", 60000),
+    waitMs: intFromEnv("ADS_BROWSER_WAIT_MS", 7000)
+  },
   adsActivityAi: {
     provider: "deepinfra",
     mode: process.env.ADS_ACTIVITY_AI_MODE || "always",
