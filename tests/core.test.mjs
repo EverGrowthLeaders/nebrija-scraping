@@ -3493,6 +3493,85 @@ test("scrapes Meta ad details for exact domain Apify sources", async () => {
   assert.deepEqual(enrichment.meta.matchedFields, ["domain", "landing_domain", "page_name"]);
 });
 
+test("treats owned landing URL as sufficient Apify Meta item identity evidence", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "https://landingonly.example") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "Meta Ads Library", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          ad_archive_id: "998877665544",
+          is_active: true,
+          page_name: "Campaign Studio",
+          ad_library_url: "https://www.facebook.com/ads/library/?id=998877665544",
+          snapshot: {
+            page_name: "Campaign Studio",
+            body: { text: "Pide presupuesto para tu reforma" },
+            link_url: "https://landingonly.example/contacto/"
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "Landing Only Reformas", website: "https://landingonly.example", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "landingonly.example", searchType: "keyword_unordered", country: "ES", reason: "ai_exact_domain" }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
+      if (phase !== "firecrawl_apify") return;
+      const apifyAttempt = evidence.providers.meta.attempts.find((attempt) => attempt.sourceProvider === "apify");
+      assert.ok(apifyAttempt);
+      assert.equal(apifyAttempt.reasonSignal, "apify_meta_active_item_candidate");
+      assert.deepEqual(apifyAttempt.matchedFields, ["domain", "landing_domain"]);
+      assert.deepEqual(apifyAttempt.landingUrls, ["https://landingonly.example/contacto/"]);
+    }),
+    aiVerifier: async ({ resolved }) => ({
+      meta: {
+        confirmed: true,
+        status: "confirmed",
+        active: resolved.meta.active,
+        confidence: 0.9,
+        reason: "owned_landing_active_confirmed",
+        selectedAttemptIds: resolved.meta.ai.selectedAttemptIds,
+        evidenceSummary: "The selected active ad item links to the business domain.",
+        needsMoreEvidence: false
+      },
+      google: {
+        confirmed: false,
+        status: "unknown",
+        active: null,
+        confidence: 0.4,
+        reason: "no_google_evidence",
+        selectedAttemptIds: [],
+        evidenceSummary: "No Google evidence.",
+        needsMoreEvidence: true
+      }
+    }),
+    country: "ES",
+    now: new Date("2026-06-13T12:30:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, true);
+  assert.deepEqual(enrichment.meta.matchedFields, ["domain", "landing_domain"]);
+  assert.equal(enrichment.meta.ai.verification.status, "confirmed");
+});
+
 test("uses browser Meta library evidence when CTA targets the business domain", async () => {
   const firecrawl = {
     async search() {
@@ -4339,7 +4418,6 @@ test("does not verify Meta ads from Apify domain-only matches", async () => {
           ad_library_url: "https://www.facebook.com/ads/library/?id=111222333444555",
           snapshot: {
             page_name: "Slotted",
-            caption: "https://boudevin-abogadoslogrono.com",
             body: { text: "Directory mention for boudevin-abogadoslogrono.com" }
           }
         }

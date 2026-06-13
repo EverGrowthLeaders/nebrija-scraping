@@ -3495,7 +3495,9 @@ function matchApifyBusinessItem({ item, business }) {
   if (instagramHandle && normalized.includes(normalizeText(`instagram.com/${instagramHandle}`))) fields.push("instagram_url");
   if (facebookHandle && normalized.includes(normalizeText(facebookHandle))) fields.push("facebook_handle");
 
-  const hasDomain = fields.includes("domain");
+  const hasOwnedLanding = fields.includes("landing_domain");
+  const hasDomainMention = fields.includes("domain");
+  const hasDomain = hasDomainMention || hasOwnedLanding;
   const hasPageName = fields.includes("page_name");
   const hasSocial = fields.some((field) => field.endsWith("_handle") || field.endsWith("_url"));
   const confidence = hasDomain && hasPageName
@@ -3511,7 +3513,7 @@ function matchApifyBusinessItem({ item, business }) {
           : hasDomain
               ? 0.62
               : 0;
-  const matched = (hasDomain && (hasPageName || hasSocial)) || (hasPageName && hasSocial);
+  const matched = hasOwnedLanding || (hasDomainMention && (hasPageName || hasSocial)) || (hasPageName && hasSocial);
 
   return {
     matched,
