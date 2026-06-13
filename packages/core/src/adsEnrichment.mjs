@@ -1881,6 +1881,8 @@ async function resolveAdsActivityWithDeepInfra({ evidence, aiConfig = config.ads
           "Official browser evidence comes from the live Meta Ads Library or Google Ads Transparency page and may contain DOM text, Library IDs, active labels, advertiser names, and decoded CTA landing URLs.",
           "For Google, an official Google Ads Transparency domain page for the exact business domain that says the domain includes results and shows a positive active ads count is sufficient domain-owned evidence, even if the advertiser legal name differs from the lead name.",
           "For Meta, active=true requires active ad evidence tied to the business domain or an owned landing URL. A Facebook page, page id, profile, handle, or social identity alone is not enough.",
+          "For Meta, an Apify active ad item with the business landing domain or owned landing URL plus matching advertiser page/name/handle is sufficient active-ad evidence.",
+          "For Meta, browser_meta_no_results_unverified is only a weak environment-specific absence signal; it must not veto Apify or browser evidence that contains an active ad item with business-domain or owned landing URL.",
           "For Meta, exact page-scoped sourceIdentityEvidence may identify the advertiser, but it does not prove domain-owned active ads unless the selected ad item also includes the business domain or owned landing URL.",
           "For Meta, reject page-scoped Apify active items when scrapeAdDetails or the returned item does not expose a business-domain match or owned landing URL.",
           "For Meta, reject domain/keyword query hits when the returned page/ad identity is unrelated or merely mentions the domain.",
@@ -2022,6 +2024,8 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
           "Treat official browser evidence from live Meta Ads Library or Google Ads Transparency as auditable evidence when it includes raw DOM text, active labels, Library IDs, advertiser identity, or decoded CTA landing URLs.",
           "For Google active=true, confirm exact-domain Google Ads Transparency evidence when the official page says that domain includes results and shows a positive ads count; do not reject only because the advertiser legal name differs from the business name.",
           "For Meta active=true, require selected ad evidence containing the business domain or an owned landing URL. Exact Facebook page/page id/profile/handle evidence alone is identity evidence, not active-ads proof.",
+          "For Meta active=true, confirm an Apify active ad item when it includes the business landing domain or owned landing URL and a matching advertiser page/name/handle.",
+          "For Meta, do not use browser_meta_no_results_unverified to reject active ad-item evidence with owned landing-domain proof; treat that browser result as inconclusive.",
           "Reject exact page-scoped Meta Apify evidence when itemsSeen > 0 but the returned item has no business-domain or owned landing evidence.",
           "Reject when advertiser identity, domain, social handle, recency, selected attempts, or official library context are ambiguous.",
           adjudication
