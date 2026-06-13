@@ -1399,9 +1399,9 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
     spendEstimate: detail?.spendEstimate || null,
     suspect: reasons.length > 0,
     suspectReasons: reasons,
-    activeAttempts: attempts.filter((attempt) => attempt?.active === true).slice(0, 5).map(compactAdAttempt),
-    weakActiveAttempts: weakAttempts.slice(0, 5).map(compactAdAttempt),
-    inactiveOrUnknownAttempts: attempts.filter((attempt) => attempt?.active !== true).slice(0, 8).map(compactAdAttempt)
+    activeAttempts: compactAdAttemptList(attempts.filter((attempt) => attempt?.active === true), 8),
+    weakActiveAttempts: compactAdAttemptList(weakAttempts, 8),
+    inactiveOrUnknownAttempts: compactAdAttemptList(attempts.filter((attempt) => attempt?.active !== true), 16)
   };
 }
 
@@ -1445,6 +1445,7 @@ function auditGoogleSourceIsVerified(detail = {}) {
 
 function compactAdAttempt(attempt = {}) {
   return {
+    attemptId: attempt.attemptId || null,
     sourceProvider: attempt.sourceProvider || null,
     plannedBy: attempt.plannedBy || null,
     discoveryReason: attempt.discoveryReason || null,
@@ -1466,6 +1467,31 @@ function compactAdAttempt(attempt = {}) {
     total: attempt.total ?? null,
     evidenceSnippet: attempt.evidenceSnippet || null
   };
+}
+
+function compactAdAttemptList(attempts = [], limit = 8) {
+  const important = attempts.filter((attempt) => {
+    const source = String(attempt?.sourceProvider || "").toLowerCase();
+    return source === "browser" || source === "apify" || Boolean(attempt?.error);
+  });
+  const ordered = [...important, ...attempts];
+  const seen = new Set();
+  const unique = [];
+  for (const attempt of ordered) {
+    const key = [
+      attempt?.attemptId,
+      attempt?.sourceProvider,
+      attempt?.strategy,
+      attempt?.query,
+      attempt?.reason,
+      attempt?.sourceUrl
+    ].filter(Boolean).join("|");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(attempt);
+    if (unique.length >= limit) break;
+  }
+  return unique.map(compactAdAttempt);
 }
 
 function summarizeAdsAudit(leads) {
