@@ -119,8 +119,10 @@ async function withBrowserSession({ chromePath, timeoutMs }, fn) {
     throw new Error(`${error.message}; chrome_stderr=${stderrText}`);
   } finally {
     clearTimeout(timer);
-    chrome.kill("SIGTERM");
-    await rm(profileDir, { recursive: true, force: true });
+    try {
+      chrome.kill("SIGTERM");
+    } catch {}
+    await rm(profileDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
