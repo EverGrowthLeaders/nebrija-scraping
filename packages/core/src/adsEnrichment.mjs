@@ -2824,7 +2824,7 @@ function shouldRunLateMetaApifyFallback({ resolved = {}, apify, mode, aiResolver
   if (!canUseAdsActivityAi({ aiResolver, aiConfig })) return false;
   if (apifyMetaHasAttempts(apifyMeta)) return false;
   const meta = resolved?.meta;
-  if (!meta || meta.active !== null) return false;
+  if (!meta || typeof meta.active === "boolean") return false;
   const browserAttempts = Array.isArray(browserMeta?.attempts) ? browserMeta.attempts : [];
   return browserAttempts.some((attempt) => attempt.reason === "browser_meta_no_results_unverified");
 }
