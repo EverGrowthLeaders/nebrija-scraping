@@ -1020,8 +1020,11 @@ const server = http.createServer(async (req, res) => {
         const campaignId = testCampaignAdsMatch[1];
         const job = await findExtractionJobDetail(campaignId, { tenantId: auth.tenantId });
         if (!job) return sendJson(res, 404, { error: "campaign_not_found" });
+        const requestedBusinessIds = normalizeIdList(json.businessIds || json.business_ids || json.businessId || json.business_id);
         const onlyUnchecked = parseBoolean(json.onlyUnchecked ?? json.only_unchecked ?? false);
-        const businessIds = onlyUnchecked
+        const businessIds = requestedBusinessIds.length
+          ? requestedBusinessIds
+          : onlyUnchecked
           ? (await auditAdsCampaignLeads({
               tenantId: auth.tenantId,
               campaignId,
@@ -1853,6 +1856,12 @@ function compactReformasMadridJob(job = {}) {
 
 function safePathSegment(value) {
   return String(value || "job").replace(/[^a-z0-9._-]+/gi, "-").slice(0, 120) || "job";
+}
+
+function normalizeIdList(value) {
+  if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
+  if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
+  return [];
 }
 
 function compactReformasMadridReport(report = {}) {
