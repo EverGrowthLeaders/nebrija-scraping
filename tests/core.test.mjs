@@ -1898,7 +1898,7 @@ test("enriches Meta ads from discovered Instagram and retries all-country librar
       }
       if (url.includes("facebook.com/ads/library") && url.includes("country=ALL") && url.includes("%40disowned_factory")) {
         return {
-          markdown: "Library ID: 123456789 This Page is currently running ads.",
+          markdown: "Library ID: 123456789 This Page is currently running ads for disownedfactory.com.",
           html: ""
         };
       }
@@ -1921,8 +1921,9 @@ test("enriches Meta ads from discovered Instagram and retries all-country librar
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(enrichment.meta.active, true);
-  assert.equal(enrichment.meta.ai.status, "resolved");
+  assert.equal(enrichment.meta.active, null);
+  assert.equal(enrichment.meta.reason, "ai_missing_owned_domain_ad_evidence");
+  assert.equal(enrichment.meta.ai.status, "invalid_domain_evidence_required");
   assert.equal(enrichment.meta.strategy, "instagram_handle");
   assert.equal(enrichment.meta.query, "@disowned_factory");
   assert.equal(enrichment.meta.country, "ALL");
@@ -1946,7 +1947,7 @@ test("uses AI discovery plan to locate Ads Library evidence with Firecrawl", asy
       scrapes.push(url);
       if (url === "https://acme.example") return { markdown: "", html: "", links: [] };
       if (url.includes("facebook.com/ads/library") && url.includes("%40acme_ai")) {
-        return { markdown: "Library ID: 987654321 This Page is currently running ads.", html: "" };
+        return { markdown: "Library ID: 987654321 This Page is currently running ads for acme.example.", html: "" };
       }
       if (url.includes("adstransparency.google.com/advertiser/AR-AI")) {
         return { markdown: "Acme Solar acme.example CR987654321 first shown 2026-06-04 last shown 2026-06-05", html: "" };
@@ -2015,7 +2016,8 @@ test("uses AI discovery plan to locate Ads Library evidence with Firecrawl", asy
 
   assert.equal(enrichment.discoveryPlan.ai.status, "planned");
   assert.equal(enrichment.discoveryPlan.ai.cost.estimatedUsd, 0.000184);
-  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.active, null);
+  assert.equal(enrichment.meta.reason, "ai_missing_owned_domain_ad_evidence");
   assert.equal(enrichment.google.active, true);
   assert.ok(searches.includes('site:adstransparency.google.com/advertiser "Acme Solar" "acme.example"'));
   assert.ok(scrapes.some((url) => url.includes("%40acme_ai")));
@@ -2128,7 +2130,8 @@ test("does not scrape broad Google Transparency page when no domain is available
 
   assert.ok(searched.includes(plannedQuery));
   assert.ok(scraped.every((url) => !url.includes("adstransparency.google.com/?")));
-  assert.equal(enrichment.google.active, true);
+  assert.equal(enrichment.google.active, null);
+  assert.equal(enrichment.google.reason, "ai_missing_domain_ad_evidence");
   assert.equal(enrichment.google.sourceProvider, "firecrawl");
 });
 
@@ -2409,7 +2412,7 @@ test("requires independent AI verification before keeping boolean Ads activity",
     },
     async scrape(url) {
       if (url === "https://verify.example") return { markdown: "", html: "", links: [] };
-      if (url.includes("facebook.com/ads/library")) return { markdown: "Library ID: 456789123 This Page is currently running ads.", html: "" };
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Library ID: 456789123 This Page is currently running ads for verify.example.", html: "" };
       if (url.includes("adstransparency.google.com")) return { markdown: "No ads found for Verify Demo", html: "" };
       return { markdown: "", html: "" };
     }
@@ -2429,7 +2432,7 @@ test("requires independent AI verification before keeping boolean Ads activity",
           reason: "ai_meta_active_verified",
           selectedAttemptIds: [metaAttempt.attemptId],
           landingUrls: [],
-          matchedFields: ["business_name"],
+          matchedFields: ["domain"],
           sourceUrl: metaAttempt.sourceUrl,
           evidenceSummary: "Resolver believes Meta is active.",
           needsMoreEvidence: false
@@ -3267,7 +3270,7 @@ test("falls back to Apify for matched active Meta ads only", async () => {
   assert.equal(enrichment.meta.reason, "ai_meta_active_verified");
   assert.equal(enrichment.meta.sourceProvider, "apify");
   assert.equal(enrichment.meta.ai.phase, "firecrawl_apify");
-  assert.deepEqual(enrichment.meta.matchedFields, ["domain", "page_name", "instagram_handle"]);
+  assert.deepEqual(enrichment.meta.matchedFields, ["domain", "landing_domain", "page_name", "instagram_handle"]);
   assert.equal(enrichment.meta.adArchiveId, "1919274085400585");
   assert.deepEqual(enrichment.meta.landingUrls, [
     "https://disownedfactory.com/sudaderas-para-grupos/",
@@ -3759,6 +3762,103 @@ test("does not verify Meta ads from Apify social-only matches", async () => {
   assert.notEqual(enrichment.meta.active, true);
   assert.equal(enrichment.meta.reason, "ai_meta_unknown");
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.reason === "apify_active_items_not_matched"));
+});
+
+test("rejects Meta active when Apify only proves a Facebook page without owned domain ads", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "http://www.reformasbsm.com/") {
+        return {
+          markdown: "[Facebook](https://www.facebook.com/borja.sanchezmunoz.7) [Instagram](https://www.instagram.com/bsmconstruccionesyreformas)",
+          html: "",
+          links: [
+            { url: "https://www.facebook.com/borja.sanchezmunoz.7" },
+            { url: "https://www.instagram.com/bsmconstruccionesyreformas" }
+          ]
+        };
+      }
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "Ad Library", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          is_active: true,
+          page_name: "Borja Sánchez Muñoz",
+          snapshot: {
+            page_name: "Borja Sánchez Muñoz",
+            body: { text: "Contenido de la página sin reformasmadrid ni reformasbsm.com" }
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: {
+      name: "Borja Sánchez Muñoz Construcciones y Reformas",
+      website: "http://www.reformasbsm.com/",
+      facebook: "https://www.facebook.com/borja.sanchezmunoz.7",
+      instagram: "https://www.instagram.com/bsmconstruccionesyreformas",
+      city: "Madrid"
+    },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "borja.sanchezmunoz.7", searchType: "page", country: "ES", reason: "ai_official_facebook_page" }
+      ]
+    }),
+    aiResolver: async ({ evidence }) => {
+      const attempt = evidence.providers.meta.attempts.find((item) => item.sourceProvider === "apify");
+      return {
+        meta: {
+          active: true,
+          status: "active",
+          confidence: 0.9,
+          reason: "ai_page_scoped_active",
+          selectedAttemptIds: [attempt.attemptId],
+          landingUrls: [],
+          matchedFields: attempt.matchedFields || [],
+          sourceUrl: attempt.sourceUrl,
+          evidenceSummary: "AI tried to accept page-scoped active items.",
+          needsMoreEvidence: false
+        },
+        google: {
+          active: null,
+          status: "unknown",
+          confidence: 0.4,
+          reason: "ai_google_unknown",
+          selectedAttemptIds: [],
+          landingUrls: [],
+          matchedFields: [],
+          sourceUrl: null,
+          evidenceSummary: "No Google evidence.",
+          needsMoreEvidence: true
+        }
+      };
+    },
+    country: "ES",
+    now: new Date("2026-06-13T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, null);
+  assert.equal(enrichment.meta.reason, "ai_missing_owned_domain_ad_evidence");
+  assert.equal(enrichment.meta.ai.status, "invalid_domain_evidence_required");
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.reason === "apify_meta_page_scoped_candidate" &&
+    attempt.matchedFields.includes("facebook_handle") &&
+    !attempt.matchedFields.includes("domain") &&
+    !attempt.matchedFields.includes("landing_domain")
+  ));
 });
 
 test("does not verify Meta ads from Apify domain-only matches", async () => {

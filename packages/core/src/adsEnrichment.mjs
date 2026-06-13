@@ -1541,9 +1541,9 @@ async function resolveAdsActivityWithDeepInfra({ evidence, aiConfig = config.ads
           "Use only the supplied Firecrawl and Apify evidence.",
           "Treat activeSignal/statusSignal/reasonSignal as scraper observations, never as final proof.",
           "Do not rely on generic scraper labels as proof. Verify advertiser identity, business/domain/social match, recency and official library context from raw evidence.",
-          "For Meta, active=true requires an exact advertiser identity match: official Facebook page/page id/handle source evidence, page name plus domain/social handle, or landing URL controlled by the business.",
-          "For Meta, exact page-scoped sourceIdentityEvidence may support active=true only when it is tied to the business by the supplied business/social/discovery evidence; keyword and domain sources cannot.",
-          "For Meta, do not require landing URLs or ad creative when an exact official page/page_id source has itemsSeen > 0 and scraperObservation says active Meta items; the active-status query itself is current ads evidence.",
+          "For Meta, active=true requires active ad evidence tied to the business domain or an owned landing URL. A Facebook page, page id, profile, handle, or social identity alone is not enough.",
+          "For Meta, exact page-scoped sourceIdentityEvidence may identify the advertiser, but it does not prove domain-owned active ads unless the selected ad item also includes the business domain or owned landing URL.",
+          "For Meta, reject page-scoped Apify active items when scrapeAdDetails or the returned item does not expose a business-domain match or owned landing URL.",
           "For Meta, reject domain/keyword query hits when the returned page/ad identity is unrelated or merely mentions the domain.",
           "Return active=false only when official evidence clearly says there are no active/current ads for this exact business query.",
           "Return active=null/status=unknown when pages are loading, blocked, unrelated, ambiguous, stale, or identity is not proven.",
@@ -1680,12 +1680,11 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
           "Use only the supplied evidence and proposed decision.",
           "Confirm a proposed active=true or active=false only when the exact business identity and current ads state are proven by official or directly relevant evidence.",
           "Treat the proposed decision and scraper activeSignal as claims to audit, not evidence by themselves.",
-          "For Meta active=true, require evidence tying the active ad to the exact business page, page id, page handle, page name plus domain/social handle, or owned landing URL.",
-          "Exact page-scoped sourceIdentityEvidence may be sufficient only when the source itself is proven to be the business official page; never apply that to keyword/domain sources.",
-          "For exact official Meta page/page_id Apify evidence, itemsSeen > 0 from an active-status query is enough current-ads evidence even when scrapeAdDetails is disabled and landing URLs are absent.",
+          "For Meta active=true, require selected ad evidence containing the business domain or an owned landing URL. Exact Facebook page/page id/profile/handle evidence alone is identity evidence, not active-ads proof.",
+          "Reject exact page-scoped Meta Apify evidence when itemsSeen > 0 but the returned item has no business-domain or owned landing evidence.",
           "Reject when advertiser identity, domain, social handle, recency, selected attempts, or official library context are ambiguous.",
           adjudication
-            ? "As final adjudicator, treat exact-domain Google Transparency evidence as directly relevant when the business domain or landing identity matches; confirm active=false for exact-domain Apify zero-result evidence unless another selected attempt proves active ads. For Meta, page-scoped sourceIdentityEvidence plus active-status itemsSeen > 0 can support active only when it is proven to be the business official page; never auto-confirm keyword/domain Apify signals."
+            ? "As final adjudicator, treat exact-domain Google Transparency evidence as directly relevant when the business domain or landing identity matches; confirm active=false for exact-domain Apify zero-result evidence unless another selected attempt proves active ads. For Meta, never confirm active=true without business-domain or owned-landing evidence from the selected ad item."
             : "",
           "Return unknown when more evidence is needed. Return only valid JSON."
         ].filter(Boolean).join(" ")
@@ -1780,6 +1779,9 @@ function applyAiProviderDecision({ provider, base, normalized, rawResult, aiConf
     ...normalized.matchedFields,
     ...selectedAttempts.flatMap((attempt) => attempt.matchedFields || [])
   ]);
+  if (normalized.active === true && !hasOwnedAdsDomainEvidence({ provider, matchedFields, landingUrls, selectedAttempts })) {
+    return aiDomainEvidenceRequiredProviderResult({ provider, base, rawResult, aiConfig, phase, normalized });
+  }
   const spendEstimate = provider === "meta" && normalized.active === true
     ? selectedAttempts.find((attempt) => attempt.spendEstimate)?.spendEstimate || base.spendEstimate || null
     : null;
@@ -1846,6 +1848,40 @@ function aiUnplannedProviderResult({ provider, base, rawResult, aiConfig, phase,
     reason: "ai_unplanned_activity_decision",
     ai: adsActivityAiMetadata({
       status: "invalid_unplanned_decision",
+      rawResult,
+      aiConfig,
+      phase,
+      provider,
+      evidenceSummary: normalized.evidenceSummary,
+      needsMoreEvidence: true,
+      selectedAttemptIds: normalized.selectedAttemptIds
+    })
+  };
+}
+
+function hasOwnedAdsDomainEvidence({ provider, matchedFields = [], landingUrls = [], selectedAttempts = [] } = {}) {
+  const fields = unique([
+    ...(Array.isArray(matchedFields) ? matchedFields : []),
+    ...selectedAttempts.flatMap((attempt) => Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [])
+  ]);
+  if (provider === "meta") {
+    return fields.includes("domain") || fields.includes("landing_domain");
+  }
+  if (provider === "google") {
+    return fields.some((field) => ["domain", "landing_domain", "brand_domain"].includes(field)) || landingUrls.length > 0;
+  }
+  return true;
+}
+
+function aiDomainEvidenceRequiredProviderResult({ provider, base, rawResult, aiConfig, phase, normalized }) {
+  return {
+    ...base,
+    active: null,
+    status: "unknown",
+    confidence: 0.2,
+    reason: provider === "meta" ? "ai_missing_owned_domain_ad_evidence" : "ai_missing_domain_ad_evidence",
+    ai: adsActivityAiMetadata({
+      status: "invalid_domain_evidence_required",
       rawResult,
       aiConfig,
       phase,
@@ -2210,12 +2246,11 @@ function buildAdsActivityEvidencePack({
       providerEvidenceForAi(providerEvidence[provider], provider)
     ])),
     decisionRules: [
-      "A provider is active only when evidence proves active/current ads for this exact business, domain, official page, or social identity.",
+      "A provider is active only when evidence proves active/current ads for this exact business domain or owned landing URL.",
       "A provider is inactive only when official library evidence clearly says no active/current ads for this exact business query.",
       "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
       "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
-      "For Meta, Apify sources are candidates until the model verifies identity. Exact page/page_id/handle sourceIdentityEvidence can be used as identity evidence; keyword and domain sources cannot.",
-      "For Meta, exact official page/page_id Apify active-status results do not need landing URLs or creative details; this keeps Apify usage low.",
+      "For Meta, Apify sources are candidates until the model verifies both advertiser identity and business-domain ad evidence. Exact page/page_id/handle sourceIdentityEvidence is identity evidence only.",
       "For Meta, domain mentions inside unrelated ads are not owned landing evidence.",
       "Copy landing URLs only from the evidence. Never invent URLs, advertiser names, profile names or dates."
     ]
@@ -2264,8 +2299,8 @@ function buildAdsActivityVerificationPack({
       "Confirm only the exact proposed boolean decision for each provider.",
       "confirmed=true requires a selected attempt or source URL that supports the same active boolean for the exact business identity.",
       "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
-      "For Meta, accept active=true from Apify only when selected evidence proves either exact official page/page_id/handle source identity or returned item advertiser identity.",
-      "For Meta, if selected evidence proves exact official page/page_id source identity, itemsSeen > 0 from an active-status Apify query is sufficient current-active evidence without landing URLs.",
+      "For Meta, accept active=true from Apify only when selected ad evidence includes the business domain or owned landing URL.",
+      "For Meta, exact official page/page_id source identity plus itemsSeen > 0 is still unknown when scrapeAdDetails or returned item data lacks business-domain/landing evidence.",
       "For Meta, exact domain/keyword query hits are not enough when the returned page/ad identity is unrelated or only mentions the domain.",
       "Reject inactive when the evidence only shows a failed scrape, blocked page, generic no-results text, or an unverified query.",
       "Use unknown when the evidence is insufficient and set needsMoreEvidence=true."
@@ -2981,8 +3016,10 @@ function matchApifyBusinessItem({ item, business }) {
   const pageName = samplePageName(item);
   const text = collectApifyItemStrings(item).join("\n");
   const normalized = normalizeText(text);
+  const landingUrls = collectApifyLandingUrls(item, business);
 
   if (domain && normalized.includes(normalizeText(domain))) fields.push("domain");
+  if (domain && landingUrls.some((url) => extractDomain(url) === domain)) fields.push("landing_domain");
   if (business.name && strongNameMatch(pageName, business.name)) fields.push("page_name");
   if (instagramHandle && normalized.includes(normalizeText(`@${instagramHandle}`))) fields.push("instagram_handle");
   if (instagramHandle && normalized.includes(normalizeText(`instagram.com/${instagramHandle}`))) fields.push("instagram_url");
