@@ -1614,8 +1614,7 @@ function apifyGoogleItemMatchesDomain(item = {}, domain) {
 }
 
 async function inspectMetaAdsWithApify({ business, apify, country, now, socialDiscovery, discoveryPlan, allowExactDomainFallback = false }) {
-  const sources = buildApifyMetaSources(business, country, discoveryPlan, { allowExactDomainFallback })
-    .slice(0, apifyMetaMaxSources(apify));
+  const sources = buildApifyMetaSources(business, country, discoveryPlan, { allowExactDomainFallback });
   const attempts = [];
   let fallback = null;
   let followupsAdded = 0;
@@ -1636,6 +1635,7 @@ async function inspectMetaAdsWithApify({ business, apify, country, now, socialDi
       if (followup && followupsAdded < 1 && !sources.some((candidate) => candidate.sourceUrl === followup.sourceUrl)) {
         followupsAdded += 1;
         sources.push(followup);
+        sources.sort((a, b) => rankApifyMetaSource(a, business) - rankApifyMetaSource(b, business));
       }
     } catch (error) {
       const quotaExceeded = isExternalQuotaError(error);
@@ -1686,9 +1686,27 @@ export function buildMetaAdProbes(business = {}) {
   addProbe(probes, "instagram_url", instagram, "keyword_unordered", 0.9);
   addProbe(probes, "instagram_handle", instagramHandle ? `@${instagramHandle}` : "", "keyword_unordered", 0.88);
   addProbe(probes, "instagram_account", instagramHandle, "keyword_unordered", 0.84);
-  addProbe(probes, "business_name_city", adSearchQuery(business), "keyword_unordered", 0.68);
-  addProbe(probes, "business_name", business.name, "keyword_unordered", 0.62);
-  addProbe(probes, "website_brand", rootDomain, "keyword_unordered", 0.7);
+  addProbe(probes, "business_name_city", adSearchQuery(business), "keyword_unordered", 0.68, { business });
+  addProbe(probes, "business_name", business.name, "keyword_unordered", 0.62, { business });
+  addProbe(probes, "website_brand", rootDomain, "keyword_unordered", 0.7, { business });
+
+  return uniqueProbes(probes);
+}
+
+function buildOrderedMetaAdProbes(business = {}, country = DEFAULT_COUNTRY) {
+  const probes = [];
+  const domain = extractDomain(business.website);
+  const rootDomain = rootDomainToken(domain);
+  const facebook = firstValue(business.facebook, business.custom_fields?.facebook, business.custom_fields?.facebook_url, business.custom_fields?.fb);
+  const instagram = firstValue(business.instagram, business.custom_fields?.instagram, business.custom_fields?.instagram_url, business.custom_fields?.ig);
+  const facebookHandle = extractSocialHandle(facebook, "facebook");
+  const instagramHandle = extractSocialHandle(instagram, "instagram");
+
+  addProbe(probes, "ordered_domain", domain, "keyword_unordered", 0.95, { business, priority: 10, country, discoveryReason: "ordered_meta_domain_source" });
+  addProbe(probes, "ordered_instagram", instagramHandle ? `@${instagramHandle}` : instagram, "keyword_unordered", 0.9, { business, priority: 20, country, discoveryReason: "ordered_meta_instagram_source" });
+  addProbe(probes, "ordered_business_name", business.name, "keyword_unordered", 0.78, { business, priority: 30, country, discoveryReason: "ordered_meta_name_source" });
+  addProbe(probes, "ordered_brand", rootDomain, "keyword_unordered", 0.76, { business, priority: 40, country, discoveryReason: "ordered_meta_brand_source" });
+  addProbe(probes, "ordered_facebook_page", facebookHandle || facebook, "page", 0.88, { business, priority: 50, country, discoveryReason: "ordered_meta_facebook_source" });
 
   return uniqueProbes(probes);
 }
@@ -1888,6 +1906,8 @@ async function resolveAdsActivityWithDeepInfra({ evidence, aiConfig = config.ads
           "Official browser evidence comes from the live Meta Ads Library or Google Ads Transparency page and may contain DOM text, Library IDs, active labels, advertiser names, and decoded CTA landing URLs.",
           "For Google, an official Google Ads Transparency domain page for the exact business domain that says the domain includes results and shows a positive active ads count is sufficient domain-owned evidence, even if the advertiser legal name differs from the lead name.",
           "For Meta, active=true requires an active ad item from the official library plus ownership proof for the advertiser. Ownership proof can be business-domain/owned landing URL, or an exact official Facebook/Instagram page/handle identity for this business when the selected ad item exposes an ad Library ID, active ad copy, advertiser page/name/handle, and current active context.",
+          "For Meta, evidence should be interpreted as an ordered source chain: domain first, Instagram second, business name third, brand fourth, Facebook page fifth. If any source proves a business-owned active ad, return active=true and select that exact source attempt.",
+          "For Meta, if the ordered Apify source chain was fully attempted and every source produced no active business-owned ad item, active=false may be returned. Use unknown only when the chain was blocked, incomplete, or advertiser identity remains ambiguous.",
           "For Meta, a Facebook page, page id, profile, handle, or social identity with no selected active ad item is not enough.",
           "For Meta, an Apify active ad item with the business landing domain or owned landing URL plus matching advertiser page/name/handle is sufficient active-ad evidence.",
           "For Meta, an Apify active ad item with no domain landing URL can still be sufficient when the ad is published by the exact official advertiser page/Instagram/Facebook identity of the business and includes a Library ID or current ad creative text.",
@@ -2033,6 +2053,8 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
           "Treat official browser evidence from live Meta Ads Library or Google Ads Transparency as auditable evidence when it includes raw DOM text, active labels, Library IDs, advertiser identity, or decoded CTA landing URLs.",
           "For Google active=true, confirm exact-domain Google Ads Transparency evidence when the official page says that domain includes results and shows a positive ads count; do not reject only because the advertiser legal name differs from the business name.",
           "For Meta active=true, require selected active ad evidence plus ownership proof. Ownership proof can be business domain/owned landing URL, or the exact official Facebook/Instagram page/handle identity of this business when the selected item exposes a real Library ID, active ad copy/creative, advertiser page/name/handle, and current active context.",
+          "For Meta, verify the exact source attempt selected by the resolver. The source chain priority is domain, Instagram, business name, brand, Facebook page; an active decision must point to the source attempt that found the business-owned active ad.",
+          "For Meta active=false, confirm only when the ordered Apify source chain was completed and no selected or attempted source contains a business-owned active ad item.",
           "For Meta active=true, confirm an Apify active ad item when it includes the business landing domain or owned landing URL and a matching advertiser page/name/handle.",
           "For Meta active=true, also confirm an Apify active ad item with no domain landing URL when it is published by the exact official business social identity and includes a Library ID or current ad creative text.",
           "For Meta, do not use browser_meta_no_results_unverified to reject active ad-item evidence with owned landing-domain proof or exact owned social-advertiser proof; treat that browser result as inconclusive.",
@@ -2627,7 +2649,9 @@ function buildAdsActivityEvidencePack({
       "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
       "For Google, exact Google Ads Transparency domain evidence with a positive ads count belongs to the business domain and may be active even when the displayed advertiser/legal entity name is different.",
       "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
+      "For Meta, Apify sources are tried in this order: domain, Instagram, business name, brand, Facebook page. Stop at active=true only when the selected source proves a business-owned active ad.",
       "For Meta, Apify sources are candidates until the model verifies a selected active ad item plus owned advertiser proof. Owned advertiser proof may be business-domain/owned landing evidence, or exact official Facebook/Instagram page/handle identity with Library ID/ad creative evidence on the selected item.",
+      "For Meta, when the full ordered Apify source chain is attempted and no source proves a business-owned active ad, active=false is allowed. If sources are blocked or incomplete, use unknown.",
       "For Meta, domain mentions inside unrelated ads are not owned landing evidence.",
       "Copy landing URLs only from the evidence. Never invent URLs, advertiser names, profile names or dates."
     ]
@@ -2678,6 +2702,7 @@ function buildAdsActivityVerificationPack({
       "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
       "For Google, do not reject selected exact-domain Transparency evidence only because the advertiser/legal entity name differs when the domain itself matches the business website.",
       "For Meta, accept active=true from Apify only when selected ad evidence includes business-domain/owned landing evidence, or exact owned Facebook/Instagram advertiser identity with Library ID/ad creative evidence.",
+      "For Meta, confirm active=false only when the ordered Apify source chain was completed without any business-owned active ad evidence.",
       "For Meta, exact official page/page_id source identity plus itemsSeen > 0 is still unknown when scrapeAdDetails or returned item data lacks business-domain/landing evidence and lacks exact owned social-advertiser proof on a real ad item.",
       "For Meta, exact domain/keyword query hits are not enough when the returned page/ad identity is unrelated or only mentions the domain.",
       "Reject inactive when the evidence only shows a failed scrape, blocked page, generic no-results text, or an unverified query.",
@@ -2922,6 +2947,31 @@ function buildApifyMetaSources(business, country, discoveryPlan, { allowExactDom
     ? normalizeMetaDiscoveryProbes(discoveryPlan?.metaProbes || [], "ai").filter((probe) => probe.plannedBy === "ai")
     : [];
 
+  if (discoveryPlan?.ai?.status === "planned") {
+    for (const probe of buildOrderedMetaAdProbes(business, metaCountry)) {
+      const libraryUrl = buildMetaAdsLibraryUrl({
+        query: probe.query,
+        country: probe.country || metaCountry,
+        searchType: probe.searchType
+      });
+      addApifySource(sources, {
+        strategy: probe.strategy,
+        query: probe.query,
+        searchType: probe.searchType,
+        country: probe.country || metaCountry,
+        sourceUrl: facebookPageUrlFromMetaSource({
+          query: probe.query,
+          searchType: probe.searchType,
+          sourceUrl: libraryUrl
+        }) || libraryUrl,
+        confidence: probe.confidence,
+        priority: probe.priority,
+        plannedBy: "ai",
+        discoveryReason: probe.discoveryReason || "ordered_meta_source_chain"
+      }, business);
+    }
+  }
+
   for (const entry of aiPlannedMetaUrls) {
     const normalizedUrl = normalizeApifyMetaSourceUrl(entry.url, entry.country || metaCountry);
     if (!normalizedUrl) continue;
@@ -2941,7 +2991,7 @@ function buildApifyMetaSources(business, country, discoveryPlan, { allowExactDom
       confidence: 0.88,
       plannedBy: entry.plannedBy || "ai",
       discoveryReason: entry.discoveryReason || "ai_ads_discovery"
-    });
+    }, business);
   }
   for (const probe of aiPlannedMetaProbes) {
     const libraryUrl = buildMetaAdsLibraryUrl({
@@ -2962,7 +3012,7 @@ function buildApifyMetaSources(business, country, discoveryPlan, { allowExactDom
       confidence: probe.confidence || (probe.plannedBy === "ai" ? 0.86 : 0.7),
       plannedBy: probe.plannedBy || "seed",
       discoveryReason: probe.discoveryReason || `${probe.plannedBy || "seed"}_ads_discovery`
-    });
+    }, business);
   }
   if (!sources.length && (allowExactDomainFallback || aiPlannedMetaUrls.length || aiPlannedMetaProbes.length) && domain) {
     addApifySource(sources, {
@@ -2974,15 +3024,16 @@ function buildApifyMetaSources(business, country, discoveryPlan, { allowExactDom
       confidence: 0.9,
       plannedBy: "ai",
       discoveryReason: "ai_exact_domain_fallback_after_planned_meta_discovery"
-    });
+    }, business);
   }
 
   return sources
     .filter((source) => source.plannedBy === "ai")
-    .sort((a, b) => rankApifyMetaSource(b, business) - rankApifyMetaSource(a, business));
+    .sort((a, b) => rankApifyMetaSource(a, business) - rankApifyMetaSource(b, business));
 }
 
-function addApifySource(sources, source) {
+function addApifySource(sources, source, business = {}) {
+  if (isForbiddenGenericMetaSource(source, business)) return;
   if (!source.sourceUrl || sources.some((item) => item.sourceUrl === source.sourceUrl)) return;
   sources.push({
     ...source,
@@ -3147,22 +3198,21 @@ function apifyMetaMaxSources(apify) {
 }
 
 function rankApifyMetaSource(source = {}, business = {}) {
+  const priority = Number(source.priority);
+  if (Number.isFinite(priority)) return priority;
   const query = String(source.query || "");
   const strategy = String(source.strategy || "");
   const searchType = String(source.searchType || "");
   const sourceUrl = String(source.sourceUrl || "");
   const domain = extractDomain(business.website);
-  let score = Number(source.confidence || 0) * 10;
-  if (source.plannedBy === "ai") score += 30;
-  if (searchType === "page" || /page/i.test(strategy)) score += 60;
-  if (parseFacebookPageUrl(query) || parseFacebookPageUrl(sourceUrl)) score += 55;
-  if (/page_id=|view_all_page_id=|\/ads\/library\/\?id=/i.test(sourceUrl)) score += 45;
-  if (/^@[\w.]+$/i.test(query)) score -= 8;
-  if (domain && normalizeText(query) === normalizeText(domain)) score += 12;
-  if (/facebook|instagram|handle|domain|url/i.test(strategy)) score += 8;
-  if (/instagram/i.test(strategy) || /^@/i.test(query)) score -= 10;
-  if (/business_name|name_city|brand/i.test(strategy)) score -= 12;
-  return score;
+  let score = 100;
+  if (domain && normalizeText(query) === normalizeText(domain)) score = Math.min(score, 10);
+  if (/instagram/i.test(strategy) || /^@/i.test(query)) score = Math.min(score, 20);
+  if (/business_name|name/i.test(strategy)) score = Math.min(score, 30);
+  if (/brand/i.test(strategy)) score = Math.min(score, 40);
+  if (/facebook|page/i.test(strategy) || parseFacebookPageUrl(query) || parseFacebookPageUrl(sourceUrl)) score = Math.min(score, 50);
+  if (source.followup) score = Math.min(score, 55);
+  return score - Number(source.confidence || 0) / 100;
 }
 
 function metaApifySearchTerm(source = {}) {
@@ -4208,10 +4258,140 @@ function normalizeAdsLibraryUrl(value, provider) {
   }
 }
 
-function addProbe(probes, strategy, query, searchType, confidence) {
+function isForbiddenGenericMetaSource(source = {}, business = {}) {
+  const query = cleanQuery(source.query || metaApifySearchTerm(source));
+  if (!query) return true;
+  const strategy = String(source.strategy || "");
+  const searchType = normalizeMetaSearchType(source.searchType || metaSearchTypeFromUrl(source.sourceUrl || ""));
+  const sourceUrl = String(source.sourceUrl || "");
+
+  if (extractDomain(query) && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(query)) return false;
+  if (/^@?[a-z0-9._-]{2,80}$/i.test(query) && (/instagram|facebook|handle|account|page/i.test(strategy) || searchType === "page")) return false;
+  if (parseFacebookPageUrl(query) || parseFacebookPageUrl(sourceUrl)) return false;
+  if (/instagram\.com|facebook\.com|fb\.com/i.test(query)) return false;
+
+  if (/business_name|name|brand|ordered_business_name|ordered_brand/i.test(strategy)) {
+    return !hasDistinctiveMetaQueryToken(query, business);
+  }
+
+  return isGenericMetaQuery(query, business);
+}
+
+function hasDistinctiveMetaQueryToken(query, business = {}) {
+  const cityTokens = significantTokens(firstValue(business.city, business.locality, business.address_city));
+  const tokens = significantTokens(query).filter((token) =>
+    !GENERIC_META_QUERY_TOKENS.has(token) &&
+    !cityTokens.includes(token) &&
+    hasDistinctiveCompactMetaRemainder(token, cityTokens)
+  );
+  return tokens.some((token) => token.length >= 3);
+}
+
+function isGenericMetaQuery(query, business = {}) {
+  const normalized = normalizeText(query);
+  if (!normalized) return true;
+  const tokens = significantTokens(normalized);
+  if (!tokens.length) return true;
+  if (tokens.every((token) => GENERIC_META_QUERY_TOKENS.has(token))) return true;
+  return !hasDistinctiveMetaQueryToken(query, business);
+}
+
+const GENERIC_META_QUERY_TOKENS = new Set([
+  "reforma",
+  "reformas",
+  "integral",
+  "integrales",
+  "empresa",
+  "empresas",
+  "obra",
+  "obras",
+  "construccion",
+  "construcciones",
+  "constructor",
+  "constructora",
+  "servicio",
+  "servicios",
+  "multiservicio",
+  "multiservicios",
+  "piso",
+  "pisos",
+  "casa",
+  "casas",
+  "hogar",
+  "bano",
+  "banos",
+  "baño",
+  "baños",
+  "cocina",
+  "cocinas",
+  "interiorismo",
+  "interiorista",
+  "arquitecto",
+  "arquitectos",
+  "diseno",
+  "diseño",
+  "decoracion",
+  "decoración",
+  "madrid",
+  "barcelona",
+  "valencia",
+  "sevilla",
+  "zaragoza",
+  "malaga",
+  "málaga",
+  "murcia",
+  "palma",
+  "bilbao",
+  "alicante",
+  "cordoba",
+  "córdoba",
+  "valladolid",
+  "vigo",
+  "gijon",
+  "gijón",
+  "salamanca",
+  "logrono",
+  "logroño",
+  "sl",
+  "sll",
+  "sa",
+  "slu",
+  "s.l",
+  "s.a",
+  "sociedad",
+  "limitada"
+]);
+
+function hasDistinctiveCompactMetaRemainder(value, cityTokens = []) {
+  let compact = normalizeText(value).replace(/[^a-z0-9]/g, "");
+  if (!compact) return false;
+  const compactGenericTokens = unique([
+    ...Array.from(GENERIC_META_QUERY_TOKENS),
+    ...cityTokens
+  ])
+    .map((token) => normalizeText(token).replace(/[^a-z0-9]/g, ""))
+    .filter((token) => token.length >= 3)
+    .sort((a, b) => b.length - a.length);
+  for (const token of compactGenericTokens) {
+    compact = compact.split(token).join("");
+  }
+  return compact.length >= 3;
+}
+
+function addProbe(probes, strategy, query, searchType, confidence, options = {}) {
   const cleaned = cleanQuery(query);
   if (!cleaned) return;
-  probes.push({ strategy, query: cleaned, searchType, confidence });
+  const probe = {
+    strategy,
+    query: cleaned,
+    searchType,
+    confidence,
+    priority: options.priority,
+    country: options.country,
+    discoveryReason: options.discoveryReason
+  };
+  if (isForbiddenGenericMetaSource(probe, options.business || {})) return;
+  probes.push(probe);
 }
 
 function uniqueProbes(probes) {

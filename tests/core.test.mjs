@@ -1592,6 +1592,20 @@ test("ignores generic Facebook share URLs as Meta ad probes", () => {
   assert.equal(byStrategy.website_domain.query, "climargas.es");
 });
 
+test("does not build generic Meta ad probes from category-like names", () => {
+  const probes = buildMetaAdProbes({
+    name: "Reformas Madrid | Baños, Cocinas o Reformas integrales",
+    city: "Madrid",
+    website: "https://reformasmadrid.eu/"
+  });
+  const byStrategy = Object.fromEntries(probes.map((probe) => [probe.strategy, probe]));
+
+  assert.equal(byStrategy.website_domain.query, "reformasmadrid.eu");
+  assert.equal(byStrategy.business_name_city, undefined);
+  assert.equal(byStrategy.business_name, undefined);
+  assert.equal(byStrategy.website_brand, undefined);
+});
+
 test("Meta active inference stores matching strategy and query evidence", () => {
   const result = inferAdsActivity({
     provider: "meta",
@@ -2945,7 +2959,8 @@ test("uses AI-planned Meta sources when Apify fallback is enabled", async () => 
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.ok(apifyUrls[0].includes("%40planned_handle"));
+  assert.ok(apifyUrls[0].includes("q=planned.example"));
+  assert.ok(apifyUrls.some((url) => url.includes("%40planned_handle")));
   assert.equal(enrichment.meta.active, true);
   assert.equal(enrichment.meta.sourceProvider, "apify");
   assert.equal(enrichment.meta.ai.phase, "firecrawl_apify");
@@ -3047,10 +3062,8 @@ test("normalizes AI Meta page URLs before sending them to Apify", async () => {
     facebookAdsActorId: "curious_coder~facebook-ads-library-scraper",
     async runFacebookAdsLibrary(input) {
       apifyUrls.push(input.urls[0].url);
-      assert.equal(input.urls[0].url, "https://www.facebook.com/planned_handle");
       assert.equal(input.limitPerSource, 10);
       assert.equal(input.count, 10);
-      assert.equal(input.scrapeAdDetails, false);
       assert.equal(input["scrapePageAds.activeStatus"], "active");
       assert.equal(input["scrapePageAds.countryCode"], "ES");
       return [];
@@ -3075,7 +3088,12 @@ test("normalizes AI Meta page URLs before sending them to Apify", async () => {
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(apifyUrls.length, 1);
+  assert.deepEqual(apifyUrls, [
+    "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&is_targeted_country=false&media_type=all&q=planned.example&search_type=keyword_unordered",
+    "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&is_targeted_country=false&media_type=all&q=Planned+Demo&search_type=keyword_unordered",
+    "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&is_targeted_country=false&media_type=all&q=planned&search_type=keyword_unordered",
+    "https://www.facebook.com/planned_handle"
+  ]);
 });
 
 test("uses Facebook page URLs for AI-planned Meta page probes with Curious actor", async () => {
@@ -3096,10 +3114,8 @@ test("uses Facebook page URLs for AI-planned Meta page probes with Curious actor
     facebookAdsActorId: "curious_coder~facebook-ads-library-scraper",
     async runFacebookAdsLibrary(input) {
       apifyInputs.push(input);
-      assert.equal(input.urls[0].url, "https://www.facebook.com/reformashoymadrid");
       assert.equal(input.limitPerSource, 10);
       assert.equal(input.count, 10);
-      assert.equal(input.scrapeAdDetails, false);
       return [];
     }
   };
@@ -3124,7 +3140,12 @@ test("uses Facebook page URLs for AI-planned Meta page probes with Curious actor
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(apifyInputs.length, 1);
+  assert.deepEqual(apifyInputs.map((input) => input.urls[0].url), [
+    "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&is_targeted_country=false&media_type=all&q=reformashoy.com&search_type=keyword_unordered",
+    "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&is_targeted_country=false&media_type=all&q=Reformas+Hoy&search_type=keyword_unordered",
+    "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&is_targeted_country=false&media_type=all&q=reformashoy&search_type=keyword_unordered",
+    "https://www.facebook.com/reformashoymadrid"
+  ]);
 });
 
 test("keeps CrawlerBros Facebook Ads actor fallback capped when configured", async () => {
@@ -3145,7 +3166,6 @@ test("keeps CrawlerBros Facebook Ads actor fallback capped when configured", asy
     facebookAdsActorId: "crawlerbros~facebook-ads-library-scraper",
     async runFacebookAdsLibrary(input) {
       apifyInputs.push(input);
-      assert.deepEqual(input.searchTerms, ["planned.example"]);
       assert.equal(input.country, "ES");
       assert.equal(input.adActiveStatus, "active");
       assert.equal(input.resultsPerSearch, 3);
@@ -3169,7 +3189,11 @@ test("keeps CrawlerBros Facebook Ads actor fallback capped when configured", asy
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(apifyInputs.length, 1);
+  assert.deepEqual(apifyInputs.map((input) => input.searchTerms[0]), [
+    "planned.example",
+    "Planned Demo",
+    "planned"
+  ]);
   assert.notEqual(enrichment.meta.active, true);
 });
 
@@ -3221,7 +3245,7 @@ test("stops Meta Apify fallback after quota errors", async () => {
   ));
 });
 
-test("does not spend Meta Apify on seed-only sources", async () => {
+test("uses specific seed domain and social sources but not generic Meta sources", async () => {
   let apifyCalls = 0;
   const firecrawl = {
     async search() {
@@ -3259,8 +3283,10 @@ test("does not spend Meta Apify on seed-only sources", async () => {
     now: new Date("2026-06-05T00:00:00Z")
   });
 
-  assert.equal(apifyCalls, 0);
-  assert.notEqual(enrichment.meta.sourceProvider, "apify");
+  assert.equal(apifyCalls, 4);
+  assert.ok(enrichment.meta.attempts.some((attempt) => attempt.query === "seed-only.example"));
+  assert.ok(enrichment.meta.attempts.some((attempt) => attempt.query === "@seed_only"));
+  assert.ok(enrichment.meta.attempts.every((attempt) => attempt.query !== "Madrid reformas" && attempt.query !== "reformas madrid"));
 });
 
 test("passes empty precise Apify results as inactive evidence for Deepseek", async () => {
