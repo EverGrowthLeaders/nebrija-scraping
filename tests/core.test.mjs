@@ -65,7 +65,8 @@ function adsAiResolverFromEvidence(assertEvidence) {
     const decide = (provider) => {
       const attempts = evidence.providers[provider].attempts || [];
       const active = attempts.find((attempt) => attempt.activeSignal === true && attempt.landingUrls?.length) ||
-        attempts.find((attempt) => attempt.activeSignal === true);
+        attempts.find((attempt) => attempt.activeSignal === true) ||
+        attempts.find((attempt) => attempt.reasonSignal === "apify_meta_active_item_candidate" && attempt.matchedFields?.length);
       if (active) {
         return {
           active: true,
@@ -2889,7 +2890,11 @@ test("uses Curious Coder Facebook Ads actor input and normalizes its output", as
     aiResolver: adsAiResolverFromEvidence(({ evidence, phase }) => {
       if (phase === "firecrawl_apify") {
         const apifyAttempt = evidence.providers.meta.attempts.find((attempt) => attempt.sourceProvider === "apify");
-        assert.equal(apifyAttempt.activeSignal, true);
+        assert.equal(apifyAttempt.activeSignal, null);
+        assert.equal(apifyAttempt.statusSignal, "unknown");
+        assert.equal(apifyAttempt.reasonSignal, "apify_meta_active_item_candidate");
+        assert.equal(apifyAttempt.identityValidationRequired, true);
+        assert.equal(apifyAttempt.sourceIdentityEvidence.scope, "meta_domain_keyword");
         assert.equal(apifyAttempt.adArchiveId, "123456789");
         assert.equal(apifyAttempt.latestDetectedDate, "2026-06-04");
       }
@@ -3283,7 +3288,12 @@ test("falls back to Apify for matched active Meta ads only", async () => {
     checkedAt: "2026-06-05T00:00:00.000Z",
     note: "Estimación por impresiones públicas de Meta Ads Library multiplicadas por CPM benchmark del nicho."
   });
-  assert.ok(enrichment.meta.attempts.some((attempt) => attempt.sourceProvider === "apify" && attempt.active === true));
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.active === null &&
+    attempt.reason === "apify_meta_active_item_candidate" &&
+    attempt.identityValidationRequired === true
+  ));
   assert.ok(enrichment.google.attempts.length >= 1);
 });
 

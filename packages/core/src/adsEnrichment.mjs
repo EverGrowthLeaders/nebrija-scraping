@@ -1372,6 +1372,9 @@ function evidence({ provider, status, active, confidence, sourceUrl, reason, lat
     samplePageName: context?.samplePageName || null,
     adArchiveId: context?.adArchiveId || null,
     actorId: context?.actorId || null,
+    identityValidationRequired: context?.identityValidationRequired === true,
+    sourceIdentityEvidence: context?.sourceIdentityEvidence || null,
+    scraperObservation: context?.scraperObservation || null,
     spendEstimate,
     landingUrl: landingUrls[0] || null,
     landingUrls,
@@ -1410,6 +1413,9 @@ function adAttempt(probe, result, url) {
     matchedFields: result.matchedFields || null,
     adArchiveId: result.adArchiveId || null,
     actorId: result.actorId || probe.actorId || null,
+    identityValidationRequired: result.identityValidationRequired === true,
+    sourceIdentityEvidence: result.sourceIdentityEvidence || null,
+    scraperObservation: result.scraperObservation || null,
     spendEstimate: result.spendEstimate || null,
     landingUrl: result.landingUrl || null,
     landingUrls: Array.isArray(result.landingUrls) ? result.landingUrls.slice(0, 8) : [],
@@ -1533,7 +1539,12 @@ async function resolveAdsActivityWithDeepInfra({ evidence, aiConfig = config.ads
         content: [
           "You decide whether a local business is currently running active ads on Meta and Google.",
           "Use only the supplied Firecrawl and Apify evidence.",
-          "Do not rely on generic scraper labels as proof. Verify advertiser identity, business/domain/social match, recency and official library context.",
+          "Treat activeSignal/statusSignal/reasonSignal as scraper observations, never as final proof.",
+          "Do not rely on generic scraper labels as proof. Verify advertiser identity, business/domain/social match, recency and official library context from raw evidence.",
+          "For Meta, active=true requires an exact advertiser identity match: official Facebook page/page id/handle source evidence, page name plus domain/social handle, or landing URL controlled by the business.",
+          "For Meta, exact page-scoped sourceIdentityEvidence may support active=true only when it is tied to the business by the supplied business/social/discovery evidence; keyword and domain sources cannot.",
+          "For Meta, do not require landing URLs or ad creative when an exact official page/page_id source has itemsSeen > 0 and scraperObservation says active Meta items; the active-status query itself is current ads evidence.",
+          "For Meta, reject domain/keyword query hits when the returned page/ad identity is unrelated or merely mentions the domain.",
           "Return active=false only when official evidence clearly says there are no active/current ads for this exact business query.",
           "Return active=null/status=unknown when pages are loading, blocked, unrelated, ambiguous, stale, or identity is not proven.",
           "Return only valid JSON. Do not include markdown."
@@ -1668,9 +1679,13 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
           "You are a skeptical auditor for Meta and Google Ads Library enrichment.",
           "Use only the supplied evidence and proposed decision.",
           "Confirm a proposed active=true or active=false only when the exact business identity and current ads state are proven by official or directly relevant evidence.",
+          "Treat the proposed decision and scraper activeSignal as claims to audit, not evidence by themselves.",
+          "For Meta active=true, require evidence tying the active ad to the exact business page, page id, page handle, page name plus domain/social handle, or owned landing URL.",
+          "Exact page-scoped sourceIdentityEvidence may be sufficient only when the source itself is proven to be the business official page; never apply that to keyword/domain sources.",
+          "For exact official Meta page/page_id Apify evidence, itemsSeen > 0 from an active-status query is enough current-ads evidence even when scrapeAdDetails is disabled and landing URLs are absent.",
           "Reject when advertiser identity, domain, social handle, recency, selected attempts, or official library context are ambiguous.",
           adjudication
-            ? "As final adjudicator, treat exact-domain Google Transparency evidence and exact-page/exact-handle Meta Apify evidence as directly relevant when the business domain, page, handle or landing identity matches; confirm active=false for exact-domain Apify zero-result evidence unless another selected attempt proves active ads."
+            ? "As final adjudicator, treat exact-domain Google Transparency evidence as directly relevant when the business domain or landing identity matches; confirm active=false for exact-domain Apify zero-result evidence unless another selected attempt proves active ads. For Meta, page-scoped sourceIdentityEvidence plus active-status itemsSeen > 0 can support active only when it is proven to be the business official page; never auto-confirm keyword/domain Apify signals."
             : "",
           "Return unknown when more evidence is needed. Return only valid JSON."
         ].filter(Boolean).join(" ")
@@ -1931,9 +1946,8 @@ function aiVerificationConfirmedByExactEvidence({ provider, current, rawVerifica
 
 function isAuthoritativeExactAdsDecision(current = {}) {
   if (typeof current.active !== "boolean") return false;
+  if (current.provider === "meta" || current.reason?.startsWith?.("apify_meta_")) return false;
   if (current.sourceProvider === "apify" && [
-    "apify_active_items_for_page_scoped_source",
-    "apify_active_ad_matched",
     "apify_google_recent_domain_ad",
     "apify_google_no_recent_domain_ads"
   ].includes(current.reason)) {
@@ -2200,8 +2214,9 @@ function buildAdsActivityEvidencePack({
       "A provider is inactive only when official library evidence clearly says no active/current ads for this exact business query.",
       "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
       "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
-      "For Meta, an Apify active result from a page-scoped Facebook source URL is exact page evidence; keyword or domain searches are not page-scoped and still need identity proof.",
-      "For Meta, an Apify active result from an exact business-domain source query is domain evidence; broad business-name keywords are not exact-domain evidence.",
+      "For Meta, Apify sources are candidates until the model verifies identity. Exact page/page_id/handle sourceIdentityEvidence can be used as identity evidence; keyword and domain sources cannot.",
+      "For Meta, exact official page/page_id Apify active-status results do not need landing URLs or creative details; this keeps Apify usage low.",
+      "For Meta, domain mentions inside unrelated ads are not owned landing evidence.",
       "Copy landing URLs only from the evidence. Never invent URLs, advertiser names, profile names or dates."
     ]
   };
@@ -2249,8 +2264,9 @@ function buildAdsActivityVerificationPack({
       "Confirm only the exact proposed boolean decision for each provider.",
       "confirmed=true requires a selected attempt or source URL that supports the same active boolean for the exact business identity.",
       "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
-      "For Meta, accept active=true when the selected evidence is an Apify active result from a page-scoped Facebook source URL for the planned page; do not apply this to keyword or domain searches.",
-      "For Meta, accept active=true when the selected evidence is an Apify active result from an exact business-domain source query; do not apply this to broad business-name keywords.",
+      "For Meta, accept active=true from Apify only when selected evidence proves either exact official page/page_id/handle source identity or returned item advertiser identity.",
+      "For Meta, if selected evidence proves exact official page/page_id source identity, itemsSeen > 0 from an active-status Apify query is sufficient current-active evidence without landing URLs.",
+      "For Meta, exact domain/keyword query hits are not enough when the returned page/ad identity is unrelated or only mentions the domain.",
       "Reject inactive when the evidence only shows a failed scrape, blocked page, generic no-results text, or an unverified query.",
       "Use unknown when the evidence is insufficient and set needsMoreEvidence=true."
     ]
@@ -2281,6 +2297,9 @@ function providerEvidenceForAi(providerEvidence = {}, provider) {
     total: attempt.total ?? null,
     samplePageName: attempt.samplePageName || null,
     adArchiveId: attempt.adArchiveId || null,
+    identityValidationRequired: attempt.identityValidationRequired === true,
+    sourceIdentityEvidence: attempt.sourceIdentityEvidence || null,
+    scraperObservation: attempt.scraperObservation || null,
     evidenceSnippet: compactSnippet(attempt.evidenceSnippet || "", 1100)
   })).sort((left, right) => rankAdsAiAttempt(right) - rankAdsAiAttempt(left));
   return {
@@ -2304,8 +2323,8 @@ function rankAdsAiAttempt(attempt = {}) {
   if (attempt.activeSignal === false) score += 55;
   if (attempt.statusSignal === "active") score += 40;
   if (attempt.statusSignal === "inactive") score += 30;
-  if (attempt.reasonSignal === "apify_active_items_for_page_scoped_source") score += 50;
-  if (attempt.reasonSignal === "apify_active_ad_matched") score += 45;
+  if (attempt.reasonSignal === "apify_meta_active_item_candidate") score += 48;
+  if (attempt.reasonSignal === "apify_meta_page_scoped_candidate") score += 42;
   if (attempt.reasonSignal === "google_domain_ads_found") score += 45;
   if (Array.isArray(attempt.matchedFields) && attempt.matchedFields.length) score += 20;
   if (attempt.itemsSeen > 0) score += 10;
@@ -2430,6 +2449,11 @@ function betterMetaFallback(current, next) {
 }
 
 function isStrongMetaApifyResult(result = {}) {
+  if (result.reason === "apify_meta_active_item_candidate" &&
+    Array.isArray(result.matchedFields) &&
+    result.matchedFields.length > 0) {
+    return true;
+  }
   if (result.active !== true) return false;
   if ([
     "apify_active_items_for_page_scoped_source",
@@ -2684,11 +2708,11 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
     const evidenceSnippet = compactSnippet(matchedItems.map(({ item }) => collectApifyItemStrings(item).join("\n")).join("\n---\n"), 1800);
     return evidence({
       provider: "meta",
-      status: "active",
-      active: true,
-      confidence: Math.max(Number(source.confidence || 0), bestMatch.match.confidence),
+      status: "unknown",
+      active: null,
+      confidence: Math.max(Number(source.confidence || 0), bestMatch.match.confidence, 0.55),
       sourceUrl: apifyMetaItemUrl(bestMatch.item) || source.sourceUrl,
-      reason: "apify_active_ad_matched",
+      reason: "apify_meta_active_item_candidate",
       latestDetectedDate,
       context: {
         ...source,
@@ -2700,6 +2724,9 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
         adArchiveId: apifyMetaItemAdId(bestMatch.item),
         landingUrls,
         spendEstimate,
+        identityValidationRequired: true,
+        sourceIdentityEvidence: metaSourceIdentityEvidence(source, business),
+        scraperObservation: "apify_returned_active_meta_item_with_local_identity_candidate",
         evidenceSnippet
       }
     });
@@ -2707,6 +2734,7 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
 
   const evidenceSnippet = compactSnippet(activeItems.map((item) => collectApifyItemStrings(item).join("\n")).join("\n---\n"), 1800);
   if (activeItems.length && isPageScopedApifyMetaSource(source)) {
+    const sourceIdentityEvidence = metaSourceIdentityEvidence(source, business);
     const latestDetectedDate = apifyItemDate(activeItems[0], now);
     const landingUrls = activeItems.flatMap((item) => collectApifyLandingUrls(item, business)).slice(0, 8);
     const spendEstimate = estimateMetaSpendFromApifyItems({
@@ -2719,15 +2747,15 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
     });
     return evidence({
       provider: "meta",
-      status: "active",
-      active: true,
-      confidence: Math.max(Number(source.confidence || 0), 0.9),
+      status: "unknown",
+      active: null,
+      confidence: Math.max(Number(source.confidence || 0), 0.5),
       sourceUrl: apifyMetaItemUrl(activeItems[0]) || source.sourceUrl,
-      reason: "apify_active_items_for_page_scoped_source",
+      reason: "apify_meta_page_scoped_candidate",
       latestDetectedDate,
       context: {
         ...source,
-        matchedFields: ["facebook_handle"],
+        matchedFields: sourceIdentityEvidence.matchedBusinessIdentityFields || [],
         itemsSeen: items.length,
         total: apifyTotal(items),
         matchedItems: activeItems.length,
@@ -2735,7 +2763,10 @@ function inferApifyMetaActivity({ items = [], business, source, now }) {
         adArchiveId: apifyMetaItemAdId(activeItems[0]),
         landingUrls,
         spendEstimate,
-        evidenceSnippet: evidenceSnippet || "Apify returned active Meta Ads Library items for a page-scoped Facebook source URL."
+        identityValidationRequired: true,
+        sourceIdentityEvidence,
+        scraperObservation: "apify_returned_active_meta_items_for_page_scoped_source",
+        evidenceSnippet: evidenceSnippet || "Apify returned active Meta Ads Library items for a page-scoped Facebook source URL. AI must validate returned advertiser identity before active=true."
       }
     });
   }
@@ -2806,6 +2837,98 @@ function isPageScopedApifyMetaSource(source = {}) {
     return false;
   } catch {
     return false;
+  }
+}
+
+function metaSourceIdentityEvidence(source = {}, business = {}) {
+  const sourceUrl = String(source.sourceUrl || "");
+  const query = metaApifySearchTerm(source);
+  const searchType = normalizeMetaSearchType(source.searchType || metaSearchTypeFromUrl(sourceUrl));
+  const facebookPageUrl = facebookPageUrlFromMetaSource({ query, searchType, sourceUrl }) || parseFacebookPageUrl(sourceUrl);
+  const businessFacebookUrl = parseFacebookPageUrl(business.facebook || "");
+  const businessFacebookId = facebookPageIdFromUrl(business.facebook || businessFacebookUrl);
+  const businessFacebookHandle = extractSocialHandle(business.facebook || businessFacebookUrl, "facebook");
+  const businessInstagramHandle = extractSocialHandle(business.instagram, "instagram");
+  const matchedBusinessIdentityFields = [];
+  const evidence = compactObject({
+    scope: isPageScopedApifyMetaSource(source)
+      ? "meta_page_scoped"
+      : isExactDomainApifyMetaSource({ source, business: { website: `https://${query}` } })
+        ? "meta_domain_keyword"
+        : "meta_keyword_or_unknown",
+    searchType,
+    query,
+    facebookPageUrl,
+    plannedBy: source.plannedBy || null,
+    discoveryReason: source.discoveryReason || null,
+    strategy: source.strategy || null
+  });
+  try {
+    const parsed = new URL(sourceUrl);
+    const pageId = parsed.searchParams.get("page_id") || parsed.searchParams.get("view_all_page_id") || "";
+    const libraryId = parsed.searchParams.get("id") || "";
+    const pageHandle = pageId && !/^\d+$/.test(pageId) ? pageId : extractSocialHandle(facebookPageUrl || query, "facebook");
+    if (pageId && /^\d+$/.test(pageId) && businessFacebookId && pageId === businessFacebookId) {
+      matchedBusinessIdentityFields.push("facebook_page_id");
+    }
+    if (businessFacebookUrl && facebookPageUrl && normalizeText(businessFacebookUrl) === normalizeText(facebookPageUrl)) {
+      matchedBusinessIdentityFields.push("facebook_page_url");
+    }
+    if (pageHandle && businessFacebookHandle && normalizeText(pageHandle) === normalizeText(businessFacebookHandle)) {
+      matchedBusinessIdentityFields.push("facebook_handle");
+    }
+    if (pageHandle && businessInstagramHandle && normalizeText(pageHandle) === normalizeText(businessInstagramHandle)) {
+      matchedBusinessIdentityFields.push("instagram_handle");
+    }
+    return compactObject({
+      ...evidence,
+      pageId: /^\d+$/.test(pageId) ? pageId : null,
+      pageHandle,
+      adLibraryId: libraryId || null,
+      businessFacebookUrl,
+      businessFacebookId,
+      businessFacebookHandle,
+      businessInstagramHandle,
+      matchedBusinessIdentityFields: unique(matchedBusinessIdentityFields),
+      sourceMatchesBusinessIdentity: matchedBusinessIdentityFields.length > 0
+    });
+  } catch {
+    const pageHandle = extractSocialHandle(facebookPageUrl || query, "facebook");
+    if (businessFacebookUrl && facebookPageUrl && normalizeText(businessFacebookUrl) === normalizeText(facebookPageUrl)) {
+      matchedBusinessIdentityFields.push("facebook_page_url");
+    }
+    if (pageHandle && businessFacebookHandle && normalizeText(pageHandle) === normalizeText(businessFacebookHandle)) {
+      matchedBusinessIdentityFields.push("facebook_handle");
+    }
+    if (pageHandle && businessInstagramHandle && normalizeText(pageHandle) === normalizeText(businessInstagramHandle)) {
+      matchedBusinessIdentityFields.push("instagram_handle");
+    }
+    return compactObject({
+      ...evidence,
+      pageHandle,
+      businessFacebookUrl,
+      businessFacebookId,
+      businessFacebookHandle,
+      businessInstagramHandle,
+      matchedBusinessIdentityFields: unique(matchedBusinessIdentityFields),
+      sourceMatchesBusinessIdentity: matchedBusinessIdentityFields.length > 0
+    });
+  }
+}
+
+function facebookPageIdFromUrl(value) {
+  try {
+    const parsed = new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    const host = parsed.hostname.replace(/^www\./i, "").toLowerCase();
+    if (host !== "facebook.com" && host !== "fb.com") return "";
+    if (parsed.pathname.replace(/\/+$/, "") === "/profile.php") {
+      const id = parsed.searchParams.get("id") || "";
+      return /^\d+$/.test(id) ? id : "";
+    }
+    const id = parsed.searchParams.get("id") || "";
+    return /^\d+$/.test(id) ? id : "";
+  } catch {
+    return "";
   }
 }
 
