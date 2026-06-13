@@ -789,7 +789,7 @@ async function renderCampaignDetail({ params }) {
     </div>
 
     <div style="margin-top:16px">
-      <a class="btn" href="#/leads?campaignId=${encodeURIComponent(job.id)}">
+      <a class="btn" href="#/leads?campaignIds=${encodeURIComponent(job.id)}">
         Ver leads de esta campaña →
       </a>
     </div>
@@ -820,8 +820,8 @@ async function renderLeadsList({ search }) {
   const status = search.get("status") || "";
   const niche = search.get("niche") || "";
   const city = search.get("city") || "";
-  const campaignId = search.get("campaignId") || "";
-  const listId = search.get("listId") || "";
+  const campaignIds = selectedFilterValues(search, "campaignIds", "campaignId");
+  const listIds = selectedFilterValues(search, "listIds", "listId");
   const phoneType = search.get("phoneType") || "";
   const adsActive = search.get("adsActive") || "";
   const adsFunnelType = search.get("adsFunnelType") || "";
@@ -831,19 +831,24 @@ async function renderLeadsList({ search }) {
   const [leadLists, campaigns, selectedCampaignResult] = await Promise.all([
     api("/api/lead-lists"),
     api("/api/campaigns?limit=200"),
-    campaignId ? api(`/api/campaigns/${encodeURIComponent(campaignId)}`).catch(() => null) : null
+    campaignIds.length === 1 ? api(`/api/campaigns/${encodeURIComponent(campaignIds[0])}`).catch(() => null) : null
   ]);
   const campaignRows = [...(campaigns.rows || [])];
   if (selectedCampaignResult?.job && !campaignRows.some((job) => job.id === selectedCampaignResult.job.id)) {
     campaignRows.unshift(selectedCampaignResult.job);
   }
-  const selectedCampaign = campaignRows.find((job) => job.id === campaignId);
+  const selectedCampaigns = campaignRows.filter((job) => campaignIds.includes(job.id));
+  const campaignCopy = selectedCampaigns.length === 1
+    ? ` · Campaña: ${escape(formatCampaignLabel(selectedCampaigns[0]))}`
+    : selectedCampaigns.length > 1
+      ? ` · ${fmtNumber(selectedCampaigns.length)} campañas`
+      : "";
 
   view.innerHTML = `
     <div class="row" style="margin-bottom:14px">
       <div class="grow">
         <h1 class="headline">Leads</h1>
-        <p class="subhead">Negocios capturados, enriquecidos y cualificados.${selectedCampaign ? ` · Campaña: ${escape(formatCampaignLabel(selectedCampaign))}` : ""}</p>
+        <p class="subhead">Negocios capturados, enriquecidos y cualificados.${campaignCopy}</p>
       </div>
       <button class="btn btn--primary" data-action="new-lead" type="button">
         <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5Z"/></svg>
@@ -871,17 +876,18 @@ async function renderLeadsList({ search }) {
         <input class="input" name="city" placeholder="Ciudad" value="${escape(city)}" style="max-width:140px" />
         <label class="lead-filter">
           <span>Campaña</span>
-          <select class="select" name="campaignId">
-            <option value="">Todas las campañas</option>
-            ${campaignRows.map((j) => renderCampaignOption(j, campaignId)).join("")}
+          <select class="select" name="campaignIds" multiple size="4" style="min-width:240px">
+            ${campaignRows.map((j) => renderCampaignOption(j, campaignIds)).join("")}
           </select>
         </label>
-        <select class="select" name="listId" style="max-width:200px">
-          <option value="">Todas las listas</option>
+        <label class="lead-filter">
+          <span>Lista</span>
+          <select class="select" name="listIds" multiple size="4" style="min-width:220px">
           ${(leadLists.rows || [])
-            .map((list) => `<option value="${escape(list.id)}" ${list.id === listId ? "selected" : ""}>${escape(list.name)}</option>`)
+            .map((list) => `<option value="${escape(list.id)}" ${listIds.includes(list.id) ? "selected" : ""}>${escape(list.name)}</option>`)
             .join("")}
-        </select>
+          </select>
+        </label>
         <select class="select" name="phoneType" style="max-width:170px">
           <option value="">Cualquier teléfono</option>
           ${renderPhoneTypeOptions(phoneType)}
@@ -979,7 +985,7 @@ async function renderLeadsList({ search }) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const params = new URLSearchParams();
-    for (const [k, v] of fd.entries()) if (v) params.set(k, v);
+    for (const [k, v] of fd.entries()) if (v) params.append(k, v);
     location.hash = `#/leads${params.toString() ? "?" + params.toString() : ""}`;
   });
   $("[data-action='new-lead']", view).addEventListener("click", openLeadModal);
@@ -989,8 +995,8 @@ async function renderLeadsList({ search }) {
   if (status) params.set("status", status);
   if (niche) params.set("niche", niche);
   if (city) params.set("city", city);
-  if (campaignId) params.set("campaignId", campaignId);
-  if (listId) params.set("listId", listId);
+  for (const campaignId of campaignIds) params.append("campaignIds", campaignId);
+  for (const listId of listIds) params.append("listIds", listId);
   if (phoneType) params.set("phoneType", phoneType);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
@@ -1045,9 +1051,17 @@ async function renderLeadsList({ search }) {
   );
 }
 
-function renderCampaignOption(job, selectedId = "") {
+function selectedFilterValues(search, pluralKey, singularKey) {
+  return Array.from(new Set([
+    ...search.getAll(pluralKey).flatMap((value) => String(value || "").split(",")),
+    ...search.getAll(singularKey).flatMap((value) => String(value || "").split(","))
+  ].map((value) => value.trim()).filter(Boolean)));
+}
+
+function renderCampaignOption(job, selectedIds = []) {
+  const selected = Array.isArray(selectedIds) ? selectedIds.includes(job.id) : job.id === selectedIds;
   const count = job.leads_count != null ? ` · ${fmtNumber(job.leads_count)} leads` : "";
-  return `<option value="${escape(job.id)}" ${job.id === selectedId ? "selected" : ""}>${escape(formatCampaignLabel(job))}${escape(count)}</option>`;
+  return `<option value="${escape(job.id)}" ${selected ? "selected" : ""}>${escape(formatCampaignLabel(job))}${escape(count)}</option>`;
 }
 
 function renderPhoneTypeOptions(selected = "") {
@@ -1101,7 +1115,7 @@ function renderLeadCampaignCell(business = {}) {
   if (!business.extraction_job_id) return `<span class="faint">Sin campaña</span>`;
   const label = formatCampaignLabel({ niche: business.campaign_niche, city: business.campaign_city, id: business.extraction_job_id });
   return `
-    <a class="campaign-mini" href="#/leads?campaignId=${encodeURIComponent(business.extraction_job_id)}" title="Filtrar por esta campaña">
+    <a class="campaign-mini" href="#/leads?campaignIds=${encodeURIComponent(business.extraction_job_id)}" title="Filtrar por esta campaña">
       <span>${escape(label)}</span>
     </a>
   `;
@@ -1995,7 +2009,7 @@ async function renderListDetail({ params }) {
         <h1 class="headline">${escape(list.name)}</h1>
         <p class="subhead">${escape(list.description || "CRM de cold calling")} · ${fmtNumber(list.leads_count)} leads</p>
       </div>
-      <a class="btn" href="#/leads?listId=${encodeURIComponent(list.id)}">Ver en Leads</a>
+      <a class="btn" href="#/leads?listIds=${encodeURIComponent(list.id)}">Ver en Leads</a>
     </div>
 
     <div class="crm-board" data-list-id="${escape(list.id)}">

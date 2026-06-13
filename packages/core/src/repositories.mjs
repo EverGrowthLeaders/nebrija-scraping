@@ -1276,7 +1276,9 @@ export async function listBusinesses({
   city,
   search,
   extractionJobId,
+  extractionJobIds,
   listId,
+  listIds,
   phoneType,
   adsActive,
   adsFunnelType,
@@ -1308,6 +1310,13 @@ export async function listBusinesses({
     params.push(extractionJobId);
     where.push(`b.extraction_job_id = $${params.length}`);
   }
+  const campaignIds = Array.isArray(extractionJobIds)
+    ? [...new Set(extractionJobIds.map((id) => String(id || "").trim()).filter(Boolean))]
+    : [];
+  if (campaignIds.length) {
+    params.push(campaignIds);
+    where.push(`b.extraction_job_id = ANY($${params.length}::uuid[])`);
+  }
   if (listId) {
     params.push(listId);
     where.push(`EXISTS (
@@ -1316,6 +1325,20 @@ export async function listBusinesses({
         JOIN lead_lists ll ON ll.id = lm.lead_list_id
        WHERE lm.business_id = b.id
          AND lm.lead_list_id = $${params.length}
+         AND ll.tenant_id = b.tenant_id
+    )`);
+  }
+  const selectedListIds = Array.isArray(listIds)
+    ? [...new Set(listIds.map((id) => String(id || "").trim()).filter(Boolean))]
+    : [];
+  if (selectedListIds.length) {
+    params.push(selectedListIds);
+    where.push(`EXISTS (
+      SELECT 1
+        FROM lead_list_members lm
+        JOIN lead_lists ll ON ll.id = lm.lead_list_id
+       WHERE lm.business_id = b.id
+         AND lm.lead_list_id = ANY($${params.length}::uuid[])
          AND ll.tenant_id = b.tenant_id
     )`);
   }

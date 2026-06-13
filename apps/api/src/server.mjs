@@ -524,6 +524,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/businesses") {
+      const campaignIds = queryIdList(url, "campaignIds", "campaignId", "extractionJobIds", "extractionJobId");
+      const listIds = queryIdList(url, "listIds", "listId");
       const result = await listBusinesses({
         ...parsePaging(url),
         tenantId: auth.tenantId,
@@ -531,8 +533,10 @@ const server = http.createServer(async (req, res) => {
         niche: url.searchParams.get("niche") || undefined,
         city: url.searchParams.get("city") || undefined,
         search: url.searchParams.get("search") || undefined,
-        extractionJobId: url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined,
-        listId: url.searchParams.get("listId") || undefined,
+        extractionJobId: campaignIds.length ? undefined : url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined,
+        extractionJobIds: campaignIds,
+        listId: listIds.length ? undefined : url.searchParams.get("listId") || undefined,
+        listIds,
         phoneType: url.searchParams.get("phoneType") || undefined,
         adsActive: url.searchParams.get("adsActive") || undefined,
         adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined,
@@ -1943,6 +1947,16 @@ function normalizeIdList(value) {
   if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean);
   if (typeof value === "string") return value.split(",").map((item) => item.trim()).filter(Boolean);
   return [];
+}
+
+function queryIdList(url, ...keys) {
+  const values = [];
+  for (const key of keys) {
+    for (const value of url.searchParams.getAll(key)) {
+      values.push(...normalizeIdList(value));
+    }
+  }
+  return Array.from(new Set(values));
 }
 
 function compactReformasMadridReport(report = {}) {
