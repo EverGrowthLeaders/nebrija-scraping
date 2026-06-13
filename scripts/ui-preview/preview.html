@@ -85,5 +85,16 @@
     <div class="toast-host" id="toast-host" aria-live="polite"></div>
 
     <script type="module" src="/apps/web/public/assets/app.js"></script>
+    <script>
+      // Dev-only: open multi-select dropdowns for screenshots when ?menus=open
+      if (location.search.includes("menus=open")) {
+        const open = () => {
+          const els = document.querySelectorAll("details.lead-filter--multi");
+          if (els.length) els.forEach((d) => (d.open = true));
+          else setTimeout(open, 200);
+        };
+        setTimeout(open, 600);
+      }
+    </script>
   </body>
 </html>

@@ -794,8 +794,8 @@ a {
   line-height: 1;
 }
 .lead-filter--multi[open] summary {
-  border-color: rgba(255, 215, 0, 0.5);
-  box-shadow: 0 0 0 3px rgba(255, 215, 0, 0.1);
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
   background: var(--surface-3);
 }
 .lead-filter--multi summary span {
@@ -816,6 +816,14 @@ a {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Let filter toolbars overflow so multi-select dropdowns aren't clipped
+   by the .table-wrap (overflow:hidden) that contains them. */
+.table-wrap:has(.multi-filter__menu) {
+  overflow: visible;
+}
+.table-toolbar:has(.multi-filter__menu) {
+  overflow: visible;
+}
 .multi-filter__menu {
   position: absolute;
   z-index: 30;
@@ -827,8 +835,8 @@ a {
   padding: 6px;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  box-shadow: var(--shadow);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
 }
 .multi-filter__option {
   display: flex;
