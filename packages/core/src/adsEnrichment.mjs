@@ -2819,12 +2819,8 @@ function shouldRunBrowserAdsFallback({ resolved = {}, browser, mode, aiResolver,
 function shouldRunLateMetaApifyFallback({ resolved = {}, apify, mode, aiResolver, aiConfig, discoveryPlan, apifyMeta, browserMeta }) {
   const normalizedMode = normalizeApifyFallbackMode(mode);
   if (normalizedMode === "off") return false;
-  if (discoveryPlan?.ai?.status !== "planned") return false;
-  if (!apify || apify.enabled === false || typeof apify.runFacebookAdsLibrary !== "function") return false;
-  if (!canUseAdsActivityAi({ aiResolver, aiConfig })) return false;
+  if (!apify || typeof apify.runFacebookAdsLibrary !== "function") return false;
   if (apifyMetaHasAttempts(apifyMeta)) return false;
-  const meta = resolved?.meta;
-  if (!meta || typeof meta.active === "boolean") return false;
   const browserAttempts = Array.isArray(browserMeta?.attempts) ? browserMeta.attempts : [];
   return browserAttempts.some((attempt) => attempt.reason === "browser_meta_no_results_unverified");
 }
