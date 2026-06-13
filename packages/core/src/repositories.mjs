@@ -1360,15 +1360,16 @@ export async function listBusinesses({
       .split(",")
       .map((value) => value.trim().toLowerCase())
       .filter(Boolean);
-    if (platforms.includes("any")) {
-      // legacy "any" → advertising on at least one platform
-      where.push(`(b.ads_meta_active IS TRUE OR b.ads_google_active IS TRUE)`);
+    if (platforms.includes("both")) {
+      // "Ambas a la vez" → must advertise on Meta AND Google
+      where.push(`(b.ads_meta_active IS TRUE AND b.ads_google_active IS TRUE)`);
     } else {
-      // multi-select: every selected platform must be active ("both" kept for legacy)
-      const wantsMeta = platforms.includes("meta") || platforms.includes("both");
-      const wantsGoogle = platforms.includes("google") || platforms.includes("both");
-      if (wantsMeta) where.push(`b.ads_meta_active IS TRUE`);
-      if (wantsGoogle) where.push(`b.ads_google_active IS TRUE`);
+      // multi-select: match leads active on ANY of the selected platforms (OR)
+      const conditions = [];
+      if (platforms.includes("any")) conditions.push(`(b.ads_meta_active IS TRUE OR b.ads_google_active IS TRUE)`);
+      if (platforms.includes("meta")) conditions.push(`b.ads_meta_active IS TRUE`);
+      if (platforms.includes("google")) conditions.push(`b.ads_google_active IS TRUE`);
+      if (conditions.length) where.push(`(${conditions.join(" OR ")})`);
     }
   }
   if (adsFunnelType) {

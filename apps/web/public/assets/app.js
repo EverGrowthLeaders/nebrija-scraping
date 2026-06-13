@@ -979,12 +979,13 @@ async function renderLeadsList({ search }) {
       if (!v || k === "adsPlatforms") continue;
       params.append(k, v);
     }
-    const platforms = fd.getAll("adsPlatforms").filter(Boolean);
-    if (platforms.length) params.set("adsActive", platforms.join(","));
+    const adsValue = adsActiveFromPlatforms(fd.getAll("adsPlatforms").filter(Boolean));
+    if (adsValue) params.set("adsActive", adsValue);
     location.hash = `#/leads${params.toString() ? "?" + params.toString() : ""}`;
   });
   $("[data-action='new-lead']", view).addEventListener("click", openLeadModal);
   $("[data-action='import-leads']", view).addEventListener("click", openLeadImportModal);
+  bindAdsPlatformExclusivity($("[data-bind='ads-platform-menu']", view));
 
   const params = new URLSearchParams();
   if (status) params.set("status", status);
@@ -1264,12 +1265,18 @@ function stripScheme(url) {
 }
 
 // ── Ads-platform filter + domain export helpers ───────────
+// Returns which checkboxes (meta / google / both) should be ticked for a given
+// adsActive value. "both" = strict AND; "any" (legacy) = either, shown as meta+google.
 function selectedAdsPlatforms(value) {
+  const parts = String(value || "")
+    .split(",")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.includes("both")) return ["both"];
   const set = new Set();
-  for (const part of String(value || "").split(",")) {
-    const p = part.trim().toLowerCase();
+  for (const p of parts) {
     if (p === "meta" || p === "google") set.add(p);
-    else if (p === "both" || p === "any") {
+    else if (p === "any") {
       set.add("meta");
       set.add("google");
     }
@@ -1277,18 +1284,43 @@ function selectedAdsPlatforms(value) {
   return [...set];
 }
 
+// Turns the ticked checkboxes into the adsActive value sent to the API.
+function adsActiveFromPlatforms(platforms = []) {
+  if (platforms.includes("both")) return "both";
+  const picks = platforms.filter((p) => p === "meta" || p === "google");
+  return picks.join(",");
+}
+
+// "Ambas a la vez" (AND) is mutually exclusive with the per-platform (OR) picks.
+function bindAdsPlatformExclusivity(menu) {
+  if (!menu) return;
+  const both = $("input[value='both']", menu);
+  const singles = $$("input[value='meta'], input[value='google']", menu);
+  both?.addEventListener("change", () => {
+    if (both.checked) singles.forEach((input) => (input.checked = false));
+  });
+  singles.forEach((input) =>
+    input.addEventListener("change", () => {
+      if (input.checked && both) both.checked = false;
+    })
+  );
+}
+
 function renderAdsPlatformFilter(selected = []) {
   const set = new Set(selected);
-  const labels = { meta: "Meta", google: "Google" };
-  const summary =
-    set.size === 0
+  const summary = set.has("both")
+    ? "Ambas a la vez"
+    : set.size === 0
       ? "Todas"
       : set.size === 2
-        ? "Meta + Google"
-        : labels[[...set][0]] || "1";
+        ? "Meta o Google"
+        : set.has("meta")
+          ? "Meta"
+          : "Google";
   const options = [
     ["meta", "Meta activo"],
-    ["google", "Google activo"]
+    ["google", "Google activo"],
+    ["both", "Ambas a la vez (Meta y Google)"]
   ];
   return `
     <details class="lead-filter lead-filter--multi">
@@ -1296,7 +1328,7 @@ function renderAdsPlatformFilter(selected = []) {
         <span>Ads activos</span>
         <strong>${escape(summary)}</strong>
       </summary>
-      <div class="multi-filter__menu">
+      <div class="multi-filter__menu" data-bind="ads-platform-menu">
         ${options
           .map(
             ([id, label]) => `
