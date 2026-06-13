@@ -502,7 +502,7 @@ async function planAdsLibraryDiscovery({
     const rawPlan = aiDiscoveryPlanner
       ? await aiDiscoveryPlanner({ business, country, socialDiscovery, seedPlan, aiConfig, now })
       : await planAdsDiscoveryWithDeepInfra({ business, country, socialDiscovery, seedPlan, aiConfig, now });
-    return mergeAdsDiscoveryPlans(seedPlan, rawPlan, aiConfig);
+    return mergeAdsDiscoveryPlans(seedPlan, rawPlan, aiConfig, business);
   } catch (error) {
     return {
       ...seedPlan,
@@ -710,7 +710,7 @@ function combineAiUsage(primary, secondary) {
   };
 }
 
-function mergeAdsDiscoveryPlans(seedPlan, rawPlan, aiConfig) {
+function mergeAdsDiscoveryPlans(seedPlan, rawPlan, aiConfig, business = {}) {
   const normalized = normalizeAiAdsDiscoveryPlan(rawPlan);
   if (!normalized) {
     return {
@@ -731,14 +731,14 @@ function mergeAdsDiscoveryPlans(seedPlan, rawPlan, aiConfig) {
       usage: rawPlan?.usage || null,
       cost: estimateDeepseekUsageCost(rawPlan?.usage)
     },
-    metaProbes: uniqueMetaDiscoveryProbes([
+    metaProbes: filterAllowedMetaDiscoveryProbes(uniqueMetaDiscoveryProbes([
       ...normalized.metaProbes,
       ...seedPlan.metaProbes
-    ]).slice(0, 16),
-    metaUrls: uniqueDiscoveryUrls([
+    ]), business).slice(0, 16),
+    metaUrls: filterAllowedMetaDiscoveryUrls(uniqueDiscoveryUrls([
       ...normalized.metaUrls,
       ...seedPlan.metaUrls
-    ]).slice(0, 8),
+    ]), business).slice(0, 8),
     googleSearchQueries: uniqueDiscoveryQueries([
       ...normalized.googleSearchQueries,
       ...seedPlan.googleSearchQueries
@@ -812,6 +812,38 @@ function normalizeDiscoveryUrlEntries(value, provider, plannedBy = "seed") {
     .filter(Boolean);
 }
 
+function filterAllowedMetaDiscoveryProbes(probes = [], business = {}) {
+  return (probes || []).filter((probe) => !isForbiddenGenericMetaSource(probe, business));
+}
+
+function filterAllowedMetaDiscoveryUrls(entries = [], business = {}) {
+  return (entries || []).filter((entry) => !isForbiddenGenericMetaSource(metaSourceFromDiscoveryUrl(entry), business));
+}
+
+function metaSourceFromDiscoveryUrl(entry = {}) {
+  const sourceUrl = entry.url || "";
+  let query = entry.query || "";
+  let searchType = "keyword_unordered";
+  let country = entry.country || null;
+  try {
+    const parsed = new URL(sourceUrl);
+    query = query || parsed.searchParams.get("q") || parsed.searchParams.get("view_all_page_id") || parsed.searchParams.get("page_id") || "";
+    searchType = normalizeMetaSearchType(parsed.searchParams.get("search_type"));
+    country = country || normalizeCountryCode(parsed.searchParams.get("country"));
+  } catch {
+    // Keep normalized entry fields when URL parsing is not available.
+  }
+  return {
+    strategy: entry.strategy || "meta_url",
+    query,
+    searchType,
+    country,
+    sourceUrl,
+    plannedBy: entry.plannedBy,
+    discoveryReason: entry.discoveryReason
+  };
+}
+
 function buildMetaInspectionTargets({ probes = [], explicitUrls = [], country = DEFAULT_COUNTRY } = {}) {
   const targets = [];
   const seen = new Set();
@@ -859,6 +891,7 @@ function buildMetaInspectionTargets({ probes = [], explicitUrls = [], country = 
 
 async function inspectMetaAds({ business, firecrawl, country, now, socialDiscovery, discoveryPlan, requirePlannedEvidence = false }) {
   const discoveryProbes = normalizeMetaDiscoveryProbes(discoveryPlan?.metaProbes || [], "seed")
+    .filter((probe) => !isForbiddenGenericMetaSource(probe, business))
     .filter((probe) => !requirePlannedEvidence || probe.plannedBy === "ai");
   const seedProbes = requirePlannedEvidence
     ? []
@@ -868,6 +901,7 @@ async function inspectMetaAds({ business, firecrawl, country, now, socialDiscove
     ...seedProbes
   ]);
   const explicitUrls = normalizeDiscoveryUrlEntries(discoveryPlan?.metaUrls || [], "meta", "ai")
+    .filter((entry) => !isForbiddenGenericMetaSource(metaSourceFromDiscoveryUrl(entry), business))
     .filter((entry) => !requirePlannedEvidence || entry.plannedBy === "ai");
   const targets = buildMetaInspectionTargets({ probes, explicitUrls, country }).slice(0, 28);
   const attempts = [];

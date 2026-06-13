@@ -1606,6 +1606,49 @@ test("does not build generic Meta ad probes from category-like names", () => {
   assert.equal(byStrategy.website_brand, undefined);
 });
 
+test("filters generic AI-planned Meta discovery URLs and probes", async () => {
+  const scrapedUrls = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      scrapedUrls.push(url);
+      if (url === "https://reformasmadrid.eu") return { markdown: "", html: "", links: [] };
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+
+  await enrichBusinessAds({
+    business: {
+      name: "Reformas Madrid | Baños, Cocinas o Reformas integrales",
+      website: "https://reformasmadrid.eu",
+      city: "Madrid"
+    },
+    firecrawl,
+    apify: null,
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "Reformas Madrid", searchType: "keyword_unordered", country: "ES", reason: "generic_name" },
+        { query: "reformasmadrid.eu", searchType: "keyword_unordered", country: "ES", reason: "exact_domain" }
+      ],
+      metaUrls: [
+        {
+          url: "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&q=Reformas+Madrid&search_type=keyword_unordered",
+          reason: "generic_name_url"
+        }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-05T00:00:00Z")
+  });
+
+  assert.ok(scrapedUrls.some((url) => url.includes("q=reformasmadrid.eu")));
+  assert.ok(scrapedUrls.every((url) => !url.includes("q=Reformas+Madrid")));
+});
+
 test("Meta active inference stores matching strategy and query evidence", () => {
   const result = inferAdsActivity({
     provider: "meta",
