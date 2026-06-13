@@ -116,41 +116,25 @@ export async function enrichBusinessAds({
     browserGoogle = shouldCollectGoogleBrowser
       ? await inspectGoogleAdsWithBrowser({ business: enrichedBusiness, browser, country, now })
       : null;
-    resolved = await resolveAdsActivity({
-      business: enrichedBusiness,
-      providerEvidence: {
-        meta: mergeProviderEvidence(mergeProviderEvidence(mergeProviderEvidence(firecrawlMeta, apifyFirstMeta), resolved.meta?.sourceProvider === "apify" ? resolved.meta : null), browserMeta),
-        google: mergeProviderEvidence(mergeProviderEvidence(firecrawlGoogle, resolved.google?.sourceProvider === "apify" ? resolved.google : null), browserGoogle)
-      },
-      aiResolver,
-      aiVerifier,
-      aiConfig,
-      now,
-      phase: "firecrawl_apify_browser",
-      previousResult: resolved
-    });
-  }
-
-  if (shouldRunLateMetaApifyFallback({
-    resolved,
-    apify,
-    mode: apifyFallbackMode,
-    aiResolver,
-    aiConfig,
-    discoveryPlan,
-    apifyMeta: mergeProviderEvidence(apifyFirstMeta, apifyMeta),
-    browserMeta
-  })) {
-    const lateApifyMeta = await inspectMetaAdsWithApify({
-      business: enrichedBusiness,
+    let lateMetaApifyRan = false;
+    if (shouldRunLateMetaApifyFallback({
       apify,
-      country,
-      now,
-      socialDiscovery,
-      discoveryPlan,
-      allowExactDomainFallback: true
-    });
-    apifyMeta = mergeProviderEvidence(apifyMeta, lateApifyMeta);
+      mode: apifyFallbackMode,
+      apifyMeta: mergeProviderEvidence(apifyFirstMeta, apifyMeta),
+      browserMeta
+    })) {
+      const lateApifyMeta = await inspectMetaAdsWithApify({
+        business: enrichedBusiness,
+        apify,
+        country,
+        now,
+        socialDiscovery,
+        discoveryPlan,
+        allowExactDomainFallback: true
+      });
+      lateMetaApifyRan = true;
+      apifyMeta = mergeProviderEvidence(apifyMeta, lateApifyMeta);
+    }
     resolved = await resolveAdsActivity({
       business: enrichedBusiness,
       providerEvidence: {
@@ -158,13 +142,13 @@ export async function enrichBusinessAds({
           mergeProviderEvidence(mergeProviderEvidence(firecrawlMeta, apifyFirstMeta), apifyMeta),
           browserMeta
         ),
-        google: mergeProviderEvidence(mergeProviderEvidence(firecrawlGoogle, apifyGoogle), browserGoogle)
+        google: mergeProviderEvidence(mergeProviderEvidence(firecrawlGoogle, resolved.google?.sourceProvider === "apify" ? resolved.google : null), browserGoogle)
       },
       aiResolver,
       aiVerifier,
       aiConfig,
       now,
-      phase: "firecrawl_browser_apify",
+      phase: lateMetaApifyRan ? "firecrawl_browser_apify" : "firecrawl_apify_browser",
       previousResult: resolved
     });
   }
