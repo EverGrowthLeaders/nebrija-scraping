@@ -3287,6 +3287,64 @@ test("falls back to Apify for matched active Meta ads only", async () => {
   assert.ok(enrichment.google.attempts.length >= 1);
 });
 
+test("does not treat Meta keyword domain searches as page-scoped active ads", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url.includes("facebook.com/ads/library")) return { markdown: "Meta Ads Library", html: "" };
+      if (url.includes("adstransparency.google.com")) return { markdown: "Google Ads Transparency Center", html: "" };
+      return { markdown: "", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 1,
+    async runFacebookAdsLibrary(input) {
+      assert.equal(input.urls[0].url.includes("q=reformasmadrid.eu"), true);
+      return [
+        {
+          is_active: true,
+          page_name: "Unrelated Reformas",
+          total: 1,
+          ad_library_url: "https://www.facebook.com/ads/library/?id=999",
+          snapshot: {
+            page_name: "Unrelated Reformas",
+            body: { text: "Reformas activas en otra marca" }
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: { name: "REFORMAS MADRID", website: "https://reformasmadrid.eu/", city: "Madrid" },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaUrls: [
+        {
+          url: "https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=ES&q=reformasmadrid.eu&search_type=keyword_unordered&media_type=all",
+          country: "ES",
+          strategy: "seed_domain_library_url",
+          reason: "seed_domain_library_url"
+        }
+      ]
+    }),
+    aiResolver: adsAiResolverFromEvidence(),
+    country: "ES",
+    now: new Date("2026-06-13T00:00:00Z")
+  });
+
+  assert.notEqual(enrichment.meta.active, true);
+  assert.ok(enrichment.meta.attempts.some((attempt) =>
+    attempt.sourceProvider === "apify" &&
+    attempt.active === null &&
+    attempt.reason === "apify_active_items_not_matched"
+  ));
+});
+
 test("does not verify Google ads from unrelated transparency advertisers", async () => {
   const firecrawl = {
     async search() {

@@ -2803,7 +2803,7 @@ function isPageScopedApifyMetaSource(source = {}) {
       return true;
     }
     if (searchType === "page" && parseFacebookPageUrl(parsed.searchParams.get("q") || "")) return true;
-    return searchType === "page" && /^[a-z0-9][a-z0-9._-]{1,79}$/i.test(String(source.query || ""));
+    return false;
   } catch {
     return false;
   }
