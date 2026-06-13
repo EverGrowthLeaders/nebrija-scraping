@@ -801,7 +801,7 @@ async function renderCampaignDetail({ params }) {
     selectedAssistantName: job.voice_assistant_name,
     selectedAssistantVariables: job.voice_assistant_variables || []
   });
-  voiceForm.addEventListener("submit", (event) => saveCampaignVoiceSettings(event, job.id));
+  voiceForm?.addEventListener("submit", (event) => saveCampaignVoiceSettings(event, job.id));
   $("[data-action='campaign-ads']", view).addEventListener("click", () => campaignAdsAction(job.id));
   hydrateCrmBoard(view, {
     rows,
@@ -874,20 +874,8 @@ async function renderLeadsList({ search }) {
         </select>
         <input class="input" name="niche" placeholder="Nicho" value="${escape(niche)}" style="max-width:160px" />
         <input class="input" name="city" placeholder="Ciudad" value="${escape(city)}" style="max-width:140px" />
-        <label class="lead-filter">
-          <span>Campaña</span>
-          <select class="select" name="campaignIds" multiple size="4" style="min-width:240px">
-            ${campaignRows.map((j) => renderCampaignOption(j, campaignIds)).join("")}
-          </select>
-        </label>
-        <label class="lead-filter">
-          <span>Lista</span>
-          <select class="select" name="listIds" multiple size="4" style="min-width:220px">
-          ${(leadLists.rows || [])
-            .map((list) => `<option value="${escape(list.id)}" ${listIds.includes(list.id) ? "selected" : ""}>${escape(list.name)}</option>`)
-            .join("")}
-          </select>
-        </label>
+        ${renderMultiFilter("Campaña", "campaignIds", campaignRows, campaignIds, formatCampaignFilterOption)}
+        ${renderMultiFilter("Lista", "listIds", leadLists.rows || [], listIds, formatListFilterOption)}
         <select class="select" name="phoneType" style="max-width:170px">
           <option value="">Cualquier teléfono</option>
           ${renderPhoneTypeOptions(phoneType)}
@@ -1058,10 +1046,44 @@ function selectedFilterValues(search, pluralKey, singularKey) {
   ].map((value) => value.trim()).filter(Boolean)));
 }
 
-function renderCampaignOption(job, selectedIds = []) {
-  const selected = Array.isArray(selectedIds) ? selectedIds.includes(job.id) : job.id === selectedIds;
+function renderMultiFilter(label, name, rows = [], selectedIds = [], formatter = (row) => ({ id: row.id, label: row.name || row.id })) {
+  const selected = new Set(selectedIds || []);
+  const selectedCount = selected.size;
+  const summary = selectedCount
+    ? `${fmtNumber(selectedCount)} ${label.toLowerCase()}${selectedCount === 1 ? "" : "s"}`
+    : `Todas`;
+  return `
+    <details class="lead-filter lead-filter--multi">
+      <summary>
+        <span>${escape(label)}</span>
+        <strong>${escape(summary)}</strong>
+      </summary>
+      <div class="multi-filter__menu">
+        ${rows.length
+          ? rows.map((row) => {
+              const option = formatter(row);
+              const id = String(option.id || "");
+              return `
+                <label class="multi-filter__option">
+                  <input type="checkbox" name="${escape(name)}" value="${escape(id)}" ${selected.has(id) ? "checked" : ""} />
+                  <span>${escape(option.label)}</span>
+                </label>
+              `;
+            }).join("")
+          : `<div class="multi-filter__empty">Sin opciones</div>`}
+      </div>
+    </details>
+  `;
+}
+
+function formatCampaignFilterOption(job = {}) {
   const count = job.leads_count != null ? ` · ${fmtNumber(job.leads_count)} leads` : "";
-  return `<option value="${escape(job.id)}" ${selected ? "selected" : ""}>${escape(formatCampaignLabel(job))}${escape(count)}</option>`;
+  return { id: job.id, label: `${formatCampaignLabel(job)}${count}` };
+}
+
+function formatListFilterOption(list = {}) {
+  const count = list.leads_count != null ? ` · ${fmtNumber(list.leads_count)} leads` : "";
+  return { id: list.id, label: `${list.name || "Lista"}${count}` };
 }
 
 function renderPhoneTypeOptions(selected = "") {
@@ -3817,8 +3839,10 @@ async function openCampaignModal() {
 }
 
 async function hydrateCampaignAssistants(form, options = {}) {
+  if (!form) return;
   const select = $("[data-bind='campaign-assistant']", form);
   const hint = $("[data-bind='campaign-assistant-hint']", form);
+  if (!select || !hint) return;
   form.dataset.fallbackAssistantId = options.selectedAssistantId || "";
   form.dataset.fallbackAssistantName = options.selectedAssistantName || "";
   form.dataset.fallbackAssistantVariables = JSON.stringify(options.selectedAssistantVariables || []);

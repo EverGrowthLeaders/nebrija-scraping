@@ -590,6 +590,7 @@ a {
   .table-toolbar .select,
   .table-toolbar .search,
   .table-toolbar .lead-filter { max-width: none !important; width: 100%; }
+  .multi-filter__menu { width: 100%; }
   .search .input { min-width: 0; }
   .rule-row { grid-template-columns: 28px minmax(0, 1fr); }
   .rule-row__points { grid-column: 2; width: min(180px, 100%); }
@@ -634,6 +635,105 @@ a {
   font-weight: 650;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+.lead-filter--multi {
+  position: relative;
+  display: block;
+  min-width: 240px;
+  max-width: 280px;
+}
+.lead-filter--multi summary {
+  display: grid;
+  gap: 3px;
+  min-height: 42px;
+  padding: 7px 34px 7px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  cursor: pointer;
+  list-style: none;
+}
+.lead-filter--multi summary::-webkit-details-marker {
+  display: none;
+}
+.lead-filter--multi summary::after {
+  content: "⌄";
+  position: absolute;
+  right: 12px;
+  top: 19px;
+  color: var(--text-muted);
+  font-size: 15px;
+  line-height: 1;
+}
+.lead-filter--multi[open] summary {
+  border-color: rgba(255, 215, 0, 0.5);
+  box-shadow: 0 0 0 3px rgba(255, 215, 0, 0.1);
+  background: var(--surface-3);
+}
+.lead-filter--multi summary span {
+  color: var(--text-faint);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  text-transform: uppercase;
+}
+.lead-filter--multi summary strong {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.multi-filter__menu {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 6px);
+  left: 0;
+  width: min(360px, calc(100vw - 32px));
+  max-height: 280px;
+  overflow: auto;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+.multi-filter__option {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 8px 9px;
+  border-radius: 6px;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.multi-filter__option:hover {
+  background: var(--surface-2);
+}
+.multi-filter__option input {
+  flex: 0 0 auto;
+  margin-top: 2px;
+  accent-color: var(--accent);
+}
+.multi-filter__option span {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+.multi-filter__empty {
+  padding: 10px;
+  color: var(--text-faint);
+  font-size: 13px;
 }
 .table {
   width: 100%;
