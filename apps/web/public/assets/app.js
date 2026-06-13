@@ -823,6 +823,7 @@ async function renderLeadsList({ search }) {
   const listIds = selectedFilterValues(search, "listIds", "listId");
   const phoneType = search.get("phoneType") || "";
   const adsActive = search.get("adsActive") || "";
+  const adsPlatforms = selectedAdsPlatforms(adsActive);
   const adsFunnelType = search.get("adsFunnelType") || "";
   const hasMetaAdsEstimate = search.get("hasMetaAdsEstimate") || "";
   const metaAdsEstimateMin = search.get("metaAdsEstimateMin") || "";
@@ -857,6 +858,10 @@ async function renderLeadsList({ search }) {
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 3h9l5 5v13H5V3Zm8 1.8V9h4.2L13 4.8ZM8 12h8v2H8v-2Zm0 3h8v2H8v-2Z"/></svg>
         Importar lista
       </button>
+      <button class="btn" data-action="copy-domains" type="button" title="Copiar al portapapeles los dominios de todos los leads que cumplen el filtro actual">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
+        Copiar dominios
+      </button>
     </div>
 
     <form class="table-wrap" id="leads-filters" style="margin-bottom:14px">
@@ -879,13 +884,7 @@ async function renderLeadsList({ search }) {
           <option value="">Cualquier teléfono</option>
           ${renderPhoneTypeOptions(phoneType)}
         </select>
-        <select class="select" name="adsActive" style="max-width:180px">
-          <option value="">Cualquier Ads</option>
-          <option value="any" ${adsActive === "any" ? "selected" : ""}>Ads activos</option>
-          <option value="meta" ${adsActive === "meta" ? "selected" : ""}>Meta activo</option>
-          <option value="google" ${adsActive === "google" ? "selected" : ""}>Google activo</option>
-          <option value="both" ${adsActive === "both" ? "selected" : ""}>Meta + Google</option>
-        </select>
+        ${renderAdsPlatformFilter(adsPlatforms)}
         <select class="select" name="hasMetaAdsEstimate" style="max-width:170px">
           <option value="">Estim. Meta</option>
           <option value="true" ${hasMetaAdsEstimate === "true" ? "selected" : ""}>Con estimación</option>
@@ -912,6 +911,10 @@ async function renderLeadsList({ search }) {
       </div>
       <div class="bulk-actions__controls">
         <button class="btn btn--ghost btn--sm" data-action="clear-lead-selection" type="button">Limpiar</button>
+        <button class="btn btn--sm" data-action="copy-selected-domains" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
+          Copiar dominios
+        </button>
         <button class="btn btn--gold btn--sm" data-action="enrich-selected-ads" type="button">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M4 4h16v3H4V4Zm0 5h10v3H4V9Zm0 5h16v3H4v-3Zm0 5h10v2H4v-2Zm13.5-9 1.6 3.2 3.4.5-2.5 2.4.6 3.4-3.1-1.6-3 1.6.6-3.4-2.5-2.4 3.4-.5L17.5 10Z"/></svg>
           Enriquecer Ads/Funnel
@@ -972,7 +975,12 @@ async function renderLeadsList({ search }) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const params = new URLSearchParams();
-    for (const [k, v] of fd.entries()) if (v) params.append(k, v);
+    for (const [k, v] of fd.entries()) {
+      if (!v || k === "adsPlatforms") continue;
+      params.append(k, v);
+    }
+    const platforms = fd.getAll("adsPlatforms").filter(Boolean);
+    if (platforms.length) params.set("adsActive", platforms.join(","));
     location.hash = `#/leads${params.toString() ? "?" + params.toString() : ""}`;
   });
   $("[data-action='new-lead']", view).addEventListener("click", openLeadModal);
@@ -990,6 +998,12 @@ async function renderLeadsList({ search }) {
   if (hasMetaAdsEstimate) params.set("hasMetaAdsEstimate", hasMetaAdsEstimate);
   if (metaAdsEstimateMin) params.set("metaAdsEstimateMin", metaAdsEstimateMin);
   if (term) params.set("search", term);
+
+  const filterParams = new URLSearchParams(params);
+  $("[data-action='copy-domains']", view).addEventListener("click", (event) =>
+    copyAllFilteredDomains(filterParams, event.currentTarget)
+  );
+
   params.set("limit", "100");
 
   const data = await api(`/api/businesses?${params.toString()}`);
@@ -1181,6 +1195,7 @@ function bindLeadSelection(rows) {
   const enrichAdsButton = $("[data-action='enrich-selected-ads']", view);
   const enrichDecisionMakerButton = $("[data-action='enrich-selected-decision-makers']", view);
   const deleteButton = $("[data-action='delete-selected-leads']", view);
+  const copyDomainsButton = $("[data-action='copy-selected-domains']", view);
   const checks = $$("[data-action='toggle-lead']", view);
 
   const sync = () => {
@@ -1235,10 +1250,152 @@ function bindLeadSelection(rows) {
       .filter(Boolean);
     if (leads.length) confirmDeleteLeads(leads, { afterDelete: router });
   });
+
+  copyDomainsButton?.addEventListener("click", () => {
+    const leads = Array.from(selected)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+    if (leads.length) copyDomainsFromRows(leads, copyDomainsButton);
+  });
 }
 
 function stripScheme(url) {
   return String(url || "").replace(/^https?:\/\//, "");
+}
+
+// ── Ads-platform filter + domain export helpers ───────────
+function selectedAdsPlatforms(value) {
+  const set = new Set();
+  for (const part of String(value || "").split(",")) {
+    const p = part.trim().toLowerCase();
+    if (p === "meta" || p === "google") set.add(p);
+    else if (p === "both" || p === "any") {
+      set.add("meta");
+      set.add("google");
+    }
+  }
+  return [...set];
+}
+
+function renderAdsPlatformFilter(selected = []) {
+  const set = new Set(selected);
+  const labels = { meta: "Meta", google: "Google" };
+  const summary =
+    set.size === 0
+      ? "Todas"
+      : set.size === 2
+        ? "Meta + Google"
+        : labels[[...set][0]] || "1";
+  const options = [
+    ["meta", "Meta activo"],
+    ["google", "Google activo"]
+  ];
+  return `
+    <details class="lead-filter lead-filter--multi">
+      <summary>
+        <span>Ads activos</span>
+        <strong>${escape(summary)}</strong>
+      </summary>
+      <div class="multi-filter__menu">
+        ${options
+          .map(
+            ([id, label]) => `
+              <label class="multi-filter__option">
+                <input type="checkbox" name="adsPlatforms" value="${id}" ${set.has(id) ? "checked" : ""} />
+                <span>${escape(label)}</span>
+              </label>`
+          )
+          .join("")}
+      </div>
+    </details>
+  `;
+}
+
+// Extracts a clean registrable domain (no scheme / www / path) for tools like Apollo or MasLeads.
+function domainFromWebsite(url) {
+  const raw = String(url || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
+    return u.hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return raw.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0].toLowerCase();
+  }
+}
+
+function uniqueDomains(rows = []) {
+  const seen = new Set();
+  for (const row of rows) {
+    const domain = domainFromWebsite(row?.website);
+    if (domain) seen.add(domain);
+  }
+  return [...seen];
+}
+
+async function copyToClipboard(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.top = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch {
+    return false;
+  }
+}
+
+async function copyDomainsFromRows(rows, button) {
+  const total = rows.length;
+  const domains = uniqueDomains(rows);
+  if (!domains.length) return toast("Ninguno de esos leads tiene dominio web", "error");
+  const ok = await copyToClipboard(domains.join("\n"));
+  if (!ok) return toast("No se pudo copiar al portapapeles", "error");
+  const without = total - domains.length;
+  const suffix = without > 0 ? ` · ${fmtNumber(without)} sin web/duplicados` : "";
+  toast(`${fmtNumber(domains.length)} dominios copiados${suffix}`, "ok");
+}
+
+async function fetchAllBusinesses(filterParams) {
+  const out = [];
+  const pageSize = 200;
+  let offset = 0;
+  for (let page = 0; page < 1000; page += 1) {
+    const params = new URLSearchParams(filterParams);
+    params.set("limit", String(pageSize));
+    params.set("offset", String(offset));
+    const data = await api(`/api/businesses?${params.toString()}`);
+    const rows = data.rows || [];
+    out.push(...rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  return out;
+}
+
+async function copyAllFilteredDomains(filterParams, button) {
+  const original = button.innerHTML;
+  button.disabled = true;
+  button.innerHTML = `<span class="spinner"></span> Recopilando…`;
+  try {
+    const rows = await fetchAllBusinesses(filterParams);
+    await copyDomainsFromRows(rows, button);
+  } catch (err) {
+    toast(`No se pudieron recopilar los dominios (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
+    button.innerHTML = original;
+  }
 }
 
 // ── Lead detail ───────────────────────────────────────────
@@ -2042,6 +2199,10 @@ async function renderListDetail({ params }) {
         <h1 class="headline">${escape(list.name)}</h1>
         <p class="subhead">${escape(list.description || "CRM de cold calling")} · ${fmtNumber(list.leads_count)} leads</p>
       </div>
+      <button class="btn" data-action="copy-list-domains" type="button" title="Copiar los dominios de los leads de esta lista">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
+        Copiar dominios
+      </button>
       <a class="btn" href="#/leads?listIds=${encodeURIComponent(list.id)}">Ver en Leads</a>
     </div>
 
@@ -2078,6 +2239,9 @@ async function renderListDetail({ params }) {
     </div>
   `;
   hydrateCrmBoard(view, { rows, options });
+  $("[data-action='copy-list-domains']", view)?.addEventListener("click", (event) =>
+    copyDomainsFromRows(rows, event.currentTarget)
+  );
 }
 
 function renderCrmFilterBar(rows = []) {

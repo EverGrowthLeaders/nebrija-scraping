@@ -1356,14 +1356,19 @@ export async function listBusinesses({
     else if (phoneType === "unknown") where.push(`${localPhoneExpr} <> '' AND ${localPhoneExpr} !~ '^[6789]'`);
   }
   if (adsActive) {
-    if (adsActive === "any") {
+    const platforms = String(adsActive)
+      .split(",")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean);
+    if (platforms.includes("any")) {
+      // legacy "any" → advertising on at least one platform
       where.push(`(b.ads_meta_active IS TRUE OR b.ads_google_active IS TRUE)`);
-    } else if (adsActive === "meta") {
-      where.push(`b.ads_meta_active IS TRUE`);
-    } else if (adsActive === "google") {
-      where.push(`b.ads_google_active IS TRUE`);
-    } else if (adsActive === "both") {
-      where.push(`b.ads_meta_active IS TRUE AND b.ads_google_active IS TRUE`);
+    } else {
+      // multi-select: every selected platform must be active ("both" kept for legacy)
+      const wantsMeta = platforms.includes("meta") || platforms.includes("both");
+      const wantsGoogle = platforms.includes("google") || platforms.includes("both");
+      if (wantsMeta) where.push(`b.ads_meta_active IS TRUE`);
+      if (wantsGoogle) where.push(`b.ads_google_active IS TRUE`);
     }
   }
   if (adsFunnelType) {
