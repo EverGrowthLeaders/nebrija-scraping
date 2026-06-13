@@ -4097,6 +4097,128 @@ test("does not verify Meta ads from Apify social-only matches", async () => {
   assert.ok(enrichment.meta.attempts.some((attempt) => attempt.reason === "apify_active_items_not_matched"));
 });
 
+test("verifies Meta ads from Apify when the active ad is published by the owned social advertiser", async () => {
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      if (url === "http://www.delucio.es/") {
+        return {
+          markdown: "[Facebook](https://www.facebook.com/reformasdelucio) [Instagram](https://www.instagram.com/delucio.es)",
+          html: "",
+          links: [
+            { url: "https://www.facebook.com/reformasdelucio" },
+            { url: "https://www.instagram.com/delucio.es" }
+          ]
+        };
+      }
+      if (url.includes("adstransparency.google.com")) return { markdown: "No ads found", html: "" };
+      return { markdown: "Ad Library loading", html: "" };
+    }
+  };
+  const apify = {
+    maxChargedResults: 10,
+    async runFacebookAdsLibrary() {
+      return [
+        {
+          ad_archive_id: "846880424771815",
+          is_active: true,
+          page_name: "DeLucio.es",
+          ad_library_url: "https://www.facebook.com/ads/library/?id=846880424771815",
+          snapshot: {
+            page_name: "DeLucio.es",
+            link_url: "http://instagram.com/delucio.es",
+            caption: "instagram.com",
+            body: {
+              text: "En una reforma integral de alto nivel, los detalles no son decorativos. Si estás valorando reformar tu vivienda en Madrid, cuéntanos tu caso."
+            },
+            cta_text: "Visit Instagram profile"
+          }
+        }
+      ];
+    }
+  };
+
+  const enrichment = await enrichBusinessAds({
+    business: {
+      name: "De Lucio Construcciones Y Reformas S.L",
+      website: "http://www.delucio.es/",
+      facebook: "https://www.facebook.com/reformasdelucio",
+      instagram: "https://www.instagram.com/delucio.es",
+      city: "Madrid"
+    },
+    firecrawl,
+    apify,
+    apifyFallbackMode: "always",
+    aiDiscoveryPlanner: async () => ({
+      metaProbes: [
+        { query: "reformasdelucio", searchType: "page", country: "ES", reason: "ai_official_facebook_page" }
+      ]
+    }),
+    aiResolver: async ({ evidence }) => {
+      const attempt = evidence.providers.meta.attempts.find((item) => item.sourceProvider === "apify");
+      return {
+        meta: {
+          active: true,
+          status: "active",
+          confidence: 0.93,
+          reason: "ai_owned_social_advertiser_active",
+          selectedAttemptIds: [attempt.attemptId],
+          landingUrls: [],
+          matchedFields: attempt.matchedFields || [],
+          sourceUrl: attempt.sourceUrl,
+          evidenceSummary: "Apify returned an active Meta ad item from the official DeLucio.es social advertiser.",
+          needsMoreEvidence: false
+        },
+        google: {
+          active: null,
+          status: "unknown",
+          confidence: 0.4,
+          reason: "ai_google_unknown",
+          selectedAttemptIds: [],
+          landingUrls: [],
+          matchedFields: [],
+          sourceUrl: null,
+          evidenceSummary: "No Google evidence.",
+          needsMoreEvidence: true
+        }
+      };
+    },
+    aiVerifier: async ({ resolved }) => ({
+      meta: {
+        confirmed: true,
+        status: "confirmed",
+        active: resolved.meta.active,
+        confidence: 0.9,
+        reason: "owned_social_advertiser_active_confirmed",
+        selectedAttemptIds: resolved.meta.ai.selectedAttemptIds,
+        evidenceSummary: "The selected item has a Library ID and is published by the owned Facebook/Instagram identity.",
+        needsMoreEvidence: false
+      },
+      google: {
+        confirmed: false,
+        status: "unknown",
+        active: null,
+        confidence: 0.4,
+        reason: "no_google_evidence",
+        selectedAttemptIds: [],
+        evidenceSummary: "No Google evidence.",
+        needsMoreEvidence: true
+      }
+    }),
+    country: "ES",
+    now: new Date("2026-06-13T00:00:00Z")
+  });
+
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.reason, "ai_owned_social_advertiser_active");
+  assert.equal(enrichment.meta.adArchiveId, "846880424771815");
+  assert.deepEqual(enrichment.meta.matchedFields, ["domain", "instagram_url"]);
+  assert.equal(enrichment.meta.landingUrl, null);
+  assert.equal(enrichment.meta.ai.verification.status, "confirmed");
+});
+
 test("rejects Meta active when Apify only proves a Facebook page without owned domain ads", async () => {
   const firecrawl = {
     async search() {
