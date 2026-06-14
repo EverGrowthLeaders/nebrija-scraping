@@ -32,6 +32,7 @@ export const config = {
     crawlConcurrency: intFromEnv("CRAWL_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 8)),
     adsConcurrency: intFromEnv("ADS_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 8)),
     decisionMakerConcurrency: intFromEnv("DECISION_MAKER_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 8)),
+    companyEnrichmentConcurrency: intFromEnv("COMPANY_ENRICHMENT_WORKER_CONCURRENCY", intFromEnv("WORKER_CONCURRENCY", 4)),
     autoDispatchVoice: boolFromEnv("AUTO_DISPATCH_VOICE", false)
   },
   testJobs: {
@@ -56,6 +57,8 @@ export const config = {
       process.env.APIFY_FACEBOOK_ADS_ACTOR_ID || "curious_coder~facebook-ads-library-scraper",
     googleAdsActorId:
       process.env.APIFY_GOOGLE_ADS_ACTOR_ID || "solidcode~ads-transparency-scraper",
+    linkedinCompanyActorId:
+      process.env.APIFY_LINKEDIN_COMPANY_ACTOR_ID || "sourabhbgp~linkedin-company-scraper",
     requestTimeoutMs: intFromEnv("APIFY_REQUEST_TIMEOUT_MS", 120000),
     runTimeoutSecs: intFromEnv("APIFY_RUN_TIMEOUT_SECS", 90),
     maxChargedResults: intFromEnv("APIFY_MAX_CHARGED_RESULTS", 1)

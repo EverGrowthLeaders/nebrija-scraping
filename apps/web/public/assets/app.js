@@ -927,6 +927,10 @@ async function renderLeadsList({ search }) {
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 1 5 5c0 1.6-.7 3-1.8 3.9A8 8 0 0 1 20 18v3h-2v-3a6 6 0 0 0-12 0v3H4v-3a8 8 0 0 1 4.8-7.1A5 5 0 0 1 12 2Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm6.5 5.5 1.1 2.2 2.4.4-1.8 1.7.4 2.4-2.1-1.1-2.1 1.1.4-2.4-1.8-1.7 2.4-.4 1.1-2.2Z"/></svg>
           Enriquecer decisor
         </button>
+        <button class="btn btn--sm" data-action="enrich-selected-companies" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M3 21V8l8-5 8 5v13h-5v-6h-6v6H3Zm8-9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/></svg>
+          Enriquecer empresa
+        </button>
         <button class="btn btn--danger btn--sm" data-action="delete-selected-leads" type="button">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 12H7.7L7 9Zm2.1 2 .4 8h1.7l-.3-8H9.1Zm3 0v8h1.8v-8h-1.8Zm3 0-.3 8h1.7l.4-8h-1.8Z"/></svg>
           Eliminar
@@ -1199,6 +1203,7 @@ function bindLeadSelection(rows) {
   const clearButton = $("[data-action='clear-lead-selection']", view);
   const enrichAdsButton = $("[data-action='enrich-selected-ads']", view);
   const enrichDecisionMakerButton = $("[data-action='enrich-selected-decision-makers']", view);
+  const enrichCompanyButton = $("[data-action='enrich-selected-companies']", view);
   const deleteButton = $("[data-action='delete-selected-leads']", view);
   const copyDomainsButton = $("[data-action='copy-selected-domains']", view);
   const addToListButton = $("[data-action='add-selected-to-list']", view);
@@ -1248,6 +1253,13 @@ function bindLeadSelection(rows) {
       .map((id) => byId.get(id))
       .filter(Boolean);
     if (leads.length) bulkLeadDecisionMakerAction(leads, enrichDecisionMakerButton);
+  });
+
+  enrichCompanyButton?.addEventListener("click", () => {
+    const leads = Array.from(selected)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+    if (leads.length) bulkLeadCompanyAction(leads, enrichCompanyButton);
   });
 
   deleteButton.addEventListener("click", () => {
@@ -1477,6 +1489,10 @@ async function renderLeadDetail({ params }) {
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 1 5 5c0 1.6-.7 3-1.8 3.9A8 8 0 0 1 20 18v3h-2v-3a6 6 0 0 0-12 0v3H4v-3a8 8 0 0 1 4.8-7.1A5 5 0 0 1 12 2Zm0 2a3 3 0 1 0 0 6 3 3 0 0 0 0-6Zm6.5 5.5 1.1 2.2 2.4.4-1.8 1.7.4 2.4-2.1-1.1-2.1 1.1.4-2.4-1.8-1.7 2.4-.4 1.1-2.2Z"/></svg>
           Enriquecer decisor
         </button>
+        <button class="btn" data-action="lead-company" type="button" title="Datos de empresa en LinkedIn (empleados, sector, sede…)">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 21V8l8-5 8 5v13h-5v-6h-6v6H3Zm8-9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z"/></svg>
+          Enriquecer empresa
+        </button>
         <button class="btn btn--gold" data-action="lead-call" type="button" ${!b.phone_e164 ? "disabled" : ""}>
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M6.6 10.8a15.4 15.4 0 0 0 6.6 6.6l2.2-2.2c.3-.3.7-.4 1-.3a11 11 0 0 0 3.4.6 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1 11 11 0 0 0 .6 3.4 1 1 0 0 1-.3 1l-2.2 2.4Z"/></svg>
           Llamar ahora
@@ -1512,6 +1528,14 @@ async function renderLeadDetail({ params }) {
       </div>
 
       <div style="display:flex;flex-direction:column;gap:14px">
+        <div class="card">
+          <div class="card__head">
+            <h3>Empresa · LinkedIn</h3>
+            <span class="muted">${b.linkedin_company_checked_at ? fmtDate(b.linkedin_company_checked_at) : "Sin revisar"}</span>
+          </div>
+          ${renderLinkedinCompany(b)}
+        </div>
+
         <div class="card">
           <div class="card__head">
             <h3>Ads activos</h3>
@@ -1630,6 +1654,7 @@ async function renderLeadDetail({ params }) {
   $("[data-action='lead-score']", view).addEventListener("click", () => leadAction(b, "score"));
   $("[data-action='lead-ads']", view).addEventListener("click", () => leadAction(b, "ads"));
   $("[data-action='lead-decision-maker']", view).addEventListener("click", () => leadAction(b, "decisionMaker"));
+  $("[data-action='lead-company']", view).addEventListener("click", () => leadAction(b, "company"));
   $("[data-action='lead-call']", view).addEventListener("click", () => leadAction(b, "call"));
   $("[data-action='lead-delete']", view).addEventListener("click", () =>
     confirmDeleteLead(b, { afterDelete: () => { location.hash = leadListReturnHash(); } })
@@ -1780,7 +1805,9 @@ async function leadAction(business, kind) {
       ? `/api/businesses/${business.id}/ads-enrichment`
       : kind === "decisionMaker"
         ? `/api/businesses/${business.id}/decision-maker-enrichment`
-        : `/businesses/${business.id}/${kind}`;
+        : kind === "company"
+          ? `/api/businesses/${business.id}/company-enrichment`
+          : `/businesses/${business.id}/${kind}`;
     await api(url, { method: "POST", body: "{}" });
     toast(
       kind === "call"
@@ -1791,6 +1818,8 @@ async function leadAction(business, kind) {
             ? "Enriquecimiento Ads en cola"
             : kind === "decisionMaker"
               ? "Enriquecimiento de decisor en cola"
+              : kind === "company"
+                ? "Enriquecimiento de empresa en cola"
             : "Re-scoring en cola",
       "ok"
     );
@@ -1846,6 +1875,74 @@ async function bulkLeadDecisionMakerAction(leads, button) {
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+async function bulkLeadCompanyAction(leads, button) {
+  const businessIds = leads.map((lead) => lead.id).filter(Boolean);
+  if (!businessIds.length) return;
+  if (button) button.disabled = true;
+  try {
+    const result = await api("/api/businesses/company-enrichment", {
+      method: "POST",
+      body: JSON.stringify({ businessIds })
+    });
+    const skipped = result.skipped ? ` · ${fmtNumber(result.skipped)} omitidos` : "";
+    toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento de empresa${skipped}`, result.queued ? "ok" : "error");
+  } catch (err) {
+    toast(`No se pudo lanzar empresa (${err.message})`, "error");
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+function renderLinkedinCompany(business = {}) {
+  const data = business.linkedin_company && typeof business.linkedin_company === "object" ? business.linkedin_company : {};
+  const company = data.company || null;
+  const employees = business.linkedin_employee_count ?? company?.employeeCount ?? null;
+
+  if (!company) {
+    const hints = {
+      no_linkedin_company_url: "Sin URL de LinkedIn de la empresa. Lanza primero «Enriquecer decisor» para descubrirla y vuelve a intentarlo.",
+      no_results: "El actor de LinkedIn no devolvió datos para esta empresa.",
+      apify_error: "Error al consultar Apify. Reintenta más tarde.",
+      apify_disabled: "Apify no está configurado (falta APIFY_API_KEY)."
+    };
+    const body = data.reason
+      ? hints[data.reason] || "Sin datos de empresa todavía."
+      : "Aún sin enriquecer. Pulsa «Enriquecer empresa» para traer empleados, sector y más desde LinkedIn.";
+    return `<p class="muted" style="margin:0;line-height:1.55">${escape(body)}</p>`;
+  }
+
+  const rows = [
+    ["Sector", company.industry],
+    ["Tamaño", company.employeeRange],
+    ["Sede", company.headquarters],
+    ["Fundada", company.foundedYear],
+    ["Seguidores", company.followerCount != null ? fmtNumber(company.followerCount) : null],
+    ["Empleos abiertos", company.openJobCount != null ? fmtNumber(company.openJobCount) : null]
+  ].filter(([, value]) => value != null && value !== "");
+
+  const links = [
+    company.website ? `<a href="${escape(company.website)}" target="_blank" rel="noopener">${escape(stripScheme(company.website))}</a>` : "",
+    company.linkedinUrl ? `<a href="${escape(company.linkedinUrl)}" target="_blank" rel="noopener">LinkedIn</a>` : ""
+  ].filter(Boolean);
+
+  return `
+    <div class="company-card">
+      <div class="company-hero">
+        <strong>${employees != null ? fmtNumber(employees) : "—"}</strong>
+        <span>empleados${company.employeeRange ? ` · ${escape(company.employeeRange)}` : ""}</span>
+      </div>
+      ${company.name ? `<div class="company-name">${escape(company.name)}</div>` : ""}
+      ${rows.length ? `<dl class="kv">${rows.map(([label, value]) => `<dt>${escape(label)}</dt><dd>${escape(String(value))}</dd>`).join("")}</dl>` : ""}
+      ${links.length ? `<div class="company-links">${links.join("<span class=\"muted\">·</span>")}</div>` : ""}
+      ${
+        Array.isArray(company.specialties) && company.specialties.length
+          ? `<div class="tag-row">${company.specialties.slice(0, 8).map((s) => `<span class="badge badge--zinc">${escape(s)}</span>`).join("")}</div>`
+          : ""
+      }
+    </div>
+  `;
 }
 
 function renderAdsDetail(label, value, evidence = {}) {

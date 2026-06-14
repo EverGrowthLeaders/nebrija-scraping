@@ -736,6 +736,25 @@ export async function updateBusinessDecisionMaker({ businessId, tenantId = DEFAU
   return result.rows[0] || null;
 }
 
+export async function updateBusinessLinkedinCompany({ businessId, tenantId = DEFAULT_TENANT_ID, enrichment }) {
+  const payload = enrichment && typeof enrichment === "object" ? enrichment : {};
+  const employeeCount = Number.isFinite(Number(payload?.company?.employeeCount))
+    ? Math.round(Number(payload.company.employeeCount))
+    : null;
+  const checkedAt = payload.checkedAt ? new Date(payload.checkedAt) : new Date();
+  const result = await query(
+    `UPDATE businesses
+        SET linkedin_company = $3::jsonb,
+            linkedin_employee_count = $4,
+            linkedin_company_checked_at = $5,
+            updated_at = NOW()
+      WHERE id = $1 AND tenant_id = $2
+      RETURNING *`,
+    [businessId, tenantId, JSON.stringify(payload), employeeCount, checkedAt]
+  );
+  return result.rows[0] || null;
+}
+
 export async function createManualBusiness({
   tenantId = DEFAULT_TENANT_ID,
   extractionJobId,

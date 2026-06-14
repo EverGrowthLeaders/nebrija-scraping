@@ -14,6 +14,7 @@ import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../package
 import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
 import { enrichDecisionMaker } from "../../../packages/core/src/decisionMakerEnrichment.mjs";
 import { verifiedDecisionMakerForStorage } from "../../../packages/core/src/decisionMakerStoragePolicy.mjs";
+import { enrichBusinessCompany } from "../../../packages/core/src/companyEnrichment.mjs";
 import { explainLeadScore, nextOutreachChannel } from "../../../packages/core/src/scoring.mjs";
 import {
   createCrawlerRun,
@@ -31,6 +32,7 @@ import {
   updateBusinessEnrichment,
   updateBusinessAdsEnrichment,
   updateBusinessDecisionMaker,
+  updateBusinessLinkedinCompany,
   updateBusinessScore,
   updateCrawlerRun,
   updateExtractionJob,
@@ -51,6 +53,7 @@ const queues = {
   scoring: createQueue(QUEUE_NAMES.scoring),
   adsEnrichment: createQueue(QUEUE_NAMES.adsEnrichment),
   decisionMakerEnrichment: createQueue(QUEUE_NAMES.decisionMakerEnrichment),
+  companyEnrichment: createQueue(QUEUE_NAMES.companyEnrichment),
   voiceCall: createQueue(QUEUE_NAMES.voiceCall)
 };
 
@@ -61,6 +64,7 @@ const workers = [
   createWorker(QUEUE_NAMES.scoring, runScoring, { concurrency: config.queues.concurrency }),
   createWorker(QUEUE_NAMES.adsEnrichment, runAdsEnrichment, { concurrency: config.queues.adsConcurrency }),
   createWorker(QUEUE_NAMES.decisionMakerEnrichment, runDecisionMakerEnrichment, { concurrency: config.queues.decisionMakerConcurrency }),
+  createWorker(QUEUE_NAMES.companyEnrichment, runCompanyEnrichment, { concurrency: config.queues.companyEnrichmentConcurrency }),
   createWorker(QUEUE_NAMES.voiceCall, runVoiceCall, { concurrency: 2 })
 ];
 
@@ -544,6 +548,53 @@ async function runDecisionMakerEnrichment(job) {
     accessContact: recommendedAccessContact.value,
     fullName: decisionMaker.fullName,
     confidence: decisionMaker.confidence
+  };
+}
+
+async function runCompanyEnrichment(job) {
+  const detail = await findBusinessDetail(job.data.businessId, { tenantId: job.data.tenantId });
+  const business = detail?.business;
+  if (!business) throw new Error(`business not found: ${job.data.businessId}`);
+
+  const enrichment = await enrichBusinessCompany({
+    business,
+    contacts: detail.contacts || [],
+    apify: apify.enabled ? apify : null
+  });
+  const updated = await updateBusinessLinkedinCompany({
+    tenantId: business.tenant_id,
+    businessId: business.id,
+    enrichment
+  });
+  if (!updated) throw new Error(`business linkedin company update failed: ${business.id}`);
+
+  const company = enrichment.company || {};
+  if (enrichment.linkedinUrl) {
+    await upsertContact({
+      businessId: business.id,
+      kind: "linkedin_company",
+      value: enrichment.linkedinUrl,
+      confidence: 0.85,
+      sourceUrl: enrichment.linkedinUrl
+    });
+    await recordProvenance({
+      businessId: business.id,
+      fieldName: "linkedin_company_profile",
+      sourceType: "apify_linkedin_company",
+      sourceUrl: enrichment.linkedinUrl,
+      observedValue: JSON.stringify({
+        employeeCount: company.employeeCount ?? null,
+        employeeRange: company.employeeRange ?? null,
+        industry: company.industry ?? null
+      })
+    });
+  }
+
+  return {
+    found: enrichment.found,
+    reason: enrichment.reason,
+    linkedinUrl: enrichment.linkedinUrl,
+    employeeCount: company.employeeCount ?? null
   };
 }
 

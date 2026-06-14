@@ -7,6 +7,7 @@ export class ApifyClient {
     this.baseUrl = options.baseUrl || config.apify.baseUrl;
     this.facebookAdsActorId = options.facebookAdsActorId || config.apify.facebookAdsActorId;
     this.googleAdsActorId = options.googleAdsActorId || config.apify.googleAdsActorId;
+    this.linkedinCompanyActorId = options.linkedinCompanyActorId || config.apify.linkedinCompanyActorId;
     this.timeoutMs = options.timeoutMs || config.apify.requestTimeoutMs;
     this.runTimeoutSecs = options.runTimeoutSecs || config.apify.runTimeoutSecs;
     this.maxChargedResults = options.maxChargedResults || config.apify.maxChargedResults;
@@ -38,6 +39,21 @@ export class ApifyClient {
     url.searchParams.set("token", this.apiKey);
     url.searchParams.set("timeout", String(options.timeoutSecs || this.runTimeoutSecs));
     url.searchParams.set("memory", String(options.memoryMbytes || 512));
+    const items = await fetchJson(url.toString(), {
+      method: "POST",
+      body: JSON.stringify(input),
+      timeoutMs: options.timeoutMs || this.timeoutMs
+    });
+    return Array.isArray(items) ? items : [];
+  }
+
+  async runLinkedinCompanyScraper(input = {}, options = {}) {
+    requireEnv(this.apiKey, "APIFY_API_KEY");
+    const actorId = encodeURIComponent(this.linkedinCompanyActorId).replace("%7E", "~");
+    const url = new URL(`${this.baseUrl}/acts/${actorId}/run-sync-get-dataset-items`);
+    url.searchParams.set("token", this.apiKey);
+    url.searchParams.set("timeout", String(options.timeoutSecs || this.runTimeoutSecs));
+    url.searchParams.set("memory", String(options.memoryMbytes || 1024));
     const items = await fetchJson(url.toString(), {
       method: "POST",
       body: JSON.stringify(input),

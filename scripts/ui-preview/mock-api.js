@@ -184,6 +184,27 @@
           ...b, address: "Calle Mayor 12, 28013", external_source: "google_places", source_url: b.website,
           instagram: "https://instagram.com/empresa", facebook: "https://facebook.com/empresa",
           has_online_booking: true, has_chatbot: false, scoring_notes: "", custom_fields: {},
+          linkedin_company_checked_at: iso(90),
+          linkedin_employee_count: 84,
+          linkedin_company: {
+            found: true,
+            reason: "ok",
+            linkedinUrl: "https://www.linkedin.com/company/empresa-demo",
+            checkedAt: iso(90),
+            company: {
+              name: b.name,
+              linkedinUrl: "https://www.linkedin.com/company/empresa-demo",
+              industry: "Servicios de salud",
+              employeeCount: 84,
+              employeeRange: "51-200",
+              followerCount: 3120,
+              foundedYear: 2014,
+              headquarters: "Madrid, España",
+              website: b.website,
+              openJobCount: 5,
+              specialties: ["Odontología", "Implantes", "Ortodoncia"]
+            }
+          },
           ads_last_checked_at: iso(120), scoring_breakdown: { matchedRules: [
             { id: "web", label: "Tiene web propia", points: 15 },
             { id: "phone", label: "Teléfono móvil verificado", points: 10 },

@@ -125,6 +125,9 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_cpm NUMERIC`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS meta_ads_estimate_checked_at TIMESTAMPTZ`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS scoring_breakdown JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS linkedin_company JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS linkedin_employee_count INTEGER`);
+    await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS linkedin_company_checked_at TIMESTAMPTZ`);
     await run(`ALTER TABLE extraction_jobs ALTER COLUMN source_type SET DEFAULT 'google_places_api'`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_name TEXT`);
