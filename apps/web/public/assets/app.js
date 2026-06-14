@@ -915,6 +915,10 @@ async function renderLeadsList({ search }) {
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
           Copiar dominios
         </button>
+        <button class="btn btn--sm" data-action="add-selected-to-list" type="button">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M3 5h12v2H3V5Zm0 4h12v2H3V9Zm0 4h8v2H3v-2Zm14-4h2v4h4v2h-4v4h-2v-4h-4v-2h4V9Z"/></svg>
+          Añadir a lista
+        </button>
         <button class="btn btn--gold btn--sm" data-action="enrich-selected-ads" type="button">
           <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="M4 4h16v3H4V4Zm0 5h10v3H4V9Zm0 5h16v3H4v-3Zm0 5h10v2H4v-2Zm13.5-9 1.6 3.2 3.4.5-2.5 2.4.6 3.4-3.1-1.6-3 1.6.6-3.4-2.5-2.4 3.4-.5L17.5 10Z"/></svg>
           Enriquecer Ads/Funnel
@@ -1197,6 +1201,7 @@ function bindLeadSelection(rows) {
   const enrichDecisionMakerButton = $("[data-action='enrich-selected-decision-makers']", view);
   const deleteButton = $("[data-action='delete-selected-leads']", view);
   const copyDomainsButton = $("[data-action='copy-selected-domains']", view);
+  const addToListButton = $("[data-action='add-selected-to-list']", view);
   const checks = $$("[data-action='toggle-lead']", view);
 
   const sync = () => {
@@ -1257,6 +1262,13 @@ function bindLeadSelection(rows) {
       .map((id) => byId.get(id))
       .filter(Boolean);
     if (leads.length) copyDomainsFromRows(leads, copyDomainsButton);
+  });
+
+  addToListButton?.addEventListener("click", () => {
+    const leads = Array.from(selected)
+      .map((id) => byId.get(id))
+      .filter(Boolean);
+    if (leads.length) openAddLeadsToListModal(leads, { afterAdd: router });
   });
 }
 
@@ -2231,6 +2243,10 @@ async function renderListDetail({ params }) {
         <h1 class="headline">${escape(list.name)}</h1>
         <p class="subhead">${escape(list.description || "CRM de cold calling")} · ${fmtNumber(list.leads_count)} leads</p>
       </div>
+      <button class="btn" data-action="edit-list" type="button" title="Editar nombre, descripción y color">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25ZM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83Z"/></svg>
+        Editar
+      </button>
       <button class="btn" data-action="copy-list-domains" type="button" title="Copiar los dominios de los leads de esta lista">
         <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
         Copiar dominios
@@ -2274,6 +2290,7 @@ async function renderListDetail({ params }) {
   $("[data-action='copy-list-domains']", view)?.addEventListener("click", (event) =>
     copyDomainsFromRows(rows, event.currentTarget)
   );
+  $("[data-action='edit-list']", view)?.addEventListener("click", () => openListModal(list));
 }
 
 function renderCrmFilterBar(rows = []) {
@@ -3092,43 +3109,117 @@ function appendCrmObjectionOption(board, value) {
   list.appendChild(option);
 }
 
-function openListModal() {
+function openListModal(existing = null) {
+  const isEdit = Boolean(existing?.id);
+  const colors = ["gold", "green", "cyan", "burgundy", "zinc"];
+  const currentColor = existing?.color || "gold";
   const form = document.createElement("form");
   form.innerHTML = `
-    <div class="field"><label>Nombre</label><input class="input" name="name" required placeholder="Prioridad Madrid" /></div>
-    <div class="field"><label>Descripción</label><textarea class="textarea" name="description" placeholder="Criterio interno, cliente, vertical o siguiente acción"></textarea></div>
+    <div class="field"><label>Nombre</label><input class="input" name="name" required placeholder="Prioridad Madrid" value="${escape(existing?.name || "")}" /></div>
+    <div class="field"><label>Descripción</label><textarea class="textarea" name="description" placeholder="Criterio interno, cliente, vertical o siguiente acción">${escape(existing?.description || "")}</textarea></div>
     <div class="field">
       <label>Color</label>
       <select class="select" name="color">
-        <option value="gold">Gold</option>
-        <option value="green">Green</option>
-        <option value="cyan">Cyan</option>
-        <option value="burgundy">Burgundy</option>
-        <option value="zinc">Zinc</option>
+        ${colors
+          .map((color) => `<option value="${color}" ${color === currentColor ? "selected" : ""}>${color.charAt(0).toUpperCase() + color.slice(1)}</option>`)
+          .join("")}
       </select>
     </div>
   `;
   const footer = document.createDocumentFragment();
   const cancel = btn("Cancelar", "ghost");
-  const submit = btn("Crear lista", "primary");
+  const submit = btn(isEdit ? "Guardar cambios" : "Crear lista", "primary");
   cancel.addEventListener("click", closeModal);
   submit.addEventListener("click", async () => {
     const data = Object.fromEntries(new FormData(form).entries());
-    if (!data.name) return toast("El nombre es obligatorio", "error");
+    if (!data.name?.trim()) return toast("El nombre es obligatorio", "error");
     submit.disabled = true;
     try {
-      const res = await api("/api/lead-lists", { method: "POST", body: JSON.stringify(data) });
-      toast("Lista creada", "ok");
-      closeModal();
-      location.hash = `#/lists/${res.list.id}`;
+      if (isEdit) {
+        await api(`/api/lead-lists/${encodeURIComponent(existing.id)}`, { method: "PATCH", body: JSON.stringify(data) });
+        toast("Lista actualizada", "ok");
+        closeModal();
+        await router();
+      } else {
+        const res = await api("/api/lead-lists", { method: "POST", body: JSON.stringify(data) });
+        toast("Lista creada", "ok");
+        closeModal();
+        location.hash = `#/lists/${res.list.id}`;
+      }
     } catch (err) {
-      toast(`No se pudo crear (${err.message})`, "error");
+      toast(`No se pudo guardar (${err.message})`, "error");
     } finally {
       submit.disabled = false;
     }
   });
   footer.append(cancel, submit);
-  openModal({ title: "Nueva lista", body: form, footer });
+  openModal({ title: isEdit ? "Editar lista" : "Nueva lista", body: form, footer });
+}
+
+async function openAddLeadsToListModal(leads, { afterAdd } = {}) {
+  const count = leads.length;
+  let leadLists = { rows: [] };
+  try {
+    leadLists = await api("/api/lead-lists");
+  } catch {}
+  const form = document.createElement("form");
+  form.innerHTML = `
+    <p class="muted" style="margin:0 0 4px">Añadir <strong style="color:var(--text)">${fmtNumber(count)}</strong> lead${count === 1 ? "" : "s"} a una lista.</p>
+    <div class="field">
+      <label>Lista existente</label>
+      <select class="select" name="listId">
+        <option value="">— Selecciona una lista —</option>
+        ${(leadLists.rows || [])
+          .map((list) => `<option value="${escape(list.id)}">${escape(list.name)}${list.leads_count != null ? ` · ${fmtNumber(list.leads_count)} leads` : ""}</option>`)
+          .join("")}
+      </select>
+    </div>
+    <div class="divider"></div>
+    <div class="field">
+      <label>…o crea una lista nueva</label>
+      <input class="input" name="newListName" placeholder="Nombre de la nueva lista" />
+    </div>
+  `;
+  const footer = document.createDocumentFragment();
+  const cancel = btn("Cancelar", "ghost");
+  const submit = btn("Añadir a lista", "primary");
+  cancel.addEventListener("click", closeModal);
+  submit.addEventListener("click", async () => {
+    const data = Object.fromEntries(new FormData(form).entries());
+    const newName = String(data.newListName || "").trim();
+    if (!newName && !data.listId) return toast("Elige una lista o escribe un nombre nuevo", "error");
+    submit.disabled = true;
+    try {
+      let listId = data.listId;
+      if (newName) {
+        const created = await api("/api/lead-lists", { method: "POST", body: JSON.stringify({ name: newName }) });
+        listId = created.list.id;
+      }
+      let added = 0;
+      let failed = 0;
+      for (const lead of leads) {
+        try {
+          await api(`/api/lead-lists/${encodeURIComponent(listId)}/businesses`, {
+            method: "POST",
+            body: JSON.stringify({ businessId: lead.id })
+          });
+          added += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      const suffix = failed ? ` · ${fmtNumber(failed)} fallidos` : "";
+      toast(`${fmtNumber(added)} lead${added === 1 ? "" : "s"} añadidos a la lista${suffix}`, added ? "ok" : "error");
+      closeModal();
+      if (afterAdd) await afterAdd();
+    } catch (err) {
+      toast(`No se pudo añadir a la lista (${err.message})`, "error");
+    } finally {
+      submit.disabled = false;
+    }
+  });
+  footer.append(cancel, submit);
+  openModal({ title: "Añadir a lista", body: form, footer });
 }
 
 // ── Analytics ────────────────────────────────────────────

@@ -95,6 +95,20 @@
         };
         setTimeout(open, 600);
       }
+      // Dev-only: select all leads + optionally open a bulk modal for screenshots
+      if (location.search.includes("demo=bulk")) {
+        const run = () => {
+          const all = document.querySelector("[data-action='toggle-all-leads']");
+          if (!all) return setTimeout(run, 200);
+          all.checked = true;
+          all.dispatchEvent(new Event("change", { bubbles: true }));
+          const action = new URLSearchParams(location.search).get("open");
+          if (action) {
+            setTimeout(() => document.querySelector(`[data-action='${action}']`)?.click(), 300);
+          }
+        };
+        setTimeout(run, 700);
+      }
     </script>
   </body>
 </html>
