@@ -1373,10 +1373,39 @@ function domainFromWebsite(url) {
   if (!raw) return "";
   try {
     const u = new URL(/^https?:\/\//i.test(raw) ? raw : `https://${raw}`);
-    return u.hostname.replace(/^www\./i, "").toLowerCase();
+    const host = u.hostname.replace(/^www\./i, "").toLowerCase();
+    return isBlockedDomainExportHost(host) ? "" : host;
   } catch {
-    return raw.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0].toLowerCase();
+    const host = raw.replace(/^https?:\/\//i, "").replace(/^www\./i, "").split(/[/?#]/)[0].toLowerCase();
+    return isBlockedDomainExportHost(host) ? "" : host;
   }
+}
+
+function isBlockedDomainExportHost(host) {
+  const normalized = String(host || "").replace(/^www\./i, "").toLowerCase();
+  if (!normalized) return true;
+  const blockedHosts = [
+    "facebook.com",
+    "fb.com",
+    "fb.me",
+    "instagram.com",
+    "tiktok.com",
+    "linkedin.com",
+    "twitter.com",
+    "x.com",
+    "youtube.com",
+    "youtu.be",
+    "wa.me",
+    "whatsapp.com",
+    "linktr.ee",
+    "beacons.ai",
+    "bio.link",
+    "google.com",
+    "google.es",
+    "goo.gl",
+    "maps.app.goo.gl"
+  ];
+  return blockedHosts.some((blocked) => normalized === blocked || normalized.endsWith(`.${blocked}`));
 }
 
 function uniqueDomains(rows = []) {
@@ -1418,7 +1447,7 @@ async function copyDomainsFromRows(rows, button) {
   const ok = await copyToClipboard(domains.join("\n"));
   if (!ok) return toast("No se pudo copiar al portapapeles", "error");
   const without = total - domains.length;
-  const suffix = without > 0 ? ` · ${fmtNumber(without)} sin web/duplicados` : "";
+  const suffix = without > 0 ? ` · ${fmtNumber(without)} sin dominio web válido/duplicados` : "";
   toast(`${fmtNumber(domains.length)} dominios copiados${suffix}`, "ok");
 }
 
