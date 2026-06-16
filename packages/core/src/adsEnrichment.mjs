@@ -2227,7 +2227,11 @@ function applyAiProviderDecision({ provider, base, normalized, rawResult, aiConf
   if (
     normalized.active !== null &&
     requireAiPlannedEvidence &&
-    !selectedAttempts.some((attempt) => attempt.plannedBy === "ai" || isMandatoryExactDomainAttempt({ provider, attempt }))
+    !selectedAttempts.some((attempt) =>
+      attempt.plannedBy === "ai" ||
+      isMandatoryExactDomainAttempt({ provider, attempt }) ||
+      isRecoveredApifyAttempt({ provider, attempt })
+    )
   ) {
     return aiUnplannedProviderResult({ provider, base, rawResult, aiConfig, phase, normalized });
   }
@@ -2349,6 +2353,13 @@ function isMandatoryExactDomainAttempt({ provider, attempt = {} } = {}) {
     return fields.includes("domain") || fields.includes("landing_domain");
   }
   return false;
+}
+
+function isRecoveredApifyAttempt({ attempt = {} } = {}) {
+  if (attempt.sourceProvider !== "apify" || attempt.plannedBy !== "recovery") return false;
+  if (!String(attempt.strategy || "").startsWith("historical_")) return false;
+  const fields = Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [];
+  return fields.some((field) => ["exact_domain", "exact_social", "unique_name_city"].includes(field));
 }
 
 function aiDomainEvidenceRequiredProviderResult({ provider, base, rawResult, aiConfig, phase, normalized }) {
