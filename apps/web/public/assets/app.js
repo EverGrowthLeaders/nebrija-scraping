@@ -88,9 +88,10 @@ const renderScore = (score) => {
   return `<span class="score ${cls}">${n}</span>`;
 };
 
-const renderAdsBadge = (value, label) => {
+const renderAdsBadge = (value, label, checkedAt = null) => {
   if (value === true) return `<span class="badge badge--green">${escape(label)} activo</span>`;
   if (value === false) return `<span class="badge badge--zinc">${escape(label)} sin señal</span>`;
+  if (checkedAt) return `<span class="badge badge--zinc">${escape(label)} sin señal</span>`;
   return `<span class="badge badge--zinc">${escape(label)} sin revisar</span>`;
 };
 
@@ -103,9 +104,9 @@ const renderAdsEvidenceBadge = (value, label, evidence = {}) => {
 
 const renderAdsState = (business) => `
   <div class="ads-badges">
-    ${renderAdsBadge(business.ads_meta_active, "Meta")}
+    ${renderAdsBadge(business.ads_meta_active, "Meta", business.ads_last_checked_at)}
     ${renderMetaAdsEstimateBadge(business, { compact: true })}
-    ${renderAdsBadge(business.ads_google_active, "Google")}
+    ${renderAdsBadge(business.ads_google_active, "Google", business.ads_last_checked_at)}
   </div>
 `;
 
@@ -2927,8 +2928,8 @@ function createCrmColumns(options = {}, rows = [], { editable = true } = {}) {
       label: "Meta Ads",
       width: 96,
       filter: "boolean",
-      value: (row) => crmBoolValue(row.ads_meta_active),
-      render: (row) => renderAdsBadge(row.ads_meta_active, "Meta")
+      value: (row) => crmAdsValue(row.ads_meta_active, row.ads_last_checked_at),
+      render: (row) => renderAdsBadge(row.ads_meta_active, "Meta", row.ads_last_checked_at)
     },
     {
       key: "meta_ads_estimate",
@@ -2947,8 +2948,8 @@ function createCrmColumns(options = {}, rows = [], { editable = true } = {}) {
       label: "Google Ads",
       width: 102,
       filter: "boolean",
-      value: (row) => crmBoolValue(row.ads_google_active),
-      render: (row) => renderAdsBadge(row.ads_google_active, "Google")
+      value: (row) => crmAdsValue(row.ads_google_active, row.ads_last_checked_at),
+      render: (row) => renderAdsBadge(row.ads_google_active, "Google", row.ads_last_checked_at)
     }
   ];
 }
@@ -3163,9 +3164,9 @@ function crmMatchesQuickFilters(row, columns, quick = {}) {
   if (quick.city && row.city !== quick.city) return false;
   if (quick.niche && row.niche !== quick.niche) return false;
   if (quick.adsFunnelType && !crmMatchesFunnelFilter(row.ads_funnel_type || "unknown", quick.adsFunnelType)) return false;
-  if (quick.metaAds && crmBoolValue(row.ads_meta_active) !== quick.metaAds) return false;
+  if (quick.metaAds && crmAdsValue(row.ads_meta_active, row.ads_last_checked_at) !== quick.metaAds) return false;
   if (quick.hasMetaEstimate && String(hasMetaAdsEstimate(row)) !== quick.hasMetaEstimate) return false;
-  if (quick.googleAds && crmBoolValue(row.ads_google_active) !== quick.googleAds) return false;
+  if (quick.googleAds && crmAdsValue(row.ads_google_active, row.ads_last_checked_at) !== quick.googleAds) return false;
   return true;
 }
 
@@ -3302,6 +3303,12 @@ function crmBoolValue(value) {
   if (value === true) return "true";
   if (value === false) return "false";
   return "unknown";
+}
+
+function crmAdsValue(value, checkedAt) {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  return checkedAt ? "false" : "unknown";
 }
 
 function crmReadonly(value) {
