@@ -2618,6 +2618,7 @@ async function recoverApifyAdsEvidenceForLeads({
 function buildAdsRecoveryLeadIndex(leads = []) {
   const byDomain = new Map();
   const bySocial = new Map();
+  const leadNames = [];
   for (const lead of leads) {
     const domain = normalizeRecoveryDomain(lead.website);
     if (domain) addIndexValue(byDomain, domain, lead);
@@ -2625,8 +2626,13 @@ function buildAdsRecoveryLeadIndex(leads = []) {
       const normalized = normalizeRecoverySocial(social);
       if (normalized) addIndexValue(bySocial, normalized, lead);
     }
+    leadNames.push({
+      lead,
+      nameTokens: distinctiveRecoveryTokens(lead.name),
+      cityTokens: distinctiveRecoveryTokens(lead.city)
+    });
   }
-  return { byDomain, bySocial };
+  return { byDomain, bySocial, leadNames };
 }
 
 function addIndexValue(index, key, lead) {
@@ -2648,7 +2654,35 @@ function findApifyRecoveryMatch({ provider, query, leadIndex }) {
       if (leads.length === 1) return { lead: leads[0], reason: "exact_social" };
     }
   }
+  const nameMatch = findNameRecoveryMatch(query, leadIndex);
+  if (nameMatch) return nameMatch;
   return null;
+}
+
+function findNameRecoveryMatch(query, leadIndex) {
+  const queryTokens = distinctiveRecoveryTokens(query);
+  if (queryTokens.length < 2) return null;
+  const querySet = new Set(queryTokens);
+  const candidates = [];
+  for (const entry of leadIndex.leadNames || []) {
+    const nameMatches = entry.nameTokens.filter((token) => querySet.has(token));
+    const cityMatches = entry.cityTokens.filter((token) => querySet.has(token));
+    const hasCity = cityMatches.length > 0;
+    const score = nameMatches.length * 2 + (hasCity ? 1 : 0);
+    const accepted = (nameMatches.length >= 2 && score >= 4) || (nameMatches.length >= 1 && hasCity && score >= 3);
+    if (accepted) {
+      candidates.push({
+        lead: entry.lead,
+        reason: hasCity ? "unique_name_city" : "unique_name_tokens",
+        score,
+        nameMatches: nameMatches.length
+      });
+    }
+  }
+  candidates.sort((left, right) => right.score - left.score || right.nameMatches - left.nameMatches);
+  if (!candidates.length) return null;
+  if (candidates.length > 1 && candidates[0].score <= candidates[1].score + 1) return null;
+  return { lead: candidates[0].lead, reason: candidates[0].reason };
 }
 
 function recoverySocialValues(lead = {}) {
@@ -2855,6 +2889,21 @@ function normalizeRecoverySocial(value) {
     const handle = raw.replace(/^@/, "").toLowerCase();
     return handle && !/\s/.test(handle) ? `handle:${handle}` : "";
   }
+}
+
+function distinctiveRecoveryTokens(value) {
+  const stop = new Set([
+    "reforma", "reformas", "integral", "integrales", "empresa", "empresas", "servicio", "servicios",
+    "construccion", "construcciones", "obra", "obras", "hogar", "casa", "espana", "spain", "otro",
+    "otros", "sl", "s.l", "s.l.", "the", "and", "para", "por", "del", "los", "las", "una"
+  ]);
+  return [...new Set(String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.trim())
+    .filter((token) => token.length >= 4 && !stop.has(token)))];
 }
 
 function recoveryItemStrings(item = {}) {
