@@ -1507,6 +1507,55 @@ export async function auditAdsCampaignLeads({
   return result.rows;
 }
 
+export async function auditNationalCampaignAdsLeads({
+  tenantId = DEFAULT_TENANT_ID,
+  nationalCampaignId,
+  limit = 20000
+} = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20000, 1), 25000);
+  const result = await query(
+    `SELECT b.id,
+            b.name,
+            b.website,
+            b.city,
+            b.niche,
+            b.category,
+            b.phone_e164,
+            b.ads_meta_active,
+            b.ads_google_active,
+            b.ads_last_checked_at,
+            b.ads_enrichment,
+            b.ads_funnel_type,
+            b.ads_funnel_confidence,
+            b.ads_funnel_landing_url,
+            b.created_at,
+            b.updated_at,
+            j.id AS extraction_job_id,
+            j.city AS campaign_city,
+            COALESCE(
+              json_agg(
+                json_build_object(
+                  'kind', c.kind,
+                  'value', c.value,
+                  'confidence', c.confidence,
+                  'sourceUrl', c.source_url
+                )
+              ) FILTER (WHERE c.id IS NOT NULL),
+              '[]'::json
+            ) AS contacts
+       FROM businesses b
+       JOIN extraction_jobs j ON j.id = b.extraction_job_id AND j.tenant_id = b.tenant_id
+       LEFT JOIN business_contacts c ON c.business_id = b.id
+      WHERE b.tenant_id = $1
+        AND j.national_campaign_id = $2
+      GROUP BY b.id, j.id
+      ORDER BY b.created_at ASC
+      LIMIT $3`,
+    [tenantId, nationalCampaignId, safeLimit]
+  );
+  return result.rows;
+}
+
 export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID, campaignId }) {
   const result = await query(
     `SELECT b.id,

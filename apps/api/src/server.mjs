@@ -67,6 +67,7 @@ import {
   listLeadListCrmEntries,
   listLeadLists,
   listNationalCampaigns,
+  auditNationalCampaignAdsLeads,
   listVoiceCalls,
   markTenantApiKeyUsed,
   persistNebrijaWebhookEvent,
@@ -1200,6 +1201,30 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
+      if (req.method === "GET" && url.pathname === "/api/test-jobs/audit/national-ads") {
+        const nationalCampaign = await resolveAuditNationalCampaign({
+          tenantId: auth.tenantId,
+          id: url.searchParams.get("nationalCampaignId") || url.searchParams.get("national_campaign_id"),
+          search: url.searchParams.get("search") || url.searchParams.get("q") || ""
+        });
+        if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+        const leads = await auditNationalCampaignAdsLeads({
+          tenantId: auth.tenantId,
+          nationalCampaignId: nationalCampaign.id,
+          limit: url.searchParams.get("leadLimit") || url.searchParams.get("limit") || 20000
+        });
+        const auditedLeads = leads.map(auditLeadAdsEvidence);
+        const includeLeads = parseBoolean(url.searchParams.get("includeLeads") ?? false);
+        return sendJson(res, 200, {
+          audit: {
+            generatedAt: new Date().toISOString(),
+            selectedNationalCampaign: nationalCampaign,
+            summary: summarizeAdsAudit(auditedLeads),
+            leads: includeLeads ? auditedLeads : undefined
+          }
+        });
+      }
+
       const testCampaignAdsMatch = matchPath(url.pathname, /^\/api\/test-jobs\/campaigns\/([^/]+)\/ads-enrichment$/);
       if (req.method === "POST" && testCampaignAdsMatch) {
         const { json } = await readJson(req);
@@ -1510,6 +1535,27 @@ function redirect(res, location) {
   res.end();
 }
 
+async function resolveAuditNationalCampaign({ tenantId, id, search } = {}) {
+  if (id) {
+    const nationalCampaign = await findNationalCampaignDetail(id, { tenantId });
+    if (nationalCampaign) return nationalCampaign;
+  }
+  const result = await listNationalCampaigns({ tenantId, limit: 100 });
+  const rows = result.rows || [];
+  const needle = String(search || "").trim().toLowerCase();
+  if (!needle) return rows[0] || null;
+  const tokens = needle.split(/[^a-z0-9áéíóúüñ]+/i).map((token) => token.trim()).filter(Boolean);
+  return rows.find((campaign) => {
+    const text = [
+      campaign.id,
+      campaign.niche,
+      campaign.country,
+      campaign.city_preset
+    ].filter(Boolean).join(" ").toLowerCase();
+    return tokens.every((token) => text.includes(token));
+  }) || rows.find((campaign) => String(campaign.niche || "").toLowerCase().includes(needle)) || rows[0] || null;
+}
+
 function auditLeadAdsEvidence(lead) {
   const meta = auditProviderEvidence("meta", lead.ads_meta_active, lead.ads_enrichment?.meta);
   const google = auditProviderEvidence("google", lead.ads_google_active, lead.ads_enrichment?.google);
@@ -1569,6 +1615,11 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
 
   const weakAttempts = attempts.filter((attempt) => attempt?.active === true && isWeakAttempt(provider, attempt));
   if (weakAttempts.length) reasons.push(`${weakAttempts.length}_weak_active_attempts`);
+  const apifyAttempts = attempts.filter((attempt) => attempt?.sourceProvider === "apify");
+  const apifyActiveAttempts = apifyAttempts.filter((attempt) => attempt?.active === true);
+  const apifyActiveCandidates = apifyAttempts.filter((attempt) =>
+    /active|candidate/i.test(String(attempt?.reason || attempt?.reasonSignal || ""))
+  );
 
   return {
     storedActive: storedActive ?? null,
@@ -1577,6 +1628,8 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
     confidence: detail?.confidence ?? null,
     reason: detail?.reason || null,
     ai: detail?.ai || null,
+    aiStatus: detail?.ai?.status || null,
+    verificationStatus: detail?.ai?.verification?.status || null,
     sourceProvider: detail?.sourceProvider || null,
     strategy: detail?.strategy || null,
     query: detail?.query || null,
@@ -1592,6 +1645,10 @@ function auditProviderEvidence(provider, storedActive, detail = {}) {
     spendEstimate: detail?.spendEstimate || null,
     suspect: reasons.length > 0,
     suspectReasons: reasons,
+    attemptsCount: attempts.length,
+    apifyAttemptsCount: apifyAttempts.length,
+    apifyActiveAttemptsCount: apifyActiveAttempts.length,
+    apifyActiveCandidatesCount: apifyActiveCandidates.length,
     activeAttempts: compactAdAttemptList(attempts.filter((attempt) => attempt?.active === true), 8),
     weakActiveAttempts: compactAdAttemptList(weakAttempts, 8),
     inactiveOrUnknownAttempts: compactAdAttemptList(attempts.filter((attempt) => attempt?.active !== true), 16)
@@ -1693,17 +1750,37 @@ function summarizeAdsAudit(leads) {
     metaActiveStored: 0,
     googleActiveStored: 0,
     bothActiveStored: 0,
+    metaStoredNull: 0,
+    googleStoredNull: 0,
+    adsChecked: 0,
     metaSuspectActive: 0,
     googleSuspectActive: 0,
     cleanMetaActive: 0,
     cleanGoogleActive: 0,
+    metaApifyAttempts: 0,
+    googleApifyAttempts: 0,
+    metaApifyActiveAttempts: 0,
+    googleApifyActiveAttempts: 0,
+    metaApifyActiveCandidates: 0,
+    googleApifyActiveCandidates: 0,
+    metaNullWithApifyActiveEvidence: 0,
+    googleNullWithApifyActiveEvidence: 0,
     unchecked: 0,
+    metaReasons: {},
+    googleReasons: {},
+    metaAiStatuses: {},
+    googleAiStatuses: {},
+    metaVerificationStatuses: {},
+    googleVerificationStatuses: {},
     suspects: []
   };
   for (const lead of leads) {
     const metaActive = lead.meta.storedActive === true;
     const googleActive = lead.google.storedActive === true;
+    if (lead.adsLastCheckedAt) summary.adsChecked += 1;
     if (!lead.adsLastCheckedAt) summary.unchecked += 1;
+    if (lead.meta.storedActive == null) summary.metaStoredNull += 1;
+    if (lead.google.storedActive == null) summary.googleStoredNull += 1;
     if (metaActive) summary.metaActiveStored += 1;
     if (googleActive) summary.googleActiveStored += 1;
     if (metaActive && googleActive) summary.bothActiveStored += 1;
@@ -1711,6 +1788,24 @@ function summarizeAdsAudit(leads) {
     if (googleActive && lead.google.suspect) summary.googleSuspectActive += 1;
     if (metaActive && !lead.meta.suspect) summary.cleanMetaActive += 1;
     if (googleActive && !lead.google.suspect) summary.cleanGoogleActive += 1;
+    summary.metaApifyAttempts += lead.meta.apifyAttemptsCount || 0;
+    summary.googleApifyAttempts += lead.google.apifyAttemptsCount || 0;
+    summary.metaApifyActiveAttempts += lead.meta.apifyActiveAttemptsCount || 0;
+    summary.googleApifyActiveAttempts += lead.google.apifyActiveAttemptsCount || 0;
+    summary.metaApifyActiveCandidates += lead.meta.apifyActiveCandidatesCount || 0;
+    summary.googleApifyActiveCandidates += lead.google.apifyActiveCandidatesCount || 0;
+    const metaNullWithApifyActiveEvidence = lead.meta.storedActive == null &&
+      ((lead.meta.apifyActiveAttemptsCount || 0) > 0 || (lead.meta.apifyActiveCandidatesCount || 0) > 0);
+    const googleNullWithApifyActiveEvidence = lead.google.storedActive == null &&
+      ((lead.google.apifyActiveAttemptsCount || 0) > 0 || (lead.google.apifyActiveCandidatesCount || 0) > 0);
+    if (metaNullWithApifyActiveEvidence) summary.metaNullWithApifyActiveEvidence += 1;
+    if (googleNullWithApifyActiveEvidence) summary.googleNullWithApifyActiveEvidence += 1;
+    incrementSummaryCount(summary.metaReasons, lead.meta.reason);
+    incrementSummaryCount(summary.googleReasons, lead.google.reason);
+    incrementSummaryCount(summary.metaAiStatuses, lead.meta.aiStatus);
+    incrementSummaryCount(summary.googleAiStatuses, lead.google.aiStatus);
+    incrementSummaryCount(summary.metaVerificationStatuses, lead.meta.verificationStatus);
+    incrementSummaryCount(summary.googleVerificationStatuses, lead.google.verificationStatus);
     if ((metaActive && lead.meta.suspect) || (googleActive && lead.google.suspect)) {
       summary.suspects.push({
         id: lead.id,
@@ -1722,9 +1817,24 @@ function summarizeAdsAudit(leads) {
         googleSourceUrl: lead.google.sourceUrl
       });
     }
+    if (metaNullWithApifyActiveEvidence || googleNullWithApifyActiveEvidence) {
+      summary.suspects.push({
+        id: lead.id,
+        name: lead.name,
+        website: lead.website,
+        reason: "stored_null_with_apify_active_evidence",
+        meta: metaNullWithApifyActiveEvidence ? lead.meta : null,
+        google: googleNullWithApifyActiveEvidence ? lead.google : null
+      });
+    }
   }
   summary.suspects = summary.suspects.slice(0, 50);
   return summary;
+}
+
+function incrementSummaryCount(target, value) {
+  const key = value == null || value === "" ? "(empty)" : String(value);
+  target[key] = (target[key] || 0) + 1;
 }
 
 async function getRouteAuth(req, url) {
