@@ -4201,9 +4201,27 @@ async function copyText(text) {
 async function openCampaignModal() {
   const form = document.createElement("form");
   form.innerHTML = `
+    <div class="campaign-scope" role="radiogroup" aria-label="Alcance">
+      <label>
+        <input type="radio" name="scope" value="city" checked />
+        <span>Ciudad</span>
+      </label>
+      <label>
+        <input type="radio" name="scope" value="national" />
+        <span>España</span>
+      </label>
+    </div>
     <div class="row">
       <div class="field"><label>Nicho</label><input class="input" name="niche" required placeholder="clínica dental" /></div>
-      <div class="field"><label>Ciudad</label><input class="input" name="city" required placeholder="Madrid" /></div>
+      <div class="field" data-scope-field="city"><label>Ciudad</label><input class="input" name="city" required placeholder="Madrid" /></div>
+      <div class="field" data-scope-field="national" hidden><label>Cobertura</label>
+        <select class="select" name="cityPreset">
+          <option value="top_50">Top 50 ciudades</option>
+          <option value="top_20">Top 20 ciudades</option>
+          <option value="province_capitals">Capitales de provincia</option>
+          <option value="all_supported">Todas las soportadas</option>
+        </select>
+      </div>
     </div>
     <div class="row">
       <div class="field"><label>Origen</label>
@@ -4211,7 +4229,13 @@ async function openCampaignModal() {
           <option value="google_places_api">google_places_api</option>
         </select>
       </div>
-      <div class="field"><label>Límite solicitado</label><input class="input" name="requestedLimit" type="number" min="1" placeholder="1000" /></div>
+      <div class="field" data-scope-field="city"><label>Límite solicitado</label><input class="input" name="requestedLimit" type="number" min="1" placeholder="1000" /></div>
+      <div class="field" data-scope-field="national" hidden><label>Límite por ciudad</label><input class="input" name="limitPerCity" type="number" min="1" placeholder="100" /></div>
+    </div>
+    <div class="field" data-scope-field="national" hidden>
+      <label>Ciudades manuales</label>
+      <textarea class="textarea textarea--compact" name="cities" placeholder="Madrid, Barcelona, Valencia"></textarea>
+      <div class="form-hint">Opcional. Si lo rellenas, sustituye la cobertura.</div>
     </div>
     <label class="check-row">
       <input type="checkbox" name="enrichAds" checked />
@@ -4226,6 +4250,21 @@ async function openCampaignModal() {
       <div class="form-hint" data-bind="campaign-assistant-hint">Puedes vincular un asistente ahora o lanzar llamadas manualmente despues.</div>
     </div>
   `;
+  const syncScope = () => {
+    const scope = new FormData(form).get("scope") || "city";
+    $$("[data-scope-field]", form).forEach((el) => {
+      const visible = el.dataset.scopeField === scope;
+      el.hidden = !visible;
+      $$("input,select,textarea", el).forEach((input) => {
+        if (input.name === "city") input.required = scope === "city";
+        if (input.name === "city") input.disabled = scope !== "city";
+        if (input.name === "requestedLimit") input.disabled = scope !== "city";
+        if (["cityPreset", "limitPerCity", "cities"].includes(input.name)) input.disabled = scope !== "national";
+      });
+    });
+  };
+  $$("input[name='scope']", form).forEach((input) => input.addEventListener("change", syncScope));
+  syncScope();
   await hydrateCampaignAssistants(form);
   const footer = document.createDocumentFragment();
   const cancel = btn("Cancelar", "ghost");
@@ -4233,15 +4272,25 @@ async function openCampaignModal() {
   cancel.addEventListener("click", closeModal);
   submit.addEventListener("click", async () => {
     const data = Object.fromEntries(new FormData(form).entries());
+    const scope = data.scope || "city";
     Object.assign(data, buildCampaignVoicePayload(form));
-    if (!data.niche || !data.city) {
+    if (!data.niche || (scope === "city" && !data.city)) {
       toast("Faltan campos obligatorios", "error");
       return;
     }
+    if (scope === "national" && data.cities) {
+      data.cities = data.cities
+        .split(/[\n,;|]+/)
+        .map((city) => city.trim())
+        .filter(Boolean);
+    }
+    delete data.scope;
     submit.disabled = true;
     try {
-      await api("/campaigns", { method: "POST", body: JSON.stringify(data) });
-      toast("Campaña creada", "ok");
+      const endpoint = scope === "national" ? "/national-campaigns" : "/campaigns";
+      const result = await api(endpoint, { method: "POST", body: JSON.stringify(data) });
+      const count = result?.nationalCampaign?.citiesCount;
+      toast(scope === "national" ? `Campaña nacional creada${count ? ` (${count} ciudades)` : ""}` : "Campaña creada", "ok");
       closeModal();
       if ((parseHash().pathname || "/").startsWith("/campaigns") || parseHash().pathname === "/") {
         router();
