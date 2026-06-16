@@ -2687,6 +2687,11 @@ function findNameRecoveryMatch(query, leadIndex) {
 
 function recoverySocialValues(lead = {}) {
   const custom = lead.custom_fields && typeof lead.custom_fields === "object" ? lead.custom_fields : {};
+  const contactSocials = Array.isArray(lead.contacts)
+    ? lead.contacts
+        .filter((contact) => ["facebook", "instagram"].includes(String(contact?.kind || "").toLowerCase()))
+        .map((contact) => contact.value)
+    : [];
   return [
     lead.facebook,
     lead.instagram,
@@ -2695,7 +2700,8 @@ function recoverySocialValues(lead = {}) {
     custom.fb,
     custom.instagram,
     custom.instagram_url,
-    custom.ig
+    custom.ig,
+    ...contactSocials
   ].filter(Boolean);
 }
 
