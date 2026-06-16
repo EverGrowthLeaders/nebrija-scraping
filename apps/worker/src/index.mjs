@@ -71,7 +71,7 @@ const workers = [
 for (const worker of workers) {
   worker.on("completed", (job) => logger.info({ queue: worker.name, jobId: job.id }, "job completed"));
   worker.on("failed", (job, error) =>
-    logger.error({ queue: worker.name, jobId: job?.id, error }, "job failed")
+    logger.error({ queue: worker.name, jobId: job?.id, error: serializeWorkerError(error) }, "job failed")
   );
 }
 
@@ -458,11 +458,20 @@ async function runAdsEnrichment(job) {
     await queues.scoring.add("score", { tenantId: business.tenant_id, businessId: business.id });
   }
   return {
-    reverifiedStoredEvidence,
+    reverifiedStoredEvidence: reverifyStoredEvidence,
     meta: enrichment.meta?.status,
     google: enrichment.google?.status,
     funnel: enrichment.classification?.type,
     checkedAt: enrichment.checkedAt
+  };
+}
+
+function serializeWorkerError(error) {
+  if (!error) return null;
+  return {
+    name: error.name || null,
+    message: error.message || String(error),
+    stack: error.stack || null
   };
 }
 
