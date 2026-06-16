@@ -558,6 +558,12 @@ const server = http.createServer(async (req, res) => {
         queued: queueJobs.length,
         queue: QUEUE_NAMES.adsEnrichment,
         mode: "stored_ads_evidence_only",
+        evidence: {
+          adsEvidenceCount: Number(nationalCampaign.ads_evidence_count) || 0,
+          adsAttemptsCount: Number(nationalCampaign.ads_attempts_count) || 0,
+          metaApifyEvidenceCount: Number(nationalCampaign.meta_apify_evidence_count) || 0,
+          googleApifyEvidenceCount: Number(nationalCampaign.google_apify_evidence_count) || 0
+        },
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
     }

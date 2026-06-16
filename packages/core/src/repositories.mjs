@@ -514,7 +514,10 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
             COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
             COUNT(DISTINCT b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
             COUNT(DISTINCT b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment, '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(b.ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*]') OR jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*]'))::int AS ads_attempts_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*] ? (@.sourceProvider == "apify")'))::int AS meta_apify_evidence_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*] ? (@.sourceProvider == "apify")'))::int AS google_apify_evidence_count,
             MAX(b.ads_last_checked_at) AS last_ads_checked_at,
             CASE
               WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
@@ -552,7 +555,10 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
             COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
             COUNT(DISTINCT b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
             COUNT(DISTINCT b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment, '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(b.ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*]') OR jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*]'))::int AS ads_attempts_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*] ? (@.sourceProvider == "apify")'))::int AS meta_apify_evidence_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*] ? (@.sourceProvider == "apify")'))::int AS google_apify_evidence_count,
             MAX(b.ads_last_checked_at) AS last_ads_checked_at,
             CASE
               WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
@@ -1706,7 +1712,7 @@ export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID,
   const safeLimit = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
   const where = ["tenant_id = $1", "extraction_job_id = $2"];
   if (onlyUnchecked) where.push("ads_last_checked_at IS NULL");
-  if (onlyWithAdsEvidence) where.push("COALESCE(ads_enrichment, '{}'::jsonb) <> '{}'::jsonb");
+  if (onlyWithAdsEvidence) where.push("(COALESCE(ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)");
   const result = await query(
     `SELECT id
        FROM businesses
@@ -1730,7 +1736,7 @@ export async function listBusinessIdsForCampaignIds({
   const safeLimit = Math.min(Math.max(Number(limit) || 5000, 1), 20000);
   const where = ["tenant_id = $1", "extraction_job_id = ANY($2::uuid[])"];
   if (onlyUnchecked) where.push("ads_last_checked_at IS NULL");
-  if (onlyWithAdsEvidence) where.push("COALESCE(ads_enrichment, '{}'::jsonb) <> '{}'::jsonb");
+  if (onlyWithAdsEvidence) where.push("(COALESCE(ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)");
   const result = await query(
     `SELECT id
        FROM businesses

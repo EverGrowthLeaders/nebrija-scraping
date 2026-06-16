@@ -859,6 +859,7 @@ async function renderNationalCampaignDetail({ params }) {
       ${kpiCard("Leads creados", fmtNumber(nationalCampaign.leads_count), "Negocios en pipeline", "accent")}
       ${kpiCard("Candidatos", fmtNumber(nationalCampaign.candidates_count), "Lugares descubiertos")}
       ${kpiCard("Ads revisados", fmtNumber(nationalCampaign.ads_checked_count || 0), `${fmtNumber(nationalCampaign.ads_evidence_count || 0)} con evidencia`)}
+      ${kpiCard("Apify guardado", fmtNumber((Number(nationalCampaign.meta_apify_evidence_count) || 0) + (Number(nationalCampaign.google_apify_evidence_count) || 0)), `Meta ${fmtNumber(nationalCampaign.meta_apify_evidence_count || 0)} · Google ${fmtNumber(nationalCampaign.google_apify_evidence_count || 0)}`)}
       ${kpiCard("Solicitados", fmtNumber(nationalCampaign.requested_limit) || "—", "Límite total")}
     </div>
 
@@ -2096,7 +2097,12 @@ async function nationalCampaignAdsReverifyAction(nationalCampaignId) {
   button.disabled = true;
   try {
     const result = await api(`/api/national-campaigns/${nationalCampaignId}/ads-reverification`, { method: "POST", body: "{}" });
-    toast(`${fmtNumber(result.queued)} leads enviados a reverificación Ads sin Apify`, "ok");
+    const metaApify = result.evidence?.metaApifyEvidenceCount || 0;
+    const googleApify = result.evidence?.googleApifyEvidenceCount || 0;
+    const suffix = metaApify || googleApify
+      ? ` · Apify guardado: Meta ${fmtNumber(metaApify)} / Google ${fmtNumber(googleApify)}`
+      : " · sin trazas Apify guardadas";
+    toast(`${fmtNumber(result.queued)} leads enviados a reverificación Ads sin Apify${suffix}`, result.queued ? "ok" : "error");
   } catch (err) {
     toast(`No se pudo reverificar la campaña España (${err.message})`, "error");
   } finally {
