@@ -33,6 +33,7 @@ import {
   addBusinessToLeadList,
   auditAdsCampaignLeads,
   auditAdsCampaigns,
+  clearNationalCampaignFailedAdsReviews,
   createNationalCampaign,
   createLeadList,
   createExtractionJob,
@@ -843,6 +844,93 @@ const server = http.createServer(async (req, res) => {
             phoneNumberConfigured: Boolean(config.nebrija.phoneNumberId)
           },
           queues: queueCounts
+        });
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/test-jobs/repair/national-ads-failed-ai") {
+        const { json } = await readJson(req);
+        const nationalCampaignId = json.nationalCampaignId || json.national_campaign_id;
+        const search = json.search || url.searchParams.get("search") || "";
+        const dryRun = parseBoolean(json.dryRun ?? json.dry_run ?? true);
+        const nationalCampaign = await resolveAuditNationalCampaign({
+          tenantId: auth.tenantId,
+          id: nationalCampaignId,
+          search
+        });
+        if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+        const result = await clearNationalCampaignFailedAdsReviews({
+          tenantId: auth.tenantId,
+          nationalCampaignId: nationalCampaign.id,
+          dryRun
+        });
+        return sendJson(res, 200, {
+          ok: true,
+          dryRun,
+          nationalCampaign: {
+            id: nationalCampaign.id,
+            niche: nationalCampaign.niche,
+            country: nationalCampaign.country
+          },
+          ...result
+        });
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/test-jobs/recover/national-apify-ads") {
+        const { json } = await readJson(req);
+        const nationalCampaign = await resolveAuditNationalCampaign({
+          tenantId: auth.tenantId,
+          id: json.nationalCampaignId || json.national_campaign_id || url.searchParams.get("nationalCampaignId"),
+          search: json.search || url.searchParams.get("search") || ""
+        });
+        if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+        if (!config.apify.apiKey) return sendJson(res, 400, { error: "apify_api_key_missing" });
+        const dryRun = parseBoolean(json.dryRun ?? json.dry_run ?? true);
+        const enqueueReverify = parseBoolean(json.enqueueReverify ?? json.enqueue_reverify ?? true);
+        const leads = await auditNationalCampaignAdsLeads({
+          tenantId: auth.tenantId,
+          nationalCampaignId: nationalCampaign.id,
+          limit: json.leadLimit || json.lead_limit || 25000
+        });
+        const recovery = await recoverApifyAdsEvidenceForLeads({
+          leads,
+          providers: normalizeProviderList(json.providers || json.provider || ["meta", "google"]),
+          startedAfter: json.startedAfter || json.started_after,
+          startedBefore: json.startedBefore || json.started_before,
+          runLimit: json.runLimit || json.run_limit || 250,
+          itemLimit: json.itemLimit || json.item_limit || 5
+        });
+        const updates = [];
+        if (!dryRun) {
+          for (const match of recovery.matches) {
+            const updated = await updateBusinessAdsEnrichment({
+              tenantId: auth.tenantId,
+              businessId: match.businessId,
+              enrichment: match.enrichment
+            });
+            if (updated && enqueueReverify) {
+              const queueJob = await queues.adsEnrichment.add("reverify", {
+                tenantId: auth.tenantId,
+                businessId: match.businessId,
+                nationalCampaignId: nationalCampaign.id,
+                reverifyStoredEvidence: true
+              });
+              updates.push({ businessId: match.businessId, queued: true, jobId: queueJob.id });
+            } else {
+              updates.push({ businessId: match.businessId, queued: false });
+            }
+          }
+        }
+        return sendJson(res, 200, {
+          ok: true,
+          dryRun,
+          nationalCampaign: {
+            id: nationalCampaign.id,
+            niche: nationalCampaign.niche,
+            country: nationalCampaign.country
+          },
+          summary: recovery.summary,
+          samples: recovery.samples,
+          updates: dryRun ? undefined : updates
         });
       }
 
@@ -2448,6 +2536,369 @@ function buildCrmOptions(rows = []) {
     checkpoints: CRM_CHECKPOINT_OPTIONS,
     objections: Array.from(new Set([...CRM_OBJECTION_OPTIONS, ...rows.map((row) => row.objection).filter(Boolean)]))
   };
+}
+
+function normalizeProviderList(value) {
+  const values = (Array.isArray(value) ? value : String(value || "").split(","))
+    .map((item) => String(item || "").trim().toLowerCase())
+    .filter(Boolean);
+  const selected = values.length ? values : ["meta", "google"];
+  return [...new Set(selected.filter((provider) => provider === "meta" || provider === "google"))];
+}
+
+async function recoverApifyAdsEvidenceForLeads({
+  leads = [],
+  providers = ["meta", "google"],
+  startedAfter,
+  startedBefore,
+  runLimit = 250,
+  itemLimit = 5
+} = {}) {
+  const safeRunLimit = Math.min(Math.max(Number(runLimit) || 250, 1), 1000);
+  const safeItemLimit = Math.min(Math.max(Number(itemLimit) || 5, 1), 50);
+  const after = startedAfter || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const before = startedBefore || "";
+  const leadIndex = buildAdsRecoveryLeadIndex(leads);
+  const grouped = new Map();
+  const summary = {
+    leads: leads.length,
+    providers,
+    startedAfter: after,
+    startedBefore: before || null,
+    runsSeen: 0,
+    runsMatched: 0,
+    runsSkipped: 0,
+    evidenceItems: 0,
+    matchedBusinesses: 0
+  };
+  const samples = [];
+
+  for (const provider of providers) {
+    const actorId = provider === "meta" ? config.apify.facebookAdsActorId : config.apify.googleAdsActorId;
+    const runs = await listApifyActorRuns({ actorId, startedAfter: after, startedBefore: before, limit: safeRunLimit });
+    summary.runsSeen += runs.length;
+    for (const run of runs) {
+      const input = await getApifyRunInput(run);
+      const query = apifyRunQuery(provider, input);
+      const match = findApifyRecoveryMatch({ provider, query, leadIndex });
+      if (!match) {
+        summary.runsSkipped += 1;
+        continue;
+      }
+      const items = await getApifyDatasetItems(run, safeItemLimit);
+      const attempt = buildRecoveredApifyAttempt({ provider, run, input, query, items, match });
+      const previous = grouped.get(match.lead.id) || { lead: match.lead, attempts: [] };
+      previous.attempts.push(attempt);
+      grouped.set(match.lead.id, previous);
+      summary.runsMatched += 1;
+      summary.evidenceItems += items.length;
+      if (samples.length < 25) {
+        samples.push({
+          businessId: match.lead.id,
+          name: match.lead.name,
+          provider,
+          query,
+          matchReason: match.reason,
+          runId: run.id,
+          itemsSeen: items.length,
+          activeSignal: attempt.active
+        });
+      }
+    }
+  }
+
+  const matches = [...grouped.values()].map(({ lead, attempts }) => ({
+    businessId: lead.id,
+    enrichment: buildRecoveredAdsEnrichment({ lead, attempts })
+  }));
+  summary.matchedBusinesses = matches.length;
+  return { summary, samples, matches };
+}
+
+function buildAdsRecoveryLeadIndex(leads = []) {
+  const byDomain = new Map();
+  const bySocial = new Map();
+  for (const lead of leads) {
+    const domain = normalizeRecoveryDomain(lead.website);
+    if (domain) addIndexValue(byDomain, domain, lead);
+    for (const social of recoverySocialValues(lead)) {
+      const normalized = normalizeRecoverySocial(social);
+      if (normalized) addIndexValue(bySocial, normalized, lead);
+    }
+  }
+  return { byDomain, bySocial };
+}
+
+function addIndexValue(index, key, lead) {
+  const current = index.get(key) || [];
+  current.push(lead);
+  index.set(key, current);
+}
+
+function findApifyRecoveryMatch({ provider, query, leadIndex }) {
+  const queryDomain = normalizeRecoveryDomain(query);
+  if (queryDomain) {
+    const leads = leadIndex.byDomain.get(queryDomain) || [];
+    if (leads.length === 1) return { lead: leads[0], reason: "exact_domain" };
+  }
+  if (provider === "meta") {
+    const social = normalizeRecoverySocial(query);
+    if (social) {
+      const leads = leadIndex.bySocial.get(social) || [];
+      if (leads.length === 1) return { lead: leads[0], reason: "exact_social" };
+    }
+  }
+  return null;
+}
+
+function recoverySocialValues(lead = {}) {
+  const custom = lead.custom_fields && typeof lead.custom_fields === "object" ? lead.custom_fields : {};
+  return [
+    lead.facebook,
+    lead.instagram,
+    custom.facebook,
+    custom.facebook_url,
+    custom.fb,
+    custom.instagram,
+    custom.instagram_url,
+    custom.ig
+  ].filter(Boolean);
+}
+
+async function listApifyActorRuns({ actorId, startedAfter, startedBefore, limit }) {
+  const runs = [];
+  let offset = 0;
+  while (runs.length < limit) {
+    const page = await apifyJson(`/actors/${encodeApifyActorId(actorId)}/runs`, {
+      limit: Math.min(1000, limit - runs.length),
+      offset,
+      desc: 1,
+      status: "SUCCEEDED",
+      startedAfter,
+      startedBefore
+    });
+    const items = page?.data?.items || [];
+    runs.push(...items);
+    if (!items.length || runs.length >= Number(page?.data?.total || 0)) break;
+    offset += items.length;
+  }
+  return runs;
+}
+
+async function getApifyRunInput(run = {}) {
+  if (!run.defaultKeyValueStoreId) return null;
+  try {
+    return await apifyJson(`/key-value-stores/${run.defaultKeyValueStoreId}/records/INPUT`);
+  } catch {
+    return null;
+  }
+}
+
+async function getApifyDatasetItems(run = {}, limit = 5) {
+  if (!run.defaultDatasetId) return [];
+  const items = await apifyJson(`/datasets/${run.defaultDatasetId}/items`, {
+    clean: 1,
+    format: "json",
+    limit
+  });
+  return Array.isArray(items) ? items : [];
+}
+
+async function apifyJson(pathname, search = {}) {
+  const url = new URL(`${config.apify.baseUrl}${pathname}`);
+  for (const [key, value] of Object.entries(search)) {
+    if (value !== undefined && value !== null && value !== "") url.searchParams.set(key, String(value));
+  }
+  const response = await fetch(url, {
+    headers: {
+      authorization: `Bearer ${config.apify.apiKey}`,
+      accept: "application/json"
+    }
+  });
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : null;
+  if (!response.ok) throw new Error(`apify_http_${response.status}`);
+  return body;
+}
+
+function encodeApifyActorId(actorId) {
+  return encodeURIComponent(actorId).replace(/%7E/gi, "~");
+}
+
+function apifyRunQuery(provider, input = {}) {
+  if (provider === "google") return input?.searchQuery || input?.searchTerms?.[0] || "";
+  const sourceUrl = input?.urls?.[0]?.url || "";
+  if (sourceUrl) {
+    try {
+      const parsed = new URL(sourceUrl);
+      return parsed.searchParams.get("q") || parsed.searchParams.get("page_id") || parsed.searchParams.get("view_all_page_id") || sourceUrl;
+    } catch {
+      return sourceUrl;
+    }
+  }
+  return input?.searchTerms?.[0] || "";
+}
+
+function buildRecoveredApifyAttempt({ provider, run, input, query, items = [], match }) {
+  const strings = items.flatMap((item) => recoveryItemStrings(item)).slice(0, 120);
+  const adsNotFound = strings.some((value) => /ads[_\s-]*not[_\s-]*found/i.test(value));
+  const active = !adsNotFound && items.length > 0;
+  const sourceUrl = provider === "meta"
+    ? input?.urls?.[0]?.url || null
+    : buildRecoveryGoogleTransparencyUrl(query);
+  return {
+    attemptId: `${provider}_apify_recovered_${run.id}`,
+    provider,
+    sourceProvider: "apify",
+    plannedBy: "recovery",
+    discoveryReason: `apify_historical_${match.reason}`,
+    strategy: provider === "meta" ? "historical_meta_apify" : "historical_google_apify",
+    query,
+    country: "ES",
+    status: active ? "active" : "inactive",
+    active,
+    confidence: active ? 0.65 : 0.45,
+    reason: active ? "apify_historical_dataset_recovered" : "apify_historical_ads_not_found",
+    sourceUrl,
+    matchedFields: [match.reason],
+    landingUrls: extractRecoveryUrls(strings).slice(0, 12),
+    itemsSeen: items.length,
+    total: items.length,
+    samplePageName: strings.find((value) => value.length <= 80 && !/^https?:\/\//i.test(value)) || null,
+    adArchiveId: strings.find((value) => /^\d{8,}$/.test(value)) || null,
+    sourceIdentityEvidence: {
+      matchReason: match.reason,
+      matchedBusinessId: match.lead.id,
+      runId: run.id,
+      datasetId: run.defaultDatasetId || null,
+      startedAt: run.startedAt || null,
+      finishedAt: run.finishedAt || null
+    },
+    evidenceSnippet: compactRecoverySnippet(strings.join("\n"), 1800)
+  };
+}
+
+function buildRecoveredAdsEnrichment({ lead, attempts }) {
+  const existing = lead.ads_enrichment && typeof lead.ads_enrichment === "object" ? lead.ads_enrichment : {};
+  const byProvider = attempts.reduce((acc, attempt) => {
+    acc[attempt.provider] ||= [];
+    acc[attempt.provider].push(attempt);
+    return acc;
+  }, {});
+  return {
+    ...existing,
+    checkedAt: new Date().toISOString(),
+    recoveredFromApifyHistoryAt: new Date().toISOString(),
+    meta: mergeRecoveredProvider(existing.meta, "meta", byProvider.meta || []),
+    google: mergeRecoveredProvider(existing.google, "google", byProvider.google || []),
+    classification: existing.classification || null
+  };
+}
+
+function mergeRecoveredProvider(existingProvider, provider, recoveredAttempts = []) {
+  const existing = existingProvider && typeof existingProvider === "object" ? existingProvider : {};
+  const attempts = dedupeRecoveryAttempts([...(existing.attempts || []), ...recoveredAttempts]);
+  if (!attempts.length) return existingProvider || null;
+  return {
+    ...existing,
+    provider,
+    active: null,
+    status: "unknown",
+    confidence: Math.max(existing.confidence || 0, 0.2),
+    reason: "recovered_apify_evidence_pending_ai",
+    attempts,
+    ai: {
+      ...(existing.ai || {}),
+      status: existing.ai?.status === "resolved" ? existing.ai.status : "pending_reverification"
+    }
+  };
+}
+
+function dedupeRecoveryAttempts(attempts = []) {
+  const seen = new Set();
+  const output = [];
+  for (const attempt of attempts) {
+    const key = attempt.attemptId || `${attempt.provider}:${attempt.sourceProvider}:${attempt.query}:${attempt.sourceUrl}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(attempt);
+  }
+  return output.slice(-40);
+}
+
+function normalizeRecoveryDomain(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length < 4) return "";
+  try {
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const parsed = new URL(withProtocol);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (!host.includes(".") || host.endsWith("facebook.com") || host.endsWith("instagram.com")) return "";
+    return host;
+  } catch {
+    const cleaned = raw.toLowerCase().replace(/^www\./, "").replace(/\/.*$/, "");
+    return cleaned.includes(".") && !/\s/.test(cleaned) ? cleaned : "";
+  }
+}
+
+function normalizeRecoverySocial(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length < 3) return "";
+  try {
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const parsed = new URL(withProtocol);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (!/(^|\.)facebook\.com$|(^|\.)instagram\.com$/.test(host)) return "";
+    const firstSegment = parsed.pathname.split("/").filter(Boolean)[0] || "";
+    return firstSegment ? `${host}:${firstSegment.toLowerCase()}` : "";
+  } catch {
+    const handle = raw.replace(/^@/, "").toLowerCase();
+    return handle && !/\s/.test(handle) ? `handle:${handle}` : "";
+  }
+}
+
+function recoveryItemStrings(item = {}) {
+  const values = [];
+  const visit = (value) => {
+    if (value == null) return;
+    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      values.push(String(value));
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.slice(0, 50).forEach(visit);
+      return;
+    }
+    if (typeof value === "object") {
+      Object.values(value).slice(0, 80).forEach(visit);
+    }
+  };
+  visit(item);
+  return values.filter((value) => value.length >= 2);
+}
+
+function extractRecoveryUrls(values = []) {
+  const urls = [];
+  for (const value of values) {
+    for (const match of String(value).matchAll(/https?:\/\/[^\s"'<>]+/gi)) {
+      urls.push(match[0].replace(/[),.;]+$/, ""));
+    }
+  }
+  return [...new Set(urls)];
+}
+
+function buildRecoveryGoogleTransparencyUrl(domain) {
+  if (!domain) return null;
+  const url = new URL("https://adstransparency.google.com/");
+  url.searchParams.set("region", "ES");
+  url.searchParams.set("domain", domain);
+  url.searchParams.set("preset-date", "Últimos 30 días");
+  return url.toString();
+}
+
+function compactRecoverySnippet(value, maxLength) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
 }
 
 function safeEqual(a, b) {

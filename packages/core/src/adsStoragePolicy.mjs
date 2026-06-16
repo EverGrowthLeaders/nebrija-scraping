@@ -25,6 +25,10 @@ export function adsEnrichmentForStorage(enrichment = {}) {
   return sanitized;
 }
 
+export function adsReviewCompletedForStorage(enrichment = {}) {
+  return providerReviewCompleted(enrichment?.meta) || providerReviewCompleted(enrichment?.google);
+}
+
 function sanitizeProviderForStorage(providerDetail = {}) {
   if (!providerDetail || typeof providerDetail !== "object") return providerDetail || null;
   const storedActive = aiBackedAdsActiveForStorage(providerDetail);
@@ -39,4 +43,11 @@ function sanitizeProviderForStorage(providerDetail = {}) {
     spendEstimate: null,
     storageSanitized: true
   };
+}
+
+function providerReviewCompleted(providerDetail = {}) {
+  if (!providerDetail || typeof providerDetail !== "object") return false;
+  if (providerDetail?.ai?.status !== "resolved") return false;
+  if (providerDetail?.ai?.verification?.status !== "confirmed") return false;
+  return typeof providerDetail.active === "boolean";
 }

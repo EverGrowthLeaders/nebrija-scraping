@@ -7,7 +7,7 @@ import {
   summarizeDeepseekEnrichmentCosts,
   validateDeepseekCostBudget
 } from "../packages/core/src/aiUsage.mjs";
-import { adsEnrichmentForStorage, aiBackedAdsActiveForStorage } from "../packages/core/src/adsStoragePolicy.mjs";
+import { adsEnrichmentForStorage, adsReviewCompletedForStorage, aiBackedAdsActiveForStorage } from "../packages/core/src/adsStoragePolicy.mjs";
 import {
   decisionMakerEnrichmentForStorage,
   verifiedDecisionMakerForStorage
@@ -289,6 +289,28 @@ test("sanitizes Ads enrichment JSON before storage when AI verification is missi
   assert.equal(sanitized.google.active, null);
   assert.equal(sanitized.classification.type, "unknown");
   assert.equal(sanitized.classification.reason, "storage_requires_verified_active_ads");
+});
+
+test("marks Ads review complete only after verified AI decision", () => {
+  assert.equal(adsReviewCompletedForStorage({
+    meta: {
+      active: true,
+      ai: { status: "resolved", verification: { status: "confirmed" } }
+    }
+  }), true);
+  assert.equal(adsReviewCompletedForStorage({
+    meta: {
+      active: null,
+      reason: "ai_resolution_failed",
+      attempts: [{ sourceProvider: "apify", active: true }],
+      ai: { status: "failed" }
+    },
+    google: {
+      active: null,
+      reason: "ai_resolution_failed",
+      ai: { status: "failed" }
+    }
+  }), false);
 });
 
 test("reverifies stored Ads evidence without rerunning scrapers", async () => {

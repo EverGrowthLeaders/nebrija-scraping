@@ -1,6 +1,6 @@
 import { query, withTransaction } from "./db.mjs";
 import { config } from "./config.mjs";
-import { adsEnrichmentForStorage, aiBackedAdsActiveForStorage } from "./adsStoragePolicy.mjs";
+import { adsEnrichmentForStorage, adsReviewCompletedForStorage, aiBackedAdsActiveForStorage } from "./adsStoragePolicy.mjs";
 import { decisionMakerEnrichmentForStorage } from "./decisionMakerStoragePolicy.mjs";
 import { DEFAULT_SCORING_RULES, normalizeScoringRules } from "./scoring.mjs";
 
@@ -1083,7 +1083,9 @@ export async function createManualBusiness({
 
 export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrichment }) {
   const storedEnrichment = adsEnrichmentForStorage(enrichment);
-  const checkedAt = storedEnrichment?.checkedAt ? new Date(storedEnrichment.checkedAt) : new Date();
+  const checkedAt = adsReviewCompletedForStorage(storedEnrichment)
+    ? (storedEnrichment?.checkedAt ? new Date(storedEnrichment.checkedAt) : new Date())
+    : null;
   const classification = storedEnrichment?.classification || {};
   const classifiedAt = classification.checkedAt ? new Date(classification.checkedAt) : checkedAt;
   const metaEstimate = storedEnrichment?.meta?.spendEstimate || null;
@@ -1474,6 +1476,9 @@ export async function auditAdsCampaignLeads({
             b.city,
             b.niche,
             b.category,
+            b.instagram,
+            b.facebook,
+            b.custom_fields,
             b.phone_e164,
             b.ads_meta_active,
             b.ads_google_active,
@@ -1505,6 +1510,46 @@ export async function auditAdsCampaignLeads({
     [tenantId, campaignId, safeLimit]
   );
   return result.rows;
+}
+
+export async function clearNationalCampaignFailedAdsReviews({
+  tenantId = DEFAULT_TENANT_ID,
+  nationalCampaignId,
+  dryRun = true
+} = {}) {
+  if (!nationalCampaignId) return { matched: 0, updated: 0 };
+  const params = [tenantId, nationalCampaignId];
+  const where = `
+    b.tenant_id = $1
+    AND b.extraction_job_id IN (
+      SELECT j.id
+        FROM extraction_jobs j
+       WHERE j.tenant_id = b.tenant_id
+         AND j.national_campaign_id = $2
+    )
+    AND b.ads_last_checked_at IS NOT NULL
+    AND b.ads_meta_active IS NULL
+    AND b.ads_google_active IS NULL
+    AND (
+      b.ads_enrichment->'meta'->'ai'->>'status' = 'failed'
+      OR b.ads_enrichment->'google'->'ai'->>'status' = 'failed'
+    )`;
+  const countResult = await query(
+    `SELECT COUNT(*)::int AS count
+       FROM businesses b
+      WHERE ${where}`,
+    params
+  );
+  const matched = Number(countResult.rows[0]?.count || 0);
+  if (dryRun || matched === 0) return { matched, updated: 0 };
+  const result = await query(
+    `UPDATE businesses b
+        SET ads_last_checked_at = NULL,
+            updated_at = NOW()
+      WHERE ${where}`,
+    params
+  );
+  return { matched, updated: result.rowCount || 0 };
 }
 
 export async function auditNationalCampaignAdsLeads({
