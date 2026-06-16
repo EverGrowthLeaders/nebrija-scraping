@@ -2359,7 +2359,7 @@ function isRecoveredApifyAttempt({ attempt = {} } = {}) {
   if (attempt.sourceProvider !== "apify" || attempt.plannedBy !== "recovery") return false;
   if (!String(attempt.strategy || "").startsWith("historical_")) return false;
   const fields = Array.isArray(attempt.matchedFields) ? attempt.matchedFields : [];
-  return fields.some((field) => ["exact_domain", "exact_social", "unique_name_city"].includes(field));
+  return fields.some((field) => ["exact_domain", "exact_social", "unique_name_city", "unique_name_handle"].includes(field));
 }
 
 function aiDomainEvidenceRequiredProviderResult({ provider, base, rawResult, aiConfig, phase, normalized }) {

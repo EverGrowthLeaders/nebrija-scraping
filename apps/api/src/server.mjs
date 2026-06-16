@@ -2618,6 +2618,7 @@ async function recoverApifyAdsEvidenceForLeads({
 function buildAdsRecoveryLeadIndex(leads = []) {
   const byDomain = new Map();
   const bySocial = new Map();
+  const byNameHandle = new Map();
   const leadNames = [];
   for (const lead of leads) {
     const domain = normalizeRecoveryDomain(lead.website);
@@ -2626,13 +2627,16 @@ function buildAdsRecoveryLeadIndex(leads = []) {
       const normalized = normalizeRecoverySocial(social);
       if (normalized) addIndexValue(bySocial, normalized, lead);
     }
+    for (const nameHandle of recoveryNameHandleValues(lead.name)) {
+      addIndexValue(byNameHandle, nameHandle, lead);
+    }
     leadNames.push({
       lead,
       nameTokens: distinctiveRecoveryTokens(lead.name),
       cityTokens: distinctiveRecoveryTokens(lead.city)
     });
   }
-  return { byDomain, bySocial, leadNames };
+  return { byDomain, bySocial, byNameHandle, leadNames };
 }
 
 function addIndexValue(index, key, lead) {
@@ -2652,6 +2656,11 @@ function findApifyRecoveryMatch({ provider, query, leadIndex }) {
     if (social) {
       const leads = leadIndex.bySocial.get(social) || [];
       if (leads.length === 1) return { lead: leads[0], reason: "exact_social" };
+    }
+    const nameHandle = normalizeRecoveryQueryHandle(query);
+    if (nameHandle) {
+      const leads = leadIndex.byNameHandle.get(nameHandle) || [];
+      if (leads.length === 1) return { lead: leads[0], reason: "unique_name_handle" };
     }
   }
   const nameMatch = findNameRecoveryMatch(query, leadIndex);
@@ -2895,6 +2904,41 @@ function normalizeRecoverySocial(value) {
     const handle = raw.replace(/^@/, "").toLowerCase();
     return handle && !/\s/.test(handle) ? `handle:${handle}` : "";
   }
+}
+
+function normalizeRecoveryQueryHandle(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+    const parsed = new URL(withProtocol);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./, "");
+    if (!/(^|\.)facebook\.com$|(^|\.)instagram\.com$/.test(host)) return "";
+    if (host === "facebook.com" && parsed.pathname.startsWith("/ads/library")) return "";
+    return normalizeRecoveryHandleValue(parsed.pathname.split("/").filter(Boolean)[0] || "");
+  } catch {
+    return "";
+  }
+}
+
+function recoveryNameHandleValues(value) {
+  const compact = normalizeRecoveryHandleValue(value);
+  if (!compact) return [];
+  const tokens = distinctiveRecoveryTokens(value);
+  if (!tokens.length) return [];
+  return [compact];
+}
+
+function normalizeRecoveryHandleValue(value) {
+  const compact = String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]/g, "");
+  if (compact.length < 8 || compact.length > 80) return "";
+  const generic = new Set(["reformas", "reformasintegrales", "empresasdereformas", "construcciones"]);
+  if (generic.has(compact)) return "";
+  return compact;
 }
 
 function distinctiveRecoveryTokens(value) {
