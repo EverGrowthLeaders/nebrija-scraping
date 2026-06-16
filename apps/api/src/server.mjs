@@ -2791,7 +2791,7 @@ function apifyRunQuery(provider, input = {}) {
 function buildRecoveredApifyAttempt({ provider, run, input, query, items = [], match }) {
   const strings = items.flatMap((item) => recoveryItemStrings(item)).slice(0, 120);
   const adsNotFound = strings.some((value) => /ads[_\s-]*not[_\s-]*found/i.test(value));
-  const active = !adsNotFound && items.length > 0;
+  const active = items.some((item) => recoveryItemHasActiveAd(item));
   const sourceUrl = provider === "meta"
     ? input?.urls?.[0]?.url || null
     : buildRecoveryGoogleTransparencyUrl(query);
@@ -2807,7 +2807,11 @@ function buildRecoveredApifyAttempt({ provider, run, input, query, items = [], m
     status: active ? "active" : "inactive",
     active,
     confidence: active ? 0.65 : 0.45,
-    reason: active ? "apify_historical_dataset_recovered" : "apify_historical_ads_not_found",
+    reason: active
+      ? "apify_historical_dataset_recovered"
+      : adsNotFound
+      ? "apify_historical_ads_not_found"
+      : "apify_historical_no_active_ad_evidence",
     sourceUrl,
     matchedFields: [match.reason],
     landingUrls: extractRecoveryUrls(strings).slice(0, 12),
@@ -2864,15 +2868,24 @@ function mergeRecoveredProvider(existingProvider, provider, recoveredAttempts = 
 }
 
 function dedupeRecoveryAttempts(attempts = []) {
-  const seen = new Set();
-  const output = [];
+  const byKey = new Map();
   for (const attempt of attempts) {
     const key = attempt.attemptId || `${attempt.provider}:${attempt.sourceProvider}:${attempt.query}:${attempt.sourceUrl}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    output.push(attempt);
+    byKey.set(key, attempt);
   }
-  return output.slice(-40);
+  return [...byKey.values()].slice(-40);
+}
+
+function recoveryItemHasActiveAd(item = {}) {
+  if (!item || typeof item !== "object") return false;
+  if (item.error || item.errorCode) return false;
+  if (item.is_active === true && (item.ad_archive_id || item.ad_library_url || item.ad_id)) return true;
+  const adStatus = String(item.pageInfo?.ad_status || item.ad_status || "").toLowerCase();
+  if (/currently\s+running\s+ads/.test(adStatus)) return true;
+  if (Number(item.ads_count || item.adsCount || 0) > 0 && (item.ad_archive_id || item.ad_library_url || item.is_active === true)) {
+    return true;
+  }
+  return false;
 }
 
 function normalizeRecoveryDomain(value) {
