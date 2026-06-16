@@ -949,12 +949,17 @@ async function renderLeadsList({ search }) {
   const hasMetaAdsEstimate = search.get("hasMetaAdsEstimate") || "";
   const metaAdsEstimateMin = search.get("metaAdsEstimateMin") || "";
   const term = search.get("search") || "";
-  const [leadLists, campaigns, selectedCampaignResult, selectedNationalCampaignResult] = await Promise.all([
+  const [leadLists, campaigns, nationalCampaigns, selectedCampaignResult, selectedNationalCampaignResult] = await Promise.all([
     api("/api/lead-lists"),
     api("/api/campaigns?limit=200"),
+    api("/api/national-campaigns?limit=200"),
     campaignIds.length === 1 ? api(`/api/campaigns/${encodeURIComponent(campaignIds[0])}`).catch(() => null) : null,
     nationalCampaignId ? api(`/api/national-campaigns/${encodeURIComponent(nationalCampaignId)}`).catch(() => null) : null
   ]);
+  const nationalCampaignRows = [...(nationalCampaigns.rows || [])];
+  if (selectedNationalCampaignResult?.nationalCampaign && !nationalCampaignRows.some((campaign) => campaign.id === selectedNationalCampaignResult.nationalCampaign.id)) {
+    nationalCampaignRows.unshift(selectedNationalCampaignResult.nationalCampaign);
+  }
   const campaignRows = [...(campaigns.rows || [])];
   if (selectedCampaignResult?.job && !campaignRows.some((job) => job.id === selectedCampaignResult.job.id)) {
     campaignRows.unshift(selectedCampaignResult.job);
@@ -989,7 +994,6 @@ async function renderLeadsList({ search }) {
     </div>
 
     <form class="table-wrap" id="leads-filters" style="margin-bottom:14px">
-      ${nationalCampaignId ? `<input type="hidden" name="nationalCampaignId" value="${escape(nationalCampaignId)}" />` : ""}
       <div class="table-toolbar">
         <div class="search">
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10 2a8 8 0 0 1 6.32 12.9l4.39 4.39-1.42 1.42-4.39-4.39A8 8 0 1 1 10 2Zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z"/></svg>
@@ -1003,6 +1007,7 @@ async function renderLeadsList({ search }) {
         </select>
         <input class="input" name="niche" placeholder="Nicho" value="${escape(niche)}" style="max-width:160px" />
         <input class="input" name="city" placeholder="Ciudad" value="${escape(city)}" style="max-width:140px" />
+        ${renderNationalCampaignFilter(nationalCampaignRows, nationalCampaignId)}
         ${renderMultiFilter("Campaña", "campaignIds", campaignRows, campaignIds, formatCampaignFilterOption)}
         ${renderMultiFilter("Lista", "listIds", leadLists.rows || [], listIds, formatListFilterOption)}
         <select class="select" name="phoneType" style="max-width:170px">
@@ -1108,8 +1113,10 @@ async function renderLeadsList({ search }) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const params = new URLSearchParams();
+    const selectedNationalCampaignId = String(fd.get("nationalCampaignId") || "").trim();
     for (const [k, v] of fd.entries()) {
       if (!v || k === "adsPlatforms") continue;
+      if (selectedNationalCampaignId && k === "campaignIds") continue;
       params.append(k, v);
     }
     const adsValue = adsActiveFromPlatforms(fd.getAll("adsPlatforms").filter(Boolean));
@@ -1124,8 +1131,10 @@ async function renderLeadsList({ search }) {
   if (status) params.set("status", status);
   if (niche) params.set("niche", niche);
   if (city) params.set("city", city);
-  for (const campaignId of campaignIds) params.append("campaignIds", campaignId);
   if (nationalCampaignId) params.set("nationalCampaignId", nationalCampaignId);
+  if (!nationalCampaignId) {
+    for (const campaignId of campaignIds) params.append("campaignIds", campaignId);
+  }
   for (const listId of listIds) params.append("listIds", listId);
   if (phoneType) params.set("phoneType", phoneType);
   if (adsActive) params.set("adsActive", adsActive);
@@ -1227,6 +1236,26 @@ function renderMultiFilter(label, name, rows = [], selectedIds = [], formatter =
 function formatCampaignFilterOption(job = {}) {
   const count = job.leads_count != null ? ` · ${fmtNumber(job.leads_count)} leads` : "";
   return { id: job.id, label: `${formatCampaignLabel(job)}${count}` };
+}
+
+function renderNationalCampaignFilter(rows = [], selected = "") {
+  return `
+    <select class="select" name="nationalCampaignId" style="max-width:260px">
+      <option value="">Todas las campañas nacionales</option>
+      ${rows
+        .map((campaign) => {
+          const label = formatNationalCampaignLabel(campaign);
+          return `<option value="${escape(campaign.id)}" ${selected === campaign.id ? "selected" : ""}>${escape(label)}</option>`;
+        })
+        .join("")}
+    </select>
+  `;
+}
+
+function formatNationalCampaignLabel(campaign = {}) {
+  const leads = campaign.leads_count != null ? ` · ${fmtNumber(campaign.leads_count)} leads` : "";
+  const cities = campaign.cities_count != null ? ` · ${fmtNumber(campaign.cities_count)} ciudades` : "";
+  return `${campaign.niche || "Campaña nacional"} · España${leads || cities ? `${leads}${cities}` : ""}`;
 }
 
 function formatListFilterOption(list = {}) {
