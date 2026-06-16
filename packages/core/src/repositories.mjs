@@ -504,36 +504,78 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
   const result = await query(
-    `SELECT nc.*,
-            COUNT(DISTINCT j.id)::int AS child_campaigns_count,
-            COUNT(DISTINCT j.city)::int AS cities_count,
-            COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
-            COUNT(DISTINCT c.id)::int AS candidates_count,
-            COUNT(DISTINCT b.id)::int AS leads_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(b.ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*]') OR jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*]'))::int AS ads_attempts_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*] ? (@.sourceProvider == "apify")'))::int AS meta_apify_evidence_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*] ? (@.sourceProvider == "apify")'))::int AS google_apify_evidence_count,
-            MAX(b.ads_last_checked_at) AS last_ads_checked_at,
+    `WITH job_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(*)::int AS child_campaigns_count,
+              COUNT(DISTINCT j.city)::int AS cities_count,
+              COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
+              COUNT(*) FILTER (WHERE j.status = 'failed')::int AS failed_jobs,
+              COUNT(*) FILTER (WHERE j.status = 'running')::int AS running_jobs,
+              COUNT(*) FILTER (WHERE j.status = 'queued')::int AS queued_jobs,
+              COUNT(*) FILTER (WHERE j.status = 'completed')::int AS completed_jobs,
+              MIN(j.started_at) AS started_at,
+              MAX(j.finished_at) AS finished_at
+         FROM extraction_jobs j
+        WHERE j.tenant_id = $1
+          AND j.national_campaign_id IS NOT NULL
+        GROUP BY j.national_campaign_id
+     ),
+     candidate_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(c.id)::int AS candidates_count
+         FROM extraction_jobs j
+         LEFT JOIN google_place_candidates c ON c.extraction_job_id = j.id AND c.tenant_id = j.tenant_id
+        WHERE j.tenant_id = $1
+          AND j.national_campaign_id IS NOT NULL
+        GROUP BY j.national_campaign_id
+     ),
+     business_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(b.id)::int AS leads_count,
+              COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
+              COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
+              COUNT(b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
+              COUNT(b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
+              COUNT(b.id) FILTER (WHERE COALESCE(b.ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(b.ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+              COUNT(b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*]') OR jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*]'))::int AS ads_attempts_count,
+              COUNT(b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*] ? (@.sourceProvider == "apify")'))::int AS meta_apify_evidence_count,
+              COUNT(b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*] ? (@.sourceProvider == "apify")'))::int AS google_apify_evidence_count,
+              MAX(b.ads_last_checked_at) AS last_ads_checked_at
+         FROM extraction_jobs j
+         LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = j.tenant_id
+        WHERE j.tenant_id = $1
+          AND j.national_campaign_id IS NOT NULL
+        GROUP BY j.national_campaign_id
+     )
+     SELECT nc.*,
+            COALESCE(js.child_campaigns_count, 0)::int AS child_campaigns_count,
+            COALESCE(js.cities_count, 0)::int AS cities_count,
+            COALESCE(js.requested_limit, 0)::int AS requested_limit,
+            COALESCE(cs.candidates_count, 0)::int AS candidates_count,
+            COALESCE(bs.leads_count, 0)::int AS leads_count,
+            COALESCE(bs.ads_checked_count, 0)::int AS ads_checked_count,
+            COALESCE(bs.ads_unchecked_count, 0)::int AS ads_unchecked_count,
+            COALESCE(bs.meta_active_count, 0)::int AS meta_active_count,
+            COALESCE(bs.google_active_count, 0)::int AS google_active_count,
+            COALESCE(bs.ads_evidence_count, 0)::int AS ads_evidence_count,
+            COALESCE(bs.ads_attempts_count, 0)::int AS ads_attempts_count,
+            COALESCE(bs.meta_apify_evidence_count, 0)::int AS meta_apify_evidence_count,
+            COALESCE(bs.google_apify_evidence_count, 0)::int AS google_apify_evidence_count,
+            bs.last_ads_checked_at,
             CASE
-              WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
-              WHEN COUNT(j.id) FILTER (WHERE j.status = 'running') > 0 THEN 'running'
-              WHEN COUNT(j.id) FILTER (WHERE j.status = 'queued') > 0 THEN 'queued'
-              WHEN COUNT(j.id) > 0 AND COUNT(j.id) FILTER (WHERE j.status = 'completed') = COUNT(j.id) THEN 'completed'
+              WHEN COALESCE(js.failed_jobs, 0) > 0 THEN 'failed'
+              WHEN COALESCE(js.running_jobs, 0) > 0 THEN 'running'
+              WHEN COALESCE(js.queued_jobs, 0) > 0 THEN 'queued'
+              WHEN COALESCE(js.child_campaigns_count, 0) > 0 AND COALESCE(js.completed_jobs, 0) = COALESCE(js.child_campaigns_count, 0) THEN 'completed'
               ELSE 'queued'
             END AS status,
-            MIN(j.started_at) AS started_at,
-            MAX(j.finished_at) AS finished_at
+            js.started_at,
+            js.finished_at
        FROM national_campaigns nc
-       LEFT JOIN extraction_jobs j ON j.national_campaign_id = nc.id AND j.tenant_id = nc.tenant_id
-       LEFT JOIN google_place_candidates c ON c.extraction_job_id = j.id AND c.tenant_id = nc.tenant_id
-       LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = nc.tenant_id
+       LEFT JOIN job_stats js ON js.national_campaign_id = nc.id
+       LEFT JOIN candidate_stats cs ON cs.national_campaign_id = nc.id
+       LEFT JOIN business_stats bs ON bs.national_campaign_id = nc.id
       WHERE nc.tenant_id = $1
-      GROUP BY nc.id
       ORDER BY nc.created_at DESC
       LIMIT $2 OFFSET $3`,
     [tenantId, safeLimit, safeOffset]
@@ -545,36 +587,78 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
 export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT_ID, backfill = true } = {}) {
   if (backfill) await backfillNationalCampaigns({ tenantId });
   const result = await query(
-    `SELECT nc.*,
-            COUNT(DISTINCT j.id)::int AS child_campaigns_count,
-            COUNT(DISTINCT j.city)::int AS cities_count,
-            COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
-            COUNT(DISTINCT c.id)::int AS candidates_count,
-            COUNT(DISTINCT b.id)::int AS leads_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(b.ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*]') OR jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*]'))::int AS ads_attempts_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*] ? (@.sourceProvider == "apify")'))::int AS meta_apify_evidence_count,
-            COUNT(DISTINCT b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*] ? (@.sourceProvider == "apify")'))::int AS google_apify_evidence_count,
-            MAX(b.ads_last_checked_at) AS last_ads_checked_at,
+    `WITH job_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(*)::int AS child_campaigns_count,
+              COUNT(DISTINCT j.city)::int AS cities_count,
+              COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
+              COUNT(*) FILTER (WHERE j.status = 'failed')::int AS failed_jobs,
+              COUNT(*) FILTER (WHERE j.status = 'running')::int AS running_jobs,
+              COUNT(*) FILTER (WHERE j.status = 'queued')::int AS queued_jobs,
+              COUNT(*) FILTER (WHERE j.status = 'completed')::int AS completed_jobs,
+              MIN(j.started_at) AS started_at,
+              MAX(j.finished_at) AS finished_at
+         FROM extraction_jobs j
+        WHERE j.tenant_id = $2
+          AND j.national_campaign_id = $1
+        GROUP BY j.national_campaign_id
+     ),
+     candidate_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(c.id)::int AS candidates_count
+         FROM extraction_jobs j
+         LEFT JOIN google_place_candidates c ON c.extraction_job_id = j.id AND c.tenant_id = j.tenant_id
+        WHERE j.tenant_id = $2
+          AND j.national_campaign_id = $1
+        GROUP BY j.national_campaign_id
+     ),
+     business_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(b.id)::int AS leads_count,
+              COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
+              COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
+              COUNT(b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
+              COUNT(b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
+              COUNT(b.id) FILTER (WHERE COALESCE(b.ads_enrichment->'meta', '{}'::jsonb) <> '{}'::jsonb OR COALESCE(b.ads_enrichment->'google', '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+              COUNT(b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*]') OR jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*]'))::int AS ads_attempts_count,
+              COUNT(b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.meta.attempts[*] ? (@.sourceProvider == "apify")'))::int AS meta_apify_evidence_count,
+              COUNT(b.id) FILTER (WHERE jsonb_path_exists(COALESCE(b.ads_enrichment, '{}'::jsonb), '$.google.attempts[*] ? (@.sourceProvider == "apify")'))::int AS google_apify_evidence_count,
+              MAX(b.ads_last_checked_at) AS last_ads_checked_at
+         FROM extraction_jobs j
+         LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = j.tenant_id
+        WHERE j.tenant_id = $2
+          AND j.national_campaign_id = $1
+        GROUP BY j.national_campaign_id
+     )
+     SELECT nc.*,
+            COALESCE(js.child_campaigns_count, 0)::int AS child_campaigns_count,
+            COALESCE(js.cities_count, 0)::int AS cities_count,
+            COALESCE(js.requested_limit, 0)::int AS requested_limit,
+            COALESCE(cs.candidates_count, 0)::int AS candidates_count,
+            COALESCE(bs.leads_count, 0)::int AS leads_count,
+            COALESCE(bs.ads_checked_count, 0)::int AS ads_checked_count,
+            COALESCE(bs.ads_unchecked_count, 0)::int AS ads_unchecked_count,
+            COALESCE(bs.meta_active_count, 0)::int AS meta_active_count,
+            COALESCE(bs.google_active_count, 0)::int AS google_active_count,
+            COALESCE(bs.ads_evidence_count, 0)::int AS ads_evidence_count,
+            COALESCE(bs.ads_attempts_count, 0)::int AS ads_attempts_count,
+            COALESCE(bs.meta_apify_evidence_count, 0)::int AS meta_apify_evidence_count,
+            COALESCE(bs.google_apify_evidence_count, 0)::int AS google_apify_evidence_count,
+            bs.last_ads_checked_at,
             CASE
-              WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
-              WHEN COUNT(j.id) FILTER (WHERE j.status = 'running') > 0 THEN 'running'
-              WHEN COUNT(j.id) FILTER (WHERE j.status = 'queued') > 0 THEN 'queued'
-              WHEN COUNT(j.id) > 0 AND COUNT(j.id) FILTER (WHERE j.status = 'completed') = COUNT(j.id) THEN 'completed'
+              WHEN COALESCE(js.failed_jobs, 0) > 0 THEN 'failed'
+              WHEN COALESCE(js.running_jobs, 0) > 0 THEN 'running'
+              WHEN COALESCE(js.queued_jobs, 0) > 0 THEN 'queued'
+              WHEN COALESCE(js.child_campaigns_count, 0) > 0 AND COALESCE(js.completed_jobs, 0) = COALESCE(js.child_campaigns_count, 0) THEN 'completed'
               ELSE 'queued'
             END AS status,
-            MIN(j.started_at) AS started_at,
-            MAX(j.finished_at) AS finished_at
+            js.started_at,
+            js.finished_at
        FROM national_campaigns nc
-       LEFT JOIN extraction_jobs j ON j.national_campaign_id = nc.id AND j.tenant_id = nc.tenant_id
-       LEFT JOIN google_place_candidates c ON c.extraction_job_id = j.id AND c.tenant_id = nc.tenant_id
-       LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = nc.tenant_id
-      WHERE nc.id = $1 AND nc.tenant_id = $2
-      GROUP BY nc.id`,
+       LEFT JOIN job_stats js ON js.national_campaign_id = nc.id
+       LEFT JOIN candidate_stats cs ON cs.national_campaign_id = nc.id
+       LEFT JOIN business_stats bs ON bs.national_campaign_id = nc.id
+      WHERE nc.id = $1 AND nc.tenant_id = $2`,
     [id, tenantId]
   );
   const nationalCampaign = result.rows[0];
@@ -1998,7 +2082,31 @@ export async function listCampaignCrmEntriesByIds({ tenantId = DEFAULT_TENANT_ID
   const ids = [...new Set((campaignIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
   if (!ids.length) return [];
   const result = await query(
-    `SELECT
+    `WITH target_businesses AS (
+       SELECT b.*
+         FROM businesses b
+        WHERE b.tenant_id = $1
+          AND b.extraction_job_id = ANY($2::uuid[])
+     ),
+     latest_crm AS (
+       SELECT DISTINCT ON (lm.business_id)
+              lm.*
+         FROM lead_list_members lm
+         JOIN lead_lists ll ON ll.id = lm.lead_list_id
+         JOIN target_businesses tb ON tb.id = lm.business_id
+        WHERE ll.tenant_id = $1
+        ORDER BY lm.business_id, lm.crm_updated_at DESC, lm.added_at DESC
+     ),
+     fallback_emails AS (
+       SELECT DISTINCT ON (c.business_id)
+              c.business_id,
+              c.value
+         FROM business_contacts c
+         JOIN target_businesses tb ON tb.id = c.business_id
+        WHERE c.kind = 'email'
+        ORDER BY c.business_id, c.confidence DESC, c.created_at DESC
+     )
+     SELECT
         lm.lead_list_id,
         b.id AS business_id,
         COALESCE(lm.added_at, b.created_at) AS added_at,
@@ -2041,26 +2149,9 @@ export async function listCampaignCrmEntriesByIds({ tenantId = DEFAULT_TENANT_ID
         b.meta_ads_estimate_cpm,
         b.meta_ads_estimate_checked_at,
         email_contact.value AS fallback_email
-       FROM businesses b
-       LEFT JOIN LATERAL (
-         SELECT lm.*
-           FROM lead_list_members lm
-           JOIN lead_lists ll ON ll.id = lm.lead_list_id
-          WHERE lm.business_id = b.id
-            AND ll.tenant_id = b.tenant_id
-          ORDER BY lm.crm_updated_at DESC, lm.added_at DESC
-          LIMIT 1
-       ) lm ON TRUE
-       LEFT JOIN LATERAL (
-         SELECT c.value
-           FROM business_contacts c
-          WHERE c.business_id = b.id
-            AND c.kind = 'email'
-          ORDER BY c.confidence DESC, c.created_at DESC
-          LIMIT 1
-       ) email_contact ON TRUE
-      WHERE b.tenant_id = $1
-        AND b.extraction_job_id = ANY($2::uuid[])
+       FROM target_businesses b
+       LEFT JOIN latest_crm lm ON lm.business_id = b.id
+       LEFT JOIN fallback_emails email_contact ON email_contact.business_id = b.id
       ORDER BY
         CASE WHEN COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') = 'Descartado' THEN 1 ELSE 0 END,
         lm.crm_updated_at DESC NULLS LAST,
