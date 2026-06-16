@@ -1007,8 +1007,7 @@ async function renderLeadsList({ search }) {
         </select>
         <input class="input" name="niche" placeholder="Nicho" value="${escape(niche)}" style="max-width:160px" />
         <input class="input" name="city" placeholder="Ciudad" value="${escape(city)}" style="max-width:140px" />
-        ${renderNationalCampaignFilter(nationalCampaignRows, nationalCampaignId)}
-        ${renderMultiFilter("Campaña", "campaignIds", campaignRows, campaignIds, formatCampaignFilterOption)}
+        ${renderMultiFilter("Campaña", "campaignIds", campaignFilterRows(nationalCampaignRows, campaignRows), campaignFilterSelectedIds(nationalCampaignId, campaignIds), formatUnifiedCampaignFilterOption)}
         ${renderMultiFilter("Lista", "listIds", leadLists.rows || [], listIds, formatListFilterOption)}
         <select class="select" name="phoneType" style="max-width:170px">
           <option value="">Cualquier teléfono</option>
@@ -1088,7 +1087,7 @@ async function renderLeadsList({ search }) {
         <thead>
           <tr>
             <th class="col-select">
-              <input class="row-check" data-action="toggle-all-leads" type="checkbox" aria-label="Seleccionar todos los leads visibles" />
+              <input class="row-check" data-action="toggle-all-leads" type="checkbox" aria-label="Seleccionar todos los leads del filtro actual" />
             </th>
             <th>Lead</th>
             <th>Ciudad / Nicho</th>
@@ -1113,12 +1112,20 @@ async function renderLeadsList({ search }) {
     e.preventDefault();
     const fd = new FormData(e.target);
     const params = new URLSearchParams();
-    const selectedNationalCampaignId = String(fd.get("nationalCampaignId") || "").trim();
+    const selectedCampaignValues = fd.getAll("campaignIds").map((value) => String(value || "").trim()).filter(Boolean);
+    const selectedNationalCampaignId = selectedCampaignValues.find((value) => value.startsWith("national:"))?.replace(/^national:/, "") || "";
     for (const [k, v] of fd.entries()) {
       if (!v || k === "adsPlatforms") continue;
-      if (selectedNationalCampaignId && k === "campaignIds") continue;
+      if (k === "campaignIds") {
+        const value = String(v || "").trim();
+        if (selectedNationalCampaignId) continue;
+        if (value.startsWith("campaign:")) params.append("campaignIds", value.replace(/^campaign:/, ""));
+        else if (!value.startsWith("national:")) params.append("campaignIds", value);
+        continue;
+      }
       params.append(k, v);
     }
+    if (selectedNationalCampaignId) params.set("nationalCampaignId", selectedNationalCampaignId);
     const adsValue = adsActiveFromPlatforms(fd.getAll("adsPlatforms").filter(Boolean));
     if (adsValue) params.set("adsActive", adsValue);
     location.hash = `#/leads${params.toString() ? "?" + params.toString() : ""}`;
@@ -1186,7 +1193,7 @@ async function renderLeadsList({ search }) {
     )
     .join("");
   bindRowNav(tbody);
-  bindLeadSelection(data.rows || []);
+  bindLeadSelection(data.rows || [], { filterParams, total: data.total || 0 });
   $$("[data-action='delete-lead']", tbody).forEach((button) =>
     button.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1236,6 +1243,28 @@ function renderMultiFilter(label, name, rows = [], selectedIds = [], formatter =
 function formatCampaignFilterOption(job = {}) {
   const count = job.leads_count != null ? ` · ${fmtNumber(job.leads_count)} leads` : "";
   return { id: job.id, label: `${formatCampaignLabel(job)}${count}` };
+}
+
+function campaignFilterRows(nationalRows = [], cityRows = []) {
+  return [
+    ...nationalRows.map((campaign) => ({ ...campaign, filterType: "national", filterId: `national:${campaign.id}` })),
+    ...cityRows.map((campaign) => ({ ...campaign, filterType: "city", filterId: `campaign:${campaign.id}` }))
+  ];
+}
+
+function campaignFilterSelectedIds(nationalCampaignId = "", campaignIds = []) {
+  return [
+    ...(nationalCampaignId ? [`national:${nationalCampaignId}`] : []),
+    ...campaignIds.map((id) => `campaign:${id}`)
+  ];
+}
+
+function formatUnifiedCampaignFilterOption(campaign = {}) {
+  if (campaign.filterType === "national") {
+    return { id: campaign.filterId, label: formatNationalCampaignLabel(campaign) };
+  }
+  const option = formatCampaignFilterOption(campaign);
+  return { id: campaign.filterId || `campaign:${option.id}`, label: option.label };
 }
 
 function renderNationalCampaignFilter(rows = [], selected = "") {
@@ -1349,7 +1378,7 @@ function leadListReturnHash() {
   return "#/leads";
 }
 
-function bindLeadSelection(rows) {
+function bindLeadSelection(rows, { filterParams, total = rows.length } = {}) {
   const selected = new Set();
   const byId = new Map(rows.map((row) => [String(row.id), row]));
   const bulkBar = $("[data-bind='lead-bulk-actions']", view);
@@ -1363,6 +1392,7 @@ function bindLeadSelection(rows) {
   const copyDomainsButton = $("[data-action='copy-selected-domains']", view);
   const addToListButton = $("[data-action='add-selected-to-list']", view);
   const checks = $$("[data-action='toggle-lead']", view);
+  const totalMatching = Math.max(Number(total) || rows.length, rows.length);
 
   const sync = () => {
     const count = selected.size;
@@ -1373,8 +1403,8 @@ function bindLeadSelection(rows) {
       check.checked = isSelected;
       check.closest("tr")?.classList.toggle("is-selected", isSelected);
     });
-    selectAll.checked = checks.length > 0 && count === checks.length;
-    selectAll.indeterminate = count > 0 && count < checks.length;
+    selectAll.checked = totalMatching > 0 && count >= totalMatching;
+    selectAll.indeterminate = count > 0 && count < totalMatching;
   };
 
   checks.forEach((check) => {
@@ -1385,9 +1415,25 @@ function bindLeadSelection(rows) {
     });
   });
 
-  selectAll.addEventListener("change", () => {
+  selectAll.addEventListener("change", async () => {
     selected.clear();
-    if (selectAll.checked) checks.forEach((check) => selected.add(check.dataset.leadId));
+    if (selectAll.checked) {
+      selectAll.disabled = true;
+      try {
+        const allRows = filterParams ? await fetchAllBusinesses(filterParams) : rows;
+        byId.clear();
+        for (const row of allRows) {
+          if (!row?.id) continue;
+          const id = String(row.id);
+          byId.set(id, row);
+          selected.add(id);
+        }
+      } catch (err) {
+        toast(`No se pudieron seleccionar todos (${err.message})`, "error");
+      } finally {
+        selectAll.disabled = false;
+      }
+    }
     sync();
   });
 

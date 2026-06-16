@@ -633,7 +633,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/businesses/ads-enrichment") {
       const { json } = await readJson(req);
-      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 1000);
+      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 20000);
       if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
 
       const queueJobs = [];
@@ -662,7 +662,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/businesses/decision-maker-enrichment") {
       const { json } = await readJson(req);
-      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 1000);
+      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 20000);
       if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
 
       const queueJobs = [];
@@ -691,7 +691,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "POST" && url.pathname === "/api/businesses/company-enrichment") {
       const { json } = await readJson(req);
-      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 1000);
+      const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 20000);
       if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
 
       const queueJobs = [];
