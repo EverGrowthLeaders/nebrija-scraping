@@ -506,12 +506,15 @@ const server = http.createServer(async (req, res) => {
 
     const nationalCampaignAdsMatch = matchPath(url.pathname, /^\/api\/national-campaigns\/([^/]+)\/ads-enrichment$/);
     if (req.method === "POST" && nationalCampaignAdsMatch) {
+      const { json } = await readJson(req);
       const nationalCampaign = await findNationalCampaignDetail(nationalCampaignAdsMatch[1], { tenantId: auth.tenantId });
       if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+      const includeReviewed = parseBoolean(json.includeReviewed ?? json.include_reviewed ?? url.searchParams.get("includeReviewed") ?? false);
       const businessIds = await listBusinessIdsForCampaignIds({
         tenantId: auth.tenantId,
         campaignIds: nationalCampaign.children.map((child) => child.id),
-        limit: Number(url.searchParams.get("limit")) || 20000
+        limit: Number(url.searchParams.get("limit")) || 20000,
+        onlyUnchecked: !includeReviewed
       });
       const queueJobs = [];
       for (const businessId of businessIds) {
@@ -526,6 +529,35 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 202, {
         queued: queueJobs.length,
         queue: QUEUE_NAMES.adsEnrichment,
+        jobIds: queueJobs.map((queueJob) => queueJob.id)
+      });
+    }
+
+    const nationalCampaignAdsReverificationMatch = matchPath(url.pathname, /^\/api\/national-campaigns\/([^/]+)\/ads-reverification$/);
+    if (req.method === "POST" && nationalCampaignAdsReverificationMatch) {
+      const nationalCampaign = await findNationalCampaignDetail(nationalCampaignAdsReverificationMatch[1], { tenantId: auth.tenantId });
+      if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+      const businessIds = await listBusinessIdsForCampaignIds({
+        tenantId: auth.tenantId,
+        campaignIds: nationalCampaign.children.map((child) => child.id),
+        limit: Number(url.searchParams.get("limit")) || 20000,
+        onlyWithAdsEvidence: true
+      });
+      const queueJobs = [];
+      for (const businessId of businessIds) {
+        queueJobs.push(
+          await queues.adsEnrichment.add("reverify", {
+            tenantId: auth.tenantId,
+            businessId,
+            nationalCampaignId: nationalCampaign.id,
+            reverifyStoredEvidence: true
+          })
+        );
+      }
+      return sendJson(res, 202, {
+        queued: queueJobs.length,
+        queue: QUEUE_NAMES.adsEnrichment,
+        mode: "stored_ads_evidence_only",
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
     }

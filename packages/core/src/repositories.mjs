@@ -510,6 +510,12 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
             COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
             COUNT(DISTINCT c.id)::int AS candidates_count,
             COUNT(DISTINCT b.id)::int AS leads_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment, '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+            MAX(b.ads_last_checked_at) AS last_ads_checked_at,
             CASE
               WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
               WHEN COUNT(j.id) FILTER (WHERE j.status = 'running') > 0 THEN 'running'
@@ -542,6 +548,12 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
             COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
             COUNT(DISTINCT c.id)::int AS candidates_count,
             COUNT(DISTINCT b.id)::int AS leads_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE b.ads_google_active IS TRUE)::int AS google_active_count,
+            COUNT(DISTINCT b.id) FILTER (WHERE COALESCE(b.ads_enrichment, '{}'::jsonb) <> '{}'::jsonb)::int AS ads_evidence_count,
+            MAX(b.ads_last_checked_at) AS last_ads_checked_at,
             CASE
               WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
               WHEN COUNT(j.id) FILTER (WHERE j.status = 'running') > 0 THEN 'running'
@@ -1690,12 +1702,15 @@ export async function listBusinesses({
   return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
 }
 
-export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID, campaignId, limit = 1000 } = {}) {
+export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID, campaignId, limit = 1000, onlyUnchecked = false, onlyWithAdsEvidence = false } = {}) {
   const safeLimit = Math.min(Math.max(Number(limit) || 1000, 1), 5000);
+  const where = ["tenant_id = $1", "extraction_job_id = $2"];
+  if (onlyUnchecked) where.push("ads_last_checked_at IS NULL");
+  if (onlyWithAdsEvidence) where.push("COALESCE(ads_enrichment, '{}'::jsonb) <> '{}'::jsonb");
   const result = await query(
     `SELECT id
        FROM businesses
-      WHERE tenant_id = $1 AND extraction_job_id = $2
+      WHERE ${where.join(" AND ")}
       ORDER BY updated_at DESC
       LIMIT $3`,
     [tenantId, campaignId, safeLimit]
@@ -1703,14 +1718,23 @@ export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID,
   return result.rows.map((row) => row.id);
 }
 
-export async function listBusinessIdsForCampaignIds({ tenantId = DEFAULT_TENANT_ID, campaignIds = [], limit = 5000 } = {}) {
+export async function listBusinessIdsForCampaignIds({
+  tenantId = DEFAULT_TENANT_ID,
+  campaignIds = [],
+  limit = 5000,
+  onlyUnchecked = false,
+  onlyWithAdsEvidence = false
+} = {}) {
   const ids = [...new Set((campaignIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
   if (!ids.length) return [];
   const safeLimit = Math.min(Math.max(Number(limit) || 5000, 1), 20000);
+  const where = ["tenant_id = $1", "extraction_job_id = ANY($2::uuid[])"];
+  if (onlyUnchecked) where.push("ads_last_checked_at IS NULL");
+  if (onlyWithAdsEvidence) where.push("COALESCE(ads_enrichment, '{}'::jsonb) <> '{}'::jsonb");
   const result = await query(
     `SELECT id
        FROM businesses
-      WHERE tenant_id = $1 AND extraction_job_id = ANY($2::uuid[])
+      WHERE ${where.join(" AND ")}
       ORDER BY updated_at DESC
       LIMIT $3`,
     [tenantId, ids, safeLimit]

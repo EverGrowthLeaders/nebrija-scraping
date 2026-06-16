@@ -171,6 +171,44 @@ export async function enrichBusinessAds({
   };
 }
 
+export async function reverifyStoredAdsEnrichment({
+  business,
+  enrichment,
+  aiResolver,
+  aiVerifier,
+  aiConfig = config.adsActivityAi,
+  now = new Date()
+} = {}) {
+  if (!hasStoredAdsProviderEvidence(enrichment?.meta) && !hasStoredAdsProviderEvidence(enrichment?.google)) {
+    return null;
+  }
+  const resolved = await resolveAdsActivity({
+    business,
+    providerEvidence: {
+      meta: enrichment?.meta || emptyProviderEvidence({ provider: "meta", now }),
+      google: enrichment?.google || emptyProviderEvidence({ provider: "google", now })
+    },
+    aiResolver,
+    aiVerifier,
+    aiConfig,
+    now,
+    phase: "stored_evidence",
+    previousResult: {
+      meta: enrichment?.meta || null,
+      google: enrichment?.google || null
+    }
+  });
+  return {
+    ...(enrichment || {}),
+    checkedAt: now.toISOString(),
+    reverifiedAt: now.toISOString(),
+    reverifiedFromStoredEvidence: true,
+    meta: resolved.meta,
+    google: resolved.google,
+    classification: enrichment?.classification || null
+  };
+}
+
 export function buildMetaAdsLibraryUrl({ query, country = DEFAULT_COUNTRY, searchType = "keyword_unordered" }) {
   const url = new URL("https://www.facebook.com/ads/library/");
   url.searchParams.set("active_status", "active");
@@ -485,6 +523,12 @@ async function resolveSocialProfilesWithDeepInfra({ business = {}, candidates = 
     reason: String(parsed.reason || "").slice(0, 120),
     usage: json?.usage || null
   };
+}
+
+function hasStoredAdsProviderEvidence(providerDetail = {}) {
+  if (!providerDetail || typeof providerDetail !== "object") return false;
+  if (Array.isArray(providerDetail.attempts) && providerDetail.attempts.length > 0) return true;
+  return Boolean(providerDetail.sourceUrl || providerDetail.ai || providerDetail.reason || providerDetail.status);
 }
 
 async function planAdsLibraryDiscovery({

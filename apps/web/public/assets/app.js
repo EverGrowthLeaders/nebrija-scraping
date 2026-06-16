@@ -831,12 +831,16 @@ async function renderNationalCampaignDetail({ params }) {
     <div class="row">
       <div class="grow">
         <h1 class="headline">${escape(nationalCampaign.niche)} <span class="muted" style="font-weight:500">en España</span></h1>
-        <p class="subhead">${fmtNumber(nationalCampaign.cities_count)} ciudades · ${fmtNumber(nationalCampaign.leads_count)} leads · ${fmtNumber(nationalCampaign.candidates_count)} candidatos</p>
+        <p class="subhead">${fmtNumber(nationalCampaign.cities_count)} ciudades · ${fmtNumber(nationalCampaign.leads_count)} leads · ${fmtNumber(nationalCampaign.candidates_count)} candidatos · ${fmtNumber(nationalCampaign.ads_checked_count || 0)} Ads revisados</p>
       </div>
       <div class="row" style="gap:6px">
         <button class="btn" data-action="national-campaign-ads" type="button">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 2 3 6.5v6.7c0 4.7 3.8 7.5 9 8.8 5.2-1.3 9-4.1 9-8.8V6.5L12 2Zm0 2.2 7 3.5v5.5c0 3.5-2.7 5.6-7 6.8-4.3-1.2-7-3.3-7-6.8V7.7l7-3.5Zm-1 5.3h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z"/></svg>
           Enriquecer Ads
+        </button>
+        <button class="btn" data-action="national-campaign-ads-reverify" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 5a7 7 0 1 0 6.3 10H16v-2h6v6h-2v-2.1A9 9 0 1 1 19.6 7L18 8.2A7 7 0 0 0 12 5Zm1 3v4.6l3.2 1.9-1 1.7-4.2-2.5V8h2Z"/></svg>
+          Reverificar Ads
         </button>
         <a class="btn" href="/api/national-campaigns/${escape(nationalCampaign.id)}/export.xlsx">
           <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 3h9l5 5v13H5V3Zm8 1.8V9h4.2L13 4.8ZM8 12v6h8v-1.5h-6.5v-1h5.6V14H9.5v-1H16v-1.5H8V12Z"/></svg>
@@ -854,6 +858,7 @@ async function renderNationalCampaignDetail({ params }) {
       ${kpiCard("Ciudades", fmtNumber(nationalCampaign.cities_count), "Campañas hijas")}
       ${kpiCard("Leads creados", fmtNumber(nationalCampaign.leads_count), "Negocios en pipeline", "accent")}
       ${kpiCard("Candidatos", fmtNumber(nationalCampaign.candidates_count), "Lugares descubiertos")}
+      ${kpiCard("Ads revisados", fmtNumber(nationalCampaign.ads_checked_count || 0), `${fmtNumber(nationalCampaign.ads_evidence_count || 0)} con evidencia`)}
       ${kpiCard("Solicitados", fmtNumber(nationalCampaign.requested_limit) || "—", "Límite total")}
     </div>
 
@@ -922,6 +927,7 @@ async function renderNationalCampaignDetail({ params }) {
   `;
 
   $("[data-action='national-campaign-ads']", view).addEventListener("click", () => nationalCampaignAdsAction(nationalCampaign.id));
+  $("[data-action='national-campaign-ads-reverify']", view).addEventListener("click", () => nationalCampaignAdsReverifyAction(nationalCampaign.id));
   bindRowNav(view);
   hydrateCrmBoard(view, {
     rows,
@@ -2080,6 +2086,19 @@ async function nationalCampaignAdsAction(nationalCampaignId) {
     toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento Ads`, "ok");
   } catch (err) {
     toast(`No se pudo enriquecer la campaña España (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function nationalCampaignAdsReverifyAction(nationalCampaignId) {
+  const button = $("[data-action='national-campaign-ads-reverify']", view);
+  button.disabled = true;
+  try {
+    const result = await api(`/api/national-campaigns/${nationalCampaignId}/ads-reverification`, { method: "POST", body: "{}" });
+    toast(`${fmtNumber(result.queued)} leads enviados a reverificación Ads sin Apify`, "ok");
+  } catch (err) {
+    toast(`No se pudo reverificar la campaña España (${err.message})`, "error");
   } finally {
     button.disabled = false;
   }

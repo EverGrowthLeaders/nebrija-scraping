@@ -44,7 +44,8 @@ import {
   discoverSocialsForAds,
   enrichBusinessAds,
   inferAdsActivity,
-  parseAiJson
+  parseAiJson,
+  reverifyStoredAdsEnrichment
 } from "../packages/core/src/adsEnrichment.mjs";
 import {
   buildLinkedInDecisionMakerDork,
@@ -288,6 +289,79 @@ test("sanitizes Ads enrichment JSON before storage when AI verification is missi
   assert.equal(sanitized.google.active, null);
   assert.equal(sanitized.classification.type, "unknown");
   assert.equal(sanitized.classification.reason, "storage_requires_verified_active_ads");
+});
+
+test("reverifies stored Ads evidence without rerunning scrapers", async () => {
+  const stored = {
+    checkedAt: "2026-06-05T00:00:00.000Z",
+    meta: {
+      provider: "meta",
+      active: null,
+      status: "unknown",
+      reason: "ai_verification_failed",
+      attempts: [{
+        attemptId: "meta_1",
+        provider: "meta",
+        sourceProvider: "apify",
+        plannedBy: "ai",
+        status: "unknown",
+        active: null,
+        reason: "apify_meta_active_item_candidate",
+        sourceUrl: "https://www.facebook.com/ads/library/?id=123456789",
+        matchedFields: ["domain", "landing_domain"],
+        landingUrls: ["https://reformas.test/contacto"],
+        adArchiveId: "123456789"
+      }]
+    },
+    google: {
+      provider: "google",
+      active: null,
+      status: "unknown",
+      attempts: []
+    },
+    classification: {
+      type: "unknown",
+      reason: "no_active_ads"
+    }
+  };
+
+  const enrichment = await reverifyStoredAdsEnrichment({
+    business: { name: "Reformas Test", website: "https://reformas.test", city: "Madrid" },
+    enrichment: stored,
+    aiResolver: adsAiResolverFromEvidence(({ phase }) => {
+      assert.equal(phase, "stored_evidence");
+    }),
+    aiVerifier: async ({ resolved }) => ({
+      meta: {
+        confirmed: true,
+        status: "confirmed",
+        active: resolved.meta.active,
+        confidence: 0.9,
+        reason: "stored_evidence_confirmed",
+        selectedAttemptIds: resolved.meta.ai.selectedAttemptIds,
+        evidenceSummary: "Stored Apify evidence links to the owned domain.",
+        needsMoreEvidence: false
+      },
+      google: {
+        confirmed: false,
+        status: "unknown",
+        active: null,
+        confidence: 0.4,
+        reason: "no_google_evidence",
+        selectedAttemptIds: [],
+        evidenceSummary: "No stored Google evidence.",
+        needsMoreEvidence: true
+      }
+    }),
+    now: new Date("2026-06-16T18:00:00.000Z")
+  });
+
+  assert.equal(enrichment.reverifiedFromStoredEvidence, true);
+  assert.equal(enrichment.checkedAt, "2026-06-16T18:00:00.000Z");
+  assert.equal(enrichment.meta.active, true);
+  assert.equal(enrichment.meta.ai.phase, "stored_evidence");
+  assert.equal(enrichment.meta.ai.verification.status, "confirmed");
+  assert.equal(enrichment.classification, stored.classification);
 });
 
 test("stores decision maker contacts only when resolved and independently verified", () => {

@@ -11,7 +11,7 @@ import { buildGoogleDiscoveryQueries } from "../../../packages/core/src/googleDi
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
 import { extractLeadSignals, selectBusinessUrls, sha256 } from "../../../packages/core/src/extractors.mjs";
-import { enrichBusinessAds } from "../../../packages/core/src/adsEnrichment.mjs";
+import { enrichBusinessAds, reverifyStoredAdsEnrichment } from "../../../packages/core/src/adsEnrichment.mjs";
 import { enrichDecisionMaker } from "../../../packages/core/src/decisionMakerEnrichment.mjs";
 import { verifiedDecisionMakerForStorage } from "../../../packages/core/src/decisionMakerStoragePolicy.mjs";
 import { enrichBusinessCompany } from "../../../packages/core/src/companyEnrichment.mjs";
@@ -431,12 +431,24 @@ async function runScoring(job) {
 async function runAdsEnrichment(job) {
   const business = await findBusinessById(job.data.businessId, { tenantId: job.data.tenantId });
   if (!business) throw new Error(`business not found: ${job.data.businessId}`);
-  const enrichment = await enrichBusinessAds({
-    business,
-    firecrawl,
-    apify: apify.enabled ? apify : null,
-    browser: adsBrowser.enabled ? adsBrowser : null
-  });
+  const reverifyStoredEvidence = job.data.reverifyStoredEvidence === true;
+  const enrichment = reverifyStoredEvidence
+    ? await reverifyStoredAdsEnrichment({
+        business,
+        enrichment: business.ads_enrichment
+      })
+    : await enrichBusinessAds({
+        business,
+        firecrawl,
+        apify: apify.enabled ? apify : null,
+        browser: adsBrowser.enabled ? adsBrowser : null
+      });
+  if (!enrichment) {
+    return {
+      skipped: true,
+      reason: "no_stored_ads_evidence"
+    };
+  }
   const updated = await updateBusinessAdsEnrichment({
     tenantId: business.tenant_id,
     businessId: business.id,
@@ -446,6 +458,7 @@ async function runAdsEnrichment(job) {
     await queues.scoring.add("score", { tenantId: business.tenant_id, businessId: business.id });
   }
   return {
+    reverifiedStoredEvidence,
     meta: enrichment.meta?.status,
     google: enrichment.google?.status,
     funnel: enrichment.classification?.type,
