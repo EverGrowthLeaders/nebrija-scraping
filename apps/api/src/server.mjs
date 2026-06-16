@@ -33,6 +33,7 @@ import {
   addBusinessToLeadList,
   auditAdsCampaignLeads,
   auditAdsCampaigns,
+  createNationalCampaign,
   createLeadList,
   createExtractionJob,
   createTenantApiKey,
@@ -44,6 +45,7 @@ import {
   findBusinessById,
   findBusinessDetail,
   findExtractionJobDetail,
+  findNationalCampaignDetail,
   findSessionByTokenHash,
   findVoiceCallDetail,
   getColdCallingAnalytics,
@@ -54,13 +56,17 @@ import {
   getTenantScoringRules,
   listTenantApiKeys,
   listBusinessIdsForCampaign,
+  listBusinessIdsForCampaignIds,
   listBusinessIdsForTenant,
   listBusinesses,
   listCampaignLeadsForExport,
+  listCampaignLeadsForExportByIds,
   listCampaignCrmEntries,
+  listCampaignCrmEntriesByIds,
   listExtractionJobs,
   listLeadListCrmEntries,
   listLeadLists,
+  listNationalCampaigns,
   listVoiceCalls,
   markTenantApiKeyUsed,
   persistNebrijaWebhookEvent,
@@ -449,6 +455,81 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, result);
     }
 
+    if (req.method === "GET" && url.pathname === "/api/national-campaigns") {
+      const result = await listNationalCampaigns({ ...parsePaging(url), tenantId: auth.tenantId });
+      return sendJson(res, 200, result);
+    }
+
+    const nationalCampaignExportMatch = matchPath(url.pathname, /^\/api\/national-campaigns\/([^/]+)\/export\.(csv|xlsx)$/);
+    if (req.method === "GET" && nationalCampaignExportMatch) {
+      const nationalCampaign = await findNationalCampaignDetail(nationalCampaignExportMatch[1], { tenantId: auth.tenantId });
+      if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+      const campaignIds = nationalCampaign.children.map((child) => child.id);
+      const leads = await listCampaignLeadsForExportByIds({ tenantId: auth.tenantId, campaignIds });
+      const format = nationalCampaignExportMatch[2];
+      const filename = campaignExportFilename({ niche: nationalCampaign.niche, city: "España" }, format);
+      if (format === "csv") {
+        return sendAttachment(res, {
+          filename,
+          contentType: "text/csv; charset=utf-8",
+          body: buildCampaignCsv(leads)
+        });
+      }
+      return sendAttachment(res, {
+        filename,
+        contentType: XLSX_CONTENT_TYPE,
+        body: buildCampaignXlsx(leads)
+      });
+    }
+
+    const nationalCampaignCrmMatch = matchPath(url.pathname, /^\/api\/national-campaigns\/([^/]+)\/crm$/);
+    if (req.method === "GET" && nationalCampaignCrmMatch) {
+      const nationalCampaign = await findNationalCampaignDetail(nationalCampaignCrmMatch[1], { tenantId: auth.tenantId });
+      if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+      const rows = await listCampaignCrmEntriesByIds({
+        tenantId: auth.tenantId,
+        campaignIds: nationalCampaign.children.map((child) => child.id)
+      });
+      return sendJson(res, 200, {
+        nationalCampaign,
+        rows,
+        options: buildCrmOptions(rows)
+      });
+    }
+
+    const nationalCampaignDetailMatch = matchPath(url.pathname, /^\/api\/national-campaigns\/([^/]+)$/);
+    if (req.method === "GET" && nationalCampaignDetailMatch) {
+      const nationalCampaign = await findNationalCampaignDetail(nationalCampaignDetailMatch[1], { tenantId: auth.tenantId });
+      if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+      return sendJson(res, 200, { nationalCampaign });
+    }
+
+    const nationalCampaignAdsMatch = matchPath(url.pathname, /^\/api\/national-campaigns\/([^/]+)\/ads-enrichment$/);
+    if (req.method === "POST" && nationalCampaignAdsMatch) {
+      const nationalCampaign = await findNationalCampaignDetail(nationalCampaignAdsMatch[1], { tenantId: auth.tenantId });
+      if (!nationalCampaign) return sendJson(res, 404, { error: "national_campaign_not_found" });
+      const businessIds = await listBusinessIdsForCampaignIds({
+        tenantId: auth.tenantId,
+        campaignIds: nationalCampaign.children.map((child) => child.id),
+        limit: Number(url.searchParams.get("limit")) || 20000
+      });
+      const queueJobs = [];
+      for (const businessId of businessIds) {
+        queueJobs.push(
+          await queues.adsEnrichment.add("enrich", {
+            tenantId: auth.tenantId,
+            businessId,
+            nationalCampaignId: nationalCampaign.id
+          })
+        );
+      }
+      return sendJson(res, 202, {
+        queued: queueJobs.length,
+        queue: QUEUE_NAMES.adsEnrichment,
+        jobIds: queueJobs.map((queueJob) => queueJob.id)
+      });
+    }
+
     const campaignExportMatch = matchPath(url.pathname, /^\/api\/campaigns\/([^/]+)\/export\.(csv|xlsx)$/);
     if (req.method === "GET" && campaignExportMatch) {
       const job = await findExtractionJobDetail(campaignExportMatch[1], { tenantId: auth.tenantId });
@@ -537,6 +618,7 @@ const server = http.createServer(async (req, res) => {
         search: url.searchParams.get("search") || undefined,
         extractionJobId: campaignIds.length ? undefined : url.searchParams.get("campaignId") || url.searchParams.get("extractionJobId") || undefined,
         extractionJobIds: campaignIds,
+        nationalCampaignId: url.searchParams.get("nationalCampaignId") || url.searchParams.get("national_campaign_id") || undefined,
         listId: listIds.length ? undefined : url.searchParams.get("listId") || undefined,
         listIds,
         phoneType: url.searchParams.get("phoneType") || undefined,
@@ -1794,14 +1876,27 @@ function parseStringArray(value) {
 
 async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }) {
   const plan = buildNationalCampaignPlan(json);
-  const nationalCampaignId = json.nationalCampaignId || json.national_campaign_id || crypto.randomUUID();
   const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
   const voiceSettings = parseCampaignVoiceSettings(json);
+  const nationalCampaign = await createNationalCampaign({
+    tenantId,
+    id: json.nationalCampaignId || json.national_campaign_id || undefined,
+    niche: plan.niche,
+    country: plan.country,
+    cityPreset: plan.cityPreset,
+    sourceType: plan.sourceType,
+    enrichAds,
+    limitPerCity: plan.limitPerCity,
+    requestedLimitTotal: plan.requestedLimitTotal,
+    estimatedRequestedLimit: plan.limitPerCity * plan.cities.length
+  });
+  const nationalCampaignId = nationalCampaign.id;
   const campaigns = [];
 
   for (const plannedCampaign of plan.campaigns) {
     const job = await createExtractionJob({
       tenantId,
+      nationalCampaignId,
       niche: plannedCampaign.niche,
       city: plannedCampaign.city,
       sourceType: plannedCampaign.sourceType,
@@ -1833,15 +1928,15 @@ async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }
   return {
     nationalCampaign: {
       id: nationalCampaignId,
-      niche: plan.niche,
-      country: plan.country,
-      cityPreset: plan.cityPreset,
-      sourceType: plan.sourceType,
-      enrichAds,
+      niche: nationalCampaign.niche,
+      country: nationalCampaign.country,
+      cityPreset: nationalCampaign.city_preset,
+      sourceType: nationalCampaign.source_type,
+      enrichAds: nationalCampaign.enrich_ads,
       citiesCount: plan.cities.length,
-      limitPerCity: plan.limitPerCity,
-      requestedLimitTotal: plan.requestedLimitTotal,
-      estimatedRequestedLimit: plan.limitPerCity * plan.cities.length
+      limitPerCity: nationalCampaign.limit_per_city,
+      requestedLimitTotal: nationalCampaign.requested_limit_total,
+      estimatedRequestedLimit: nationalCampaign.estimated_requested_limit
     },
     campaigns
   };

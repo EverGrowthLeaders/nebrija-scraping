@@ -438,6 +438,7 @@ async function pingHealth() {
 const routes = [
   { match: /^\/?$/, render: renderOverview, key: "overview", title: "Overview" },
   { match: /^\/campaigns$/, render: renderCampaignsList, key: "campaigns", title: "Campañas" },
+  { match: /^\/national-campaigns\/([^/]+)$/, render: renderNationalCampaignDetail, key: "campaigns", title: "Campaña España" },
   { match: /^\/campaigns\/([^/]+)$/, render: renderCampaignDetail, key: "campaigns", title: "Campaña" },
   { match: /^\/leads$/, render: renderLeadsList, key: "leads", title: "Leads" },
   { match: /^\/leads\/([^/]+)$/, render: renderLeadDetail, key: "leads", title: "Lead" },
@@ -662,9 +663,16 @@ async function renderCampaignsList() {
     el.addEventListener("click", openCampaignModal)
   );
 
-  const data = await api("/api/campaigns?limit=100");
+  const [data, nationalData] = await Promise.all([
+    api("/api/campaigns?limit=100"),
+    api("/api/national-campaigns?limit=100")
+  ]);
   const tbody = $("[data-bind='rows']");
-  if (!data.rows.length) {
+  const rows = [
+    ...((nationalData.rows || []).map((campaign) => ({ ...campaign, __type: "national" }))),
+    ...((data.rows || []).map((campaign) => ({ ...campaign, __type: "city" })))
+  ].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
+  if (!rows.length) {
     tbody.innerHTML = `<tr><td colspan="8">${emptyState(
       "Sin campañas todavía",
       "Crea tu primera campaña para descubrir leads.",
@@ -675,12 +683,12 @@ async function renderCampaignsList() {
     );
     return;
   }
-  tbody.innerHTML = data.rows
+  tbody.innerHTML = rows
     .map(
       (j) => `
-      <tr data-href="#/campaigns/${escape(j.id)}">
+      <tr data-href="${j.__type === "national" ? `#/national-campaigns/${escape(j.id)}` : `#/campaigns/${escape(j.id)}`}">
         <td class="cell-primary">${escape(j.niche)}</td>
-        <td>${escape(j.city)}</td>
+        <td>${j.__type === "national" ? `España · ${fmtNumber(j.cities_count)} ciudades` : escape(j.city)}</td>
         <td><span class="mono faint">${escape(j.source_type)}</span></td>
         <td class="col-num">${fmtNumber(j.requested_limit)}</td>
         <td class="col-num">${fmtNumber(j.candidates_count)}</td>
@@ -812,6 +820,118 @@ async function renderCampaignDetail({ params }) {
   });
 }
 
+async function renderNationalCampaignDetail({ params }) {
+  const id = params[0];
+  const { nationalCampaign, rows = [], options = {} } = await api(`/api/national-campaigns/${id}/crm`);
+  const children = nationalCampaign.children || [];
+  setCurrentCrumb(`${nationalCampaign.niche} · España`);
+  view.innerHTML = `
+    <a class="back-link" href="#/campaigns">← Volver a campañas</a>
+    <div class="row">
+      <div class="grow">
+        <h1 class="headline">${escape(nationalCampaign.niche)} <span class="muted" style="font-weight:500">en España</span></h1>
+        <p class="subhead">${fmtNumber(nationalCampaign.cities_count)} ciudades · ${fmtNumber(nationalCampaign.leads_count)} leads · ${fmtNumber(nationalCampaign.candidates_count)} candidatos</p>
+      </div>
+      <div class="row" style="gap:6px">
+        <button class="btn" data-action="national-campaign-ads" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M12 2 3 6.5v6.7c0 4.7 3.8 7.5 9 8.8 5.2-1.3 9-4.1 9-8.8V6.5L12 2Zm0 2.2 7 3.5v5.5c0 3.5-2.7 5.6-7 6.8-4.3-1.2-7-3.3-7-6.8V7.7l7-3.5Zm-1 5.3h2v3h3v2h-3v3h-2v-3H8v-2h3v-3Z"/></svg>
+          Enriquecer Ads
+        </button>
+        <a class="btn" href="/api/national-campaigns/${escape(nationalCampaign.id)}/export.xlsx">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M5 3h9l5 5v13H5V3Zm8 1.8V9h4.2L13 4.8ZM8 12v6h8v-1.5h-6.5v-1h5.6V14H9.5v-1H16v-1.5H8V12Z"/></svg>
+          Excel
+        </a>
+        <a class="btn" href="/api/national-campaigns/${escape(nationalCampaign.id)}/export.csv">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M4 4h16v16H4V4Zm2 2v12h12V6H6Zm1 2h10v2H7V8Zm0 3h10v2H7v-2Zm0 3h6v2H7v-2Z"/></svg>
+          CSV
+        </a>
+        ${renderStatus(nationalCampaign.status)}
+      </div>
+    </div>
+
+    <div class="kpi-grid" style="margin-top:8px">
+      ${kpiCard("Ciudades", fmtNumber(nationalCampaign.cities_count), "Campañas hijas")}
+      ${kpiCard("Leads creados", fmtNumber(nationalCampaign.leads_count), "Negocios en pipeline", "accent")}
+      ${kpiCard("Candidatos", fmtNumber(nationalCampaign.candidates_count), "Lugares descubiertos")}
+      ${kpiCard("Solicitados", fmtNumber(nationalCampaign.requested_limit) || "—", "Límite total")}
+    </div>
+
+    <div class="crm-board crm-board--campaign" data-national-campaign-id="${escape(nationalCampaign.id)}" style="margin-top:18px">
+      <datalist id="crm-objection-options">
+        ${(options.objections || []).map((option) => `<option value="${escape(option)}"></option>`).join("")}
+      </datalist>
+
+      ${renderCrmFilterBar(rows)}
+
+      <div class="crm-section-head">
+        <div>
+          <h2>Leads de campaña España</h2>
+          <p data-bind="crm-active-count">${fmtNumber(rows.length)} leads</p>
+        </div>
+      </div>
+      <div data-bind="crm-active-table"></div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h3>Campañas hijas</h3>
+      <div class="table-wrap table-wrap--scroll" style="margin-top:12px">
+        <table class="table">
+          <thead>
+            <tr>
+              <th>Ciudad</th>
+              <th class="col-num">Solicitados</th>
+              <th class="col-num">Candidatos</th>
+              <th class="col-num">Leads</th>
+              <th>Estado</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${children.map((child) => `
+              <tr data-href="#/campaigns/${escape(child.id)}">
+                <td class="cell-primary">${escape(child.city)}</td>
+                <td class="col-num">${fmtNumber(child.requested_limit)}</td>
+                <td class="col-num">${fmtNumber(child.candidates_count)}</td>
+                <td class="col-num">${fmtNumber(child.leads_count)}</td>
+                <td>${renderStatus(child.status)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:18px">
+      <h3>Detalle</h3>
+      <dl class="kv">
+        <dt>Nicho</dt><dd>${escape(nationalCampaign.niche)}</dd>
+        <dt>País</dt><dd>España</dd>
+        <dt>Cobertura</dt><dd>${escape(nationalCampaign.city_preset)}</dd>
+        <dt>Origen</dt><dd class="mono">${escape(nationalCampaign.source_type)}</dd>
+        <dt>Límite por ciudad</dt><dd>${fmtNumber(nationalCampaign.limit_per_city)}</dd>
+        <dt>Creada</dt><dd>${fmtDate(nationalCampaign.created_at)}</dd>
+        ${nationalCampaign.backfilled_at ? `<dt>Recuperada</dt><dd>${fmtDate(nationalCampaign.backfilled_at)}</dd>` : ""}
+      </dl>
+    </div>
+
+    <div style="margin-top:16px">
+      <a class="btn" href="#/leads?nationalCampaignId=${encodeURIComponent(nationalCampaign.id)}">
+        Ver todos los leads de España →
+      </a>
+    </div>
+  `;
+
+  $("[data-action='national-campaign-ads']", view).addEventListener("click", () => nationalCampaignAdsAction(nationalCampaign.id));
+  bindRowNav(view);
+  hydrateCrmBoard(view, {
+    rows,
+    options,
+    editable: false,
+    showDiscarded: false,
+    title: "Leads",
+    emptyCopy: "Esta campaña nacional todavía no tiene leads."
+  });
+}
+
 // ── Leads list ────────────────────────────────────────────
 async function renderLeadsList({ search }) {
   setCurrentCrumb("Lista");
@@ -820,6 +940,7 @@ async function renderLeadsList({ search }) {
   const niche = search.get("niche") || "";
   const city = search.get("city") || "";
   const campaignIds = selectedFilterValues(search, "campaignIds", "campaignId");
+  const nationalCampaignId = search.get("nationalCampaignId") || "";
   const listIds = selectedFilterValues(search, "listIds", "listId");
   const phoneType = search.get("phoneType") || "";
   const adsActive = search.get("adsActive") || "";
@@ -828,21 +949,24 @@ async function renderLeadsList({ search }) {
   const hasMetaAdsEstimate = search.get("hasMetaAdsEstimate") || "";
   const metaAdsEstimateMin = search.get("metaAdsEstimateMin") || "";
   const term = search.get("search") || "";
-  const [leadLists, campaigns, selectedCampaignResult] = await Promise.all([
+  const [leadLists, campaigns, selectedCampaignResult, selectedNationalCampaignResult] = await Promise.all([
     api("/api/lead-lists"),
     api("/api/campaigns?limit=200"),
-    campaignIds.length === 1 ? api(`/api/campaigns/${encodeURIComponent(campaignIds[0])}`).catch(() => null) : null
+    campaignIds.length === 1 ? api(`/api/campaigns/${encodeURIComponent(campaignIds[0])}`).catch(() => null) : null,
+    nationalCampaignId ? api(`/api/national-campaigns/${encodeURIComponent(nationalCampaignId)}`).catch(() => null) : null
   ]);
   const campaignRows = [...(campaigns.rows || [])];
   if (selectedCampaignResult?.job && !campaignRows.some((job) => job.id === selectedCampaignResult.job.id)) {
     campaignRows.unshift(selectedCampaignResult.job);
   }
   const selectedCampaigns = campaignRows.filter((job) => campaignIds.includes(job.id));
-  const campaignCopy = selectedCampaigns.length === 1
-    ? ` · Campaña: ${escape(formatCampaignLabel(selectedCampaigns[0]))}`
-    : selectedCampaigns.length > 1
-      ? ` · ${fmtNumber(selectedCampaigns.length)} campañas`
-      : "";
+  const campaignCopy = selectedNationalCampaignResult?.nationalCampaign
+    ? ` · Campaña: ${escape(selectedNationalCampaignResult.nationalCampaign.niche)} · España`
+    : selectedCampaigns.length === 1
+      ? ` · Campaña: ${escape(formatCampaignLabel(selectedCampaigns[0]))}`
+      : selectedCampaigns.length > 1
+        ? ` · ${fmtNumber(selectedCampaigns.length)} campañas`
+        : "";
 
   view.innerHTML = `
     <div class="row" style="margin-bottom:14px">
@@ -865,6 +989,7 @@ async function renderLeadsList({ search }) {
     </div>
 
     <form class="table-wrap" id="leads-filters" style="margin-bottom:14px">
+      ${nationalCampaignId ? `<input type="hidden" name="nationalCampaignId" value="${escape(nationalCampaignId)}" />` : ""}
       <div class="table-toolbar">
         <div class="search">
           <svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M10 2a8 8 0 0 1 6.32 12.9l4.39 4.39-1.42 1.42-4.39-4.39A8 8 0 1 1 10 2Zm0 2a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z"/></svg>
@@ -1000,6 +1125,7 @@ async function renderLeadsList({ search }) {
   if (niche) params.set("niche", niche);
   if (city) params.set("city", city);
   for (const campaignId of campaignIds) params.append("campaignIds", campaignId);
+  if (nationalCampaignId) params.set("nationalCampaignId", nationalCampaignId);
   for (const listId of listIds) params.append("listIds", listId);
   if (phoneType) params.set("phoneType", phoneType);
   if (adsActive) params.set("adsActive", adsActive);
@@ -1865,6 +1991,19 @@ async function campaignAdsAction(campaignId) {
     toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento Ads`, "ok");
   } catch (err) {
     toast(`No se pudo enriquecer la campaña (${err.message})`, "error");
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function nationalCampaignAdsAction(nationalCampaignId) {
+  const button = $("[data-action='national-campaign-ads']", view);
+  button.disabled = true;
+  try {
+    const result = await api(`/api/national-campaigns/${nationalCampaignId}/ads-enrichment`, { method: "POST", body: "{}" });
+    toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento Ads`, "ok");
+  } catch (err) {
+    toast(`No se pudo enriquecer la campaña España (${err.message})`, "error");
   } finally {
     button.disabled = false;
   }

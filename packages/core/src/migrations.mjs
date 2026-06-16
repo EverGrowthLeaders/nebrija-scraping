@@ -129,6 +129,24 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS linkedin_employee_count INTEGER`);
     await run(`ALTER TABLE businesses ADD COLUMN IF NOT EXISTS linkedin_company_checked_at TIMESTAMPTZ`);
     await run(`ALTER TABLE extraction_jobs ALTER COLUMN source_type SET DEFAULT 'google_places_api'`);
+    await run(`
+    CREATE TABLE IF NOT EXISTS national_campaigns (
+      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+      niche TEXT NOT NULL,
+      country TEXT NOT NULL DEFAULT 'ES',
+      city_preset TEXT NOT NULL DEFAULT 'top_50',
+      source_type TEXT NOT NULL DEFAULT 'google_places_api',
+      enrich_ads BOOLEAN NOT NULL DEFAULT FALSE,
+      limit_per_city INTEGER,
+      requested_limit_total INTEGER,
+      estimated_requested_limit INTEGER,
+      backfilled_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS national_campaign_id UUID REFERENCES national_campaigns(id) ON DELETE SET NULL`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_name TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_phone_number_id TEXT`);
@@ -208,6 +226,8 @@ export async function ensureRuntimeSchema() {
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_lists_tenant_created ON lead_lists(tenant_id, created_at DESC)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_business ON lead_list_members(business_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_lead_list_members_first_contact ON lead_list_members(first_contact_at)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_national_campaigns_tenant_created ON national_campaigns(tenant_id, created_at DESC)`);
+    await run(`CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_national ON extraction_jobs(tenant_id, national_campaign_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job ON businesses(tenant_id, extraction_job_id)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_status_city_niche ON businesses(tenant_id, status, city, niche)`);
     await run(`CREATE INDEX IF NOT EXISTS idx_businesses_tenant_score ON businesses(tenant_id, score DESC)`);

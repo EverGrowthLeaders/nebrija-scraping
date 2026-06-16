@@ -175,9 +175,26 @@ CREATE TABLE IF NOT EXISTS lead_list_members (
   PRIMARY KEY (lead_list_id, business_id)
 );
 
+CREATE TABLE IF NOT EXISTS national_campaigns (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  niche TEXT NOT NULL,
+  country TEXT NOT NULL DEFAULT 'ES',
+  city_preset TEXT NOT NULL DEFAULT 'top_50',
+  source_type TEXT NOT NULL DEFAULT 'google_places_api',
+  enrich_ads BOOLEAN NOT NULL DEFAULT FALSE,
+  limit_per_city INTEGER,
+  requested_limit_total INTEGER,
+  estimated_requested_limit INTEGER,
+  backfilled_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 CREATE TABLE IF NOT EXISTS extraction_jobs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id UUID NOT NULL REFERENCES tenants(id) DEFAULT '00000000-0000-0000-0000-000000000001',
+  national_campaign_id UUID REFERENCES national_campaigns(id) ON DELETE SET NULL,
   niche TEXT NOT NULL,
   city TEXT NOT NULL,
   source_type TEXT NOT NULL DEFAULT 'google_places_api',
@@ -352,6 +369,12 @@ CREATE INDEX IF NOT EXISTS idx_lead_list_members_business
 
 CREATE INDEX IF NOT EXISTS idx_lead_list_members_first_contact
   ON lead_list_members(first_contact_at);
+
+CREATE INDEX IF NOT EXISTS idx_national_campaigns_tenant_created
+  ON national_campaigns(tenant_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_extraction_jobs_tenant_national
+  ON extraction_jobs(tenant_id, national_campaign_id);
 
 CREATE INDEX IF NOT EXISTS idx_businesses_tenant_extraction_job
   ON businesses(tenant_id, extraction_job_id);

@@ -373,6 +373,7 @@ export async function upsertTenantScoringRules({ tenantId = DEFAULT_TENANT_ID, r
 
 export async function createExtractionJob({
   tenantId = DEFAULT_TENANT_ID,
+  nationalCampaignId,
   niche,
   city,
   sourceType,
@@ -387,12 +388,13 @@ export async function createExtractionJob({
 }) {
   const result = await query(
     `INSERT INTO extraction_jobs
-       (tenant_id, niche, city, source_type, bbox, grid_step, requested_limit,
+       (tenant_id, national_campaign_id, niche, city, source_type, bbox, grid_step, requested_limit,
         voice_assistant_id, voice_assistant_name, voice_phone_number_id, voice_variable_map, voice_assistant_variables)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING *`,
     [
       tenantId,
+      nationalCampaignId || null,
       niche,
       city,
       sourceType || "google_places_api",
@@ -407,6 +409,179 @@ export async function createExtractionJob({
     ]
   );
   return result.rows[0];
+}
+
+export async function createNationalCampaign({
+  tenantId = DEFAULT_TENANT_ID,
+  id,
+  niche,
+  country = "ES",
+  cityPreset = "top_50",
+  sourceType = "google_places_api",
+  enrichAds = false,
+  limitPerCity,
+  requestedLimitTotal,
+  estimatedRequestedLimit
+}) {
+  const result = await query(
+    `INSERT INTO national_campaigns
+       (id, tenant_id, niche, country, city_preset, source_type, enrich_ads,
+        limit_per_city, requested_limit_total, estimated_requested_limit)
+     VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     RETURNING *`,
+    [
+      id || null,
+      tenantId,
+      niche,
+      country || "ES",
+      cityPreset || "top_50",
+      sourceType || "google_places_api",
+      Boolean(enrichAds),
+      limitPerCity || null,
+      requestedLimitTotal || null,
+      estimatedRequestedLimit || null
+    ]
+  );
+  return result.rows[0];
+}
+
+export async function backfillNationalCampaigns({ tenantId = DEFAULT_TENANT_ID } = {}) {
+  return withTransaction(async (client) => {
+    const groups = await client.query(
+      `SELECT niche,
+              source_type,
+              requested_limit,
+              FLOOR(EXTRACT(EPOCH FROM created_at) / 600)::bigint AS bucket,
+              MIN(created_at) AS first_created_at,
+              MAX(created_at) AS last_created_at,
+              ARRAY_AGG(id ORDER BY created_at) AS job_ids,
+              ARRAY_AGG(city ORDER BY created_at) AS cities
+         FROM extraction_jobs
+        WHERE tenant_id = $1
+          AND national_campaign_id IS NULL
+          AND created_at >= NOW() - INTERVAL '14 days'
+        GROUP BY niche, source_type, requested_limit, FLOOR(EXTRACT(EPOCH FROM created_at) / 600)
+       HAVING COUNT(*) >= 3
+          AND COUNT(DISTINCT city) >= 3
+        ORDER BY first_created_at DESC`,
+      [tenantId]
+    );
+    const created = [];
+    for (const group of groups.rows) {
+      const cityCount = new Set(group.cities || []).size;
+      const requestedLimit = Number(group.requested_limit) || null;
+      const national = await client.query(
+        `INSERT INTO national_campaigns
+           (tenant_id, niche, country, city_preset, source_type, enrich_ads,
+            limit_per_city, estimated_requested_limit, backfilled_at, created_at, updated_at)
+         VALUES ($1, $2, 'ES', 'retroactive', $3, false, $4, $5, NOW(), $6, NOW())
+         RETURNING *`,
+        [
+          tenantId,
+          group.niche,
+          group.source_type || "google_places_api",
+          requestedLimit,
+          requestedLimit ? requestedLimit * cityCount : null,
+          group.first_created_at
+        ]
+      );
+      const nationalCampaign = national.rows[0];
+      await client.query(
+        `UPDATE extraction_jobs
+            SET national_campaign_id = $1
+          WHERE tenant_id = $2
+            AND id = ANY($3::uuid[])`,
+        [nationalCampaign.id, tenantId, group.job_ids]
+      );
+      created.push(nationalCampaign);
+    }
+    return created;
+  });
+}
+
+export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limit = 50, offset = 0, backfill = true } = {}) {
+  if (backfill) await backfillNationalCampaigns({ tenantId });
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
+  const safeOffset = Math.max(Number(offset) || 0, 0);
+  const result = await query(
+    `SELECT nc.*,
+            COUNT(DISTINCT j.id)::int AS child_campaigns_count,
+            COUNT(DISTINCT j.city)::int AS cities_count,
+            COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
+            COUNT(DISTINCT c.id)::int AS candidates_count,
+            COUNT(DISTINCT b.id)::int AS leads_count,
+            CASE
+              WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
+              WHEN COUNT(j.id) FILTER (WHERE j.status = 'running') > 0 THEN 'running'
+              WHEN COUNT(j.id) FILTER (WHERE j.status = 'queued') > 0 THEN 'queued'
+              WHEN COUNT(j.id) > 0 AND COUNT(j.id) FILTER (WHERE j.status = 'completed') = COUNT(j.id) THEN 'completed'
+              ELSE 'queued'
+            END AS status,
+            MIN(j.started_at) AS started_at,
+            MAX(j.finished_at) AS finished_at
+       FROM national_campaigns nc
+       LEFT JOIN extraction_jobs j ON j.national_campaign_id = nc.id AND j.tenant_id = nc.tenant_id
+       LEFT JOIN google_place_candidates c ON c.extraction_job_id = j.id AND c.tenant_id = nc.tenant_id
+       LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = nc.tenant_id
+      WHERE nc.tenant_id = $1
+      GROUP BY nc.id
+      ORDER BY nc.created_at DESC
+      LIMIT $2 OFFSET $3`,
+    [tenantId, safeLimit, safeOffset]
+  );
+  const totalRow = await query(`SELECT COUNT(*)::int AS total FROM national_campaigns WHERE tenant_id = $1`, [tenantId]);
+  return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
+}
+
+export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT_ID, backfill = true } = {}) {
+  if (backfill) await backfillNationalCampaigns({ tenantId });
+  const result = await query(
+    `SELECT nc.*,
+            COUNT(DISTINCT j.id)::int AS child_campaigns_count,
+            COUNT(DISTINCT j.city)::int AS cities_count,
+            COALESCE(SUM(j.requested_limit), 0)::int AS requested_limit,
+            COUNT(DISTINCT c.id)::int AS candidates_count,
+            COUNT(DISTINCT b.id)::int AS leads_count,
+            CASE
+              WHEN COUNT(j.id) FILTER (WHERE j.status = 'failed') > 0 THEN 'failed'
+              WHEN COUNT(j.id) FILTER (WHERE j.status = 'running') > 0 THEN 'running'
+              WHEN COUNT(j.id) FILTER (WHERE j.status = 'queued') > 0 THEN 'queued'
+              WHEN COUNT(j.id) > 0 AND COUNT(j.id) FILTER (WHERE j.status = 'completed') = COUNT(j.id) THEN 'completed'
+              ELSE 'queued'
+            END AS status,
+            MIN(j.started_at) AS started_at,
+            MAX(j.finished_at) AS finished_at
+       FROM national_campaigns nc
+       LEFT JOIN extraction_jobs j ON j.national_campaign_id = nc.id AND j.tenant_id = nc.tenant_id
+       LEFT JOIN google_place_candidates c ON c.extraction_job_id = j.id AND c.tenant_id = nc.tenant_id
+       LEFT JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = nc.tenant_id
+      WHERE nc.id = $1 AND nc.tenant_id = $2
+      GROUP BY nc.id`,
+    [id, tenantId]
+  );
+  const nationalCampaign = result.rows[0];
+  if (!nationalCampaign) return null;
+  const children = await query(
+    `SELECT j.*,
+            (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
+            (SELECT COUNT(*)::int FROM businesses b WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count
+       FROM extraction_jobs j
+      WHERE j.tenant_id = $1 AND j.national_campaign_id = $2
+      ORDER BY j.created_at ASC`,
+    [tenantId, id]
+  );
+  return { ...nationalCampaign, children: children.rows };
+}
+
+export async function listCampaignIdsForNationalCampaign({ tenantId = DEFAULT_TENANT_ID, nationalCampaignId } = {}) {
+  const result = await query(
+    `SELECT id
+       FROM extraction_jobs
+      WHERE tenant_id = $1 AND national_campaign_id = $2
+      ORDER BY created_at ASC`,
+    [tenantId, nationalCampaignId]
+  );
+  return result.rows.map((row) => row.id);
 }
 
 export async function findExtractionJob(id, { tenantId } = {}) {
@@ -1007,21 +1182,24 @@ function stableBusinessKey(place) {
   return [place.name, place.address, place.latitude, place.longitude].filter(Boolean).join("|");
 }
 
-export async function listExtractionJobs({ tenantId = DEFAULT_TENANT_ID, limit = 50, offset = 0 } = {}) {
+export async function listExtractionJobs({ tenantId = DEFAULT_TENANT_ID, limit = 50, offset = 0, includeNationalChildren = false } = {}) {
+  await backfillNationalCampaigns({ tenantId });
   const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200);
   const safeOffset = Math.max(Number(offset) || 0, 0);
+  const where = ["j.tenant_id = $1"];
+  if (!includeNationalChildren) where.push("j.national_campaign_id IS NULL");
   const result = await query(
     `SELECT j.*,
             (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
             (SELECT COUNT(*)::int FROM businesses b
               WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count
        FROM extraction_jobs j
-      WHERE j.tenant_id = $1
+      WHERE ${where.join(" AND ")}
       ORDER BY j.created_at DESC
       LIMIT $2 OFFSET $3`,
     [tenantId, safeLimit, safeOffset]
   );
-  const totalRow = await query(`SELECT COUNT(*)::int AS total FROM extraction_jobs WHERE tenant_id = $1`, [tenantId]);
+  const totalRow = await query(`SELECT COUNT(*)::int AS total FROM extraction_jobs j WHERE ${where.join(" AND ")}`, [tenantId]);
   return { rows: result.rows, total: totalRow.rows[0]?.total || 0 };
 }
 
@@ -1276,6 +1454,57 @@ export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID,
   return result.rows;
 }
 
+export async function listCampaignLeadsForExportByIds({ tenantId = DEFAULT_TENANT_ID, campaignIds = [] } = {}) {
+  const ids = [...new Set((campaignIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return [];
+  const result = await query(
+    `SELECT b.id,
+            b.place_id,
+            b.external_source,
+            b.name,
+            b.category,
+            b.phone,
+            b.phone_e164,
+            b.website,
+            b.address,
+            b.city,
+            b.postal_code,
+            b.latitude,
+            b.longitude,
+            b.rating,
+            b.review_count,
+            b.instagram,
+            b.facebook,
+            b.has_online_booking,
+            b.has_chatbot,
+            b.ads_meta_active,
+            b.ads_google_active,
+            b.ads_last_checked_at,
+            b.ads_enrichment,
+            b.ads_funnel_type,
+            b.ads_funnel_confidence,
+            b.ads_funnel_landing_url,
+            b.ads_funnel_last_checked_at,
+            b.score,
+            b.scoring_notes,
+            b.niche,
+            b.status,
+            b.source_url,
+            b.custom_fields,
+            b.created_at,
+            b.updated_at,
+            COALESCE(array_agg(DISTINCT c.value) FILTER (WHERE c.kind = 'email'), ARRAY[]::text[]) AS emails
+       FROM businesses b
+       LEFT JOIN business_contacts c ON c.business_id = b.id
+      WHERE b.tenant_id = $1
+        AND b.extraction_job_id = ANY($2::uuid[])
+      GROUP BY b.id
+      ORDER BY b.score DESC, b.updated_at DESC`,
+    [tenantId, ids]
+  );
+  return result.rows;
+}
+
 function searchPatterns(search) {
   const blocked = new Set(["empresas", "empresa", "para", "con", "los", "las", "del", "una", "unos", "unas"]);
   return [...new Set(String(search || "")
@@ -1296,6 +1525,7 @@ export async function listBusinesses({
   search,
   extractionJobId,
   extractionJobIds,
+  nationalCampaignId,
   listId,
   listIds,
   phoneType,
@@ -1335,6 +1565,15 @@ export async function listBusinesses({
   if (campaignIds.length) {
     params.push(campaignIds);
     where.push(`b.extraction_job_id = ANY($${params.length}::uuid[])`);
+  }
+  if (nationalCampaignId) {
+    params.push(nationalCampaignId);
+    where.push(`b.extraction_job_id IN (
+      SELECT j.id
+        FROM extraction_jobs j
+       WHERE j.tenant_id = b.tenant_id
+         AND j.national_campaign_id = $${params.length}
+    )`);
   }
   if (listId) {
     params.push(listId);
@@ -1460,6 +1699,21 @@ export async function listBusinessIdsForCampaign({ tenantId = DEFAULT_TENANT_ID,
       ORDER BY updated_at DESC
       LIMIT $3`,
     [tenantId, campaignId, safeLimit]
+  );
+  return result.rows.map((row) => row.id);
+}
+
+export async function listBusinessIdsForCampaignIds({ tenantId = DEFAULT_TENANT_ID, campaignIds = [], limit = 5000 } = {}) {
+  const ids = [...new Set((campaignIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return [];
+  const safeLimit = Math.min(Math.max(Number(limit) || 5000, 1), 20000);
+  const result = await query(
+    `SELECT id
+       FROM businesses
+      WHERE tenant_id = $1 AND extraction_job_id = ANY($2::uuid[])
+      ORDER BY updated_at DESC
+      LIMIT $3`,
+    [tenantId, ids, safeLimit]
   );
   return result.rows.map((row) => row.id);
 }
@@ -1705,6 +1959,81 @@ export async function listCampaignCrmEntries({ tenantId = DEFAULT_TENANT_ID, cam
         lm.crm_updated_at DESC NULLS LAST,
         b.updated_at DESC`,
     [tenantId, campaignId]
+  );
+  return result.rows;
+}
+
+export async function listCampaignCrmEntriesByIds({ tenantId = DEFAULT_TENANT_ID, campaignIds = [] } = {}) {
+  const ids = [...new Set((campaignIds || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  if (!ids.length) return [];
+  const result = await query(
+    `SELECT
+        lm.lead_list_id,
+        b.id AS business_id,
+        COALESCE(lm.added_at, b.created_at) AS added_at,
+        to_char(lm.first_contact_at, 'YYYY-MM-DD') AS first_contact_at,
+        lm.decision_maker_name,
+        lm.decision_maker_email,
+        lm.answered_by,
+        COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') AS crm_status,
+        to_char(lm.follow_up_date, 'YYYY-MM-DD') AS follow_up_date,
+        to_char(lm.follow_up_time, 'HH24:MI') AS follow_up_time,
+        lm.next_action,
+        lm.observations,
+        CASE WHEN lm.checkpoint = 'Objeción' THEN 'Objeción inicial' ELSE lm.checkpoint END AS checkpoint,
+        lm.objection,
+        lm.crm_updated_at,
+        b.id,
+        b.name,
+        b.website,
+        b.phone,
+        b.phone_e164,
+        b.address,
+        b.city,
+        b.niche,
+        b.category,
+        b.status AS lead_status,
+        b.score,
+        b.ads_meta_active,
+        b.ads_google_active,
+        b.ads_funnel_type,
+        b.ads_funnel_confidence,
+        b.ads_funnel_landing_url,
+        b.meta_ads_impressions_min,
+        b.meta_ads_impressions_max,
+        b.meta_ads_estimated_spend_min,
+        b.meta_ads_estimated_spend_max,
+        b.meta_ads_estimate_currency,
+        b.meta_ads_estimate_confidence,
+        b.meta_ads_estimate_source,
+        b.meta_ads_estimate_cpm,
+        b.meta_ads_estimate_checked_at,
+        email_contact.value AS fallback_email
+       FROM businesses b
+       LEFT JOIN LATERAL (
+         SELECT lm.*
+           FROM lead_list_members lm
+           JOIN lead_lists ll ON ll.id = lm.lead_list_id
+          WHERE lm.business_id = b.id
+            AND ll.tenant_id = b.tenant_id
+          ORDER BY lm.crm_updated_at DESC, lm.added_at DESC
+          LIMIT 1
+       ) lm ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT c.value
+           FROM business_contacts c
+          WHERE c.business_id = b.id
+            AND c.kind = 'email'
+          ORDER BY c.confidence DESC, c.created_at DESC
+          LIMIT 1
+       ) email_contact ON TRUE
+      WHERE b.tenant_id = $1
+        AND b.extraction_job_id = ANY($2::uuid[])
+      ORDER BY
+        CASE WHEN COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') = 'Descartado' THEN 1 ELSE 0 END,
+        lm.crm_updated_at DESC NULLS LAST,
+        b.updated_at DESC`,
+    [tenantId, ids]
   );
   return result.rows;
 }
