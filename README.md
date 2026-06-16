@@ -298,6 +298,23 @@ curl -X POST http://localhost:3100/campaigns \
   -d '{"niche":"clinica dental","city":"Madrid","sourceType":"google_places_api","requestedLimit":1000}'
 ```
 
+Crear campana nacional por ciudades:
+
+```bash
+curl -X POST http://localhost:3100/national-campaigns \
+  -H 'content-type: application/json' \
+  -d '{"niche":"clinica dental","cityPreset":"top_50","limitPerCity":100,"sourceType":"google_places_api","enrichAds":true}'
+```
+
+`cityPreset` admite `top_20`, `top_50`, `province_capitals` y
+`all_supported`. Tambien puedes pasar ciudades manualmente:
+
+```bash
+curl -X POST http://localhost:3100/national-campaigns \
+  -H 'content-type: application/json' \
+  -d '{"niche":"clinica dental","cities":["Madrid","Barcelona","Valencia"],"limitPerCity":250}'
+```
+
 Importar negocio manual:
 
 ```bash
@@ -378,6 +395,15 @@ curl -X POST http://localhost:3100/api/test-jobs \
   -H "content-type: application/json" \
   -H "x-api-key: $TEST_JOBS_API_KEY" \
   -d '{"type":"business_crawl","website":"https://example.com"}'
+```
+
+Lanzar campana nacional desde automatizacion:
+
+```bash
+curl -X POST http://localhost:3100/api/test-jobs \
+  -H "content-type: application/json" \
+  -H "x-api-key: $TEST_JOBS_API_KEY" \
+  -d '{"type":"national_campaign","niche":"clinica dental","cityPreset":"province_capitals","limitPerCity":100,"enrichAds":true}'
 ```
 
 ## Tests

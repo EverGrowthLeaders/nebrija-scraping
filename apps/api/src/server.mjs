@@ -13,6 +13,7 @@ import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/sr
 import { normalizeSpanishPhone } from "../../../packages/core/src/phone.mjs";
 import { LEAD_VARIABLES, defaultVariableMap } from "../../../packages/core/src/leadVariables.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../../../packages/core/src/leadImport.mjs";
+import { buildNationalCampaignPlan } from "../../../packages/core/src/nationalCampaigns.mjs";
 import {
   XLSX_CONTENT_TYPE,
   buildCampaignCsv,
@@ -935,6 +936,24 @@ const server = http.createServer(async (req, res) => {
           });
         }
 
+        if (type === "national_campaign" || type === "national-campaign") {
+          const result = await createNationalCampaignFromRequest({
+            tenantId: auth.tenantId,
+            json,
+            testId
+          });
+          return sendJson(res, 202, {
+            testJob: {
+              id: result.nationalCampaign.id,
+              type,
+              testId,
+              campaignsCreated: result.campaigns.length,
+              statusUrls: result.campaigns.map((campaign) => campaign.testStatusUrl)
+            },
+            ...result
+          });
+        }
+
         if (type === "campaign") {
           validateRequired(json, ["niche", "city"]);
           const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
@@ -992,7 +1011,7 @@ const server = http.createServer(async (req, res) => {
 
         return sendJson(res, 400, {
           error: "unsupported_test_job_type",
-          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign", "campaign_discovery_rerun", "reformas_madrid_enrichment"]
+          supportedTypes: ["business_crawl", "web_discovery", "ads_enrichment", "decision_maker", "lead_import", "campaign", "national_campaign", "campaign_discovery_rerun", "reformas_madrid_enrichment"]
         });
       }
 
@@ -1160,6 +1179,15 @@ const server = http.createServer(async (req, res) => {
       }
 
       return sendJson(res, 404, { error: "test_job_route_not_found" });
+    }
+
+    if (req.method === "POST" && (url.pathname === "/national-campaigns" || url.pathname === "/api/national-campaigns")) {
+      const { json } = await readJson(req);
+      const result = await createNationalCampaignFromRequest({
+        tenantId: auth.tenantId,
+        json
+      });
+      return sendJson(res, 202, result);
     }
 
     if (req.method === "POST" && url.pathname === "/campaigns") {
@@ -1762,6 +1790,61 @@ function parseStringArray(value) {
       .filter(Boolean);
   }
   return [];
+}
+
+async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }) {
+  const plan = buildNationalCampaignPlan(json);
+  const nationalCampaignId = json.nationalCampaignId || json.national_campaign_id || crypto.randomUUID();
+  const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
+  const voiceSettings = parseCampaignVoiceSettings(json);
+  const campaigns = [];
+
+  for (const plannedCampaign of plan.campaigns) {
+    const job = await createExtractionJob({
+      tenantId,
+      niche: plannedCampaign.niche,
+      city: plannedCampaign.city,
+      sourceType: plannedCampaign.sourceType,
+      requestedLimit: plannedCampaign.requestedLimit,
+      ...voiceSettings
+    });
+    let queueJob = null;
+    if (plannedCampaign.sourceType === "google_places_api") {
+      queueJob = await queues.googleDiscovery.add("run", {
+        tenantId,
+        extractionJobId: job.id,
+        enrichAds,
+        nationalCampaignId,
+        testId
+      });
+    }
+    campaigns.push({
+      id: job.id,
+      city: job.city,
+      niche: job.niche,
+      sourceType: job.source_type,
+      requestedLimit: job.requested_limit,
+      statusUrl: `/api/campaigns/${job.id}`,
+      testStatusUrl: `/api/test-jobs/campaigns/${job.id}`,
+      queue: queueJob ? { name: QUEUE_NAMES.googleDiscovery, id: queueJob.id } : null
+    });
+  }
+
+  return {
+    nationalCampaign: {
+      id: nationalCampaignId,
+      niche: plan.niche,
+      country: plan.country,
+      cityPreset: plan.cityPreset,
+      sourceType: plan.sourceType,
+      enrichAds,
+      citiesCount: plan.cities.length,
+      limitPerCity: plan.limitPerCity,
+      requestedLimitTotal: plan.requestedLimitTotal,
+      estimatedRequestedLimit: plan.limitPerCity * plan.cities.length
+    },
+    campaigns
+  };
 }
 
 async function commitLeadImport({ tenantId, filename, contentBase64, mapping, enrichAds = false, crmListId, crmListName }) {

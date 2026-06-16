@@ -32,6 +32,7 @@ import {
 } from "../packages/core/src/firecrawl.mjs";
 import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
 import { buildGoogleDiscoveryQueries } from "../packages/core/src/googleDiscoveryQueries.mjs";
+import { buildNationalCampaignPlan, resolveNationalCampaignCities } from "../packages/core/src/nationalCampaigns.mjs";
 import { isAuthorizedApiKey, parseApiKeyHashes, parseApiKeys } from "../packages/core/src/auth.mjs";
 import { normalizeAssistantsResponse } from "../packages/core/src/nebrija.mjs";
 import { buildVariableValues, defaultVariableMap } from "../packages/core/src/leadVariables.mjs";
@@ -630,6 +631,37 @@ test("builds enough Google discovery queries for requested campaign limits", () 
   assert.equal(queries[0], "empresas de reformas en Madrid");
   assert.equal(new Set(queries).size, queries.length);
   assert.equal(queries.some((query) => query.includes("Salamanca")), true);
+});
+
+test("builds national campaign plans from Spanish city presets", () => {
+  const plan = buildNationalCampaignPlan({
+    niche: "empresas de reformas",
+    cityPreset: "top_20",
+    limitPerCity: 25
+  });
+
+  assert.equal(plan.country, "ES");
+  assert.equal(plan.cityPreset, "top_20");
+  assert.equal(plan.campaigns.length, 20);
+  assert.equal(plan.campaigns[0].city, "Madrid");
+  assert.equal(plan.campaigns[0].requestedLimit, 25);
+  assert.equal(new Set(plan.cities).size, plan.cities.length);
+});
+
+test("builds national campaign plans from explicit city lists", () => {
+  const cities = resolveNationalCampaignCities({
+    cities: "Madrid, Barcelona, Madrid, Valencia",
+    limitCities: 2
+  });
+  const plan = buildNationalCampaignPlan({
+    niche: "clinicas dentales",
+    cities,
+    requestedLimitTotal: 60
+  });
+
+  assert.deepEqual(cities, ["Madrid", "Barcelona"]);
+  assert.equal(plan.limitPerCity, 30);
+  assert.deepEqual(plan.campaigns.map((campaign) => campaign.city), ["Madrid", "Barcelona"]);
 });
 
 test("normalizes Google Places lead fields", () => {
