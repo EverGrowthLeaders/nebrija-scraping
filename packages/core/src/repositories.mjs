@@ -1,6 +1,6 @@
 import { query, withTransaction } from "./db.mjs";
 import { config } from "./config.mjs";
-import { adsEnrichmentForStorage, aiBackedAdsActiveForStorage } from "./adsStoragePolicy.mjs";
+import { adsEnrichmentForStorage, operationalAdsActiveForStorage } from "./adsStoragePolicy.mjs";
 import { decisionMakerEnrichmentForStorage } from "./decisionMakerStoragePolicy.mjs";
 import { DEFAULT_SCORING_RULES, normalizeScoringRules } from "./scoring.mjs";
 
@@ -1015,8 +1015,8 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
     [
       businessId,
       tenantId,
-      aiBackedAdsActiveForStorage(storedEnrichment?.meta),
-      aiBackedAdsActiveForStorage(storedEnrichment?.google),
+      operationalAdsActiveForStorage("meta", storedEnrichment?.meta),
+      operationalAdsActiveForStorage("google", storedEnrichment?.google),
       checkedAt,
       storedEnrichment,
       classification.type || null,
@@ -1035,6 +1035,110 @@ export async function updateBusinessAdsEnrichment({ businessId, tenantId, enrich
     ]
   );
   return result.rows[0] || null;
+}
+
+export async function repairStoredAdsActiveFlags({
+  tenantId = DEFAULT_TENANT_ID,
+  extractionJobId,
+  extractionJobIds,
+  nationalCampaignId,
+  listId,
+  listIds,
+  limit = 20000
+} = {}) {
+  const safeLimit = Math.min(Math.max(Number(limit) || 20000, 1), 50000);
+  const selectedCampaignIds = Array.isArray(extractionJobIds)
+    ? [...new Set(extractionJobIds.map((id) => String(id || "").trim()).filter(Boolean))]
+    : [];
+  const selectedListIds = Array.isArray(listIds)
+    ? [...new Set(listIds.map((id) => String(id || "").trim()).filter(Boolean))]
+    : [];
+
+  const where = [
+    "b.tenant_id = $1",
+    "b.ads_last_checked_at IS NOT NULL",
+    "COALESCE(b.ads_enrichment, '{}'::jsonb) <> '{}'::jsonb",
+    "(b.ads_meta_active IS NULL OR b.ads_google_active IS NULL)"
+  ];
+  const params = [tenantId];
+  if (nationalCampaignId) {
+    params.push(nationalCampaignId);
+    where.push(`b.extraction_job_id IN (
+      SELECT j.id
+        FROM extraction_jobs j
+       WHERE j.tenant_id = b.tenant_id
+         AND j.national_campaign_id = $${params.length}
+    )`);
+  } else if (selectedCampaignIds.length) {
+    params.push(selectedCampaignIds);
+    where.push(`b.extraction_job_id = ANY($${params.length}::uuid[])`);
+  } else if (extractionJobId) {
+    params.push(extractionJobId);
+    where.push(`b.extraction_job_id = $${params.length}`);
+  }
+  if (selectedListIds.length) {
+    params.push(selectedListIds);
+    where.push(`EXISTS (
+      SELECT 1
+        FROM lead_list_members lm
+        JOIN lead_lists ll ON ll.id = lm.lead_list_id
+       WHERE lm.business_id = b.id
+         AND lm.lead_list_id = ANY($${params.length}::uuid[])
+         AND ll.tenant_id = b.tenant_id
+    )`);
+  } else if (listId) {
+    params.push(listId);
+    where.push(`EXISTS (
+      SELECT 1
+        FROM lead_list_members lm
+        JOIN lead_lists ll ON ll.id = lm.lead_list_id
+       WHERE lm.business_id = b.id
+         AND lm.lead_list_id = $${params.length}
+         AND ll.tenant_id = b.tenant_id
+    )`);
+  }
+  params.push(safeLimit);
+
+  return withTransaction(async (client) => {
+    const candidates = await client.query(
+      `SELECT b.id,
+              b.ads_meta_active,
+              b.ads_google_active,
+              b.ads_enrichment
+         FROM businesses b
+        WHERE ${where.join(" AND ")}
+        ORDER BY b.ads_last_checked_at DESC, b.updated_at DESC
+        LIMIT $${params.length}`,
+      params
+    );
+    let repaired = 0;
+    let metaRepaired = 0;
+    let googleRepaired = 0;
+    for (const row of candidates.rows) {
+      const metaActive = operationalAdsActiveForStorage("meta", row.ads_enrichment?.meta);
+      const googleActive = operationalAdsActiveForStorage("google", row.ads_enrichment?.google);
+      const nextMeta = row.ads_meta_active == null && metaActive !== null ? metaActive : null;
+      const nextGoogle = row.ads_google_active == null && googleActive !== null ? googleActive : null;
+      if (nextMeta === null && nextGoogle === null) continue;
+      await client.query(
+        `UPDATE businesses
+            SET ads_meta_active = COALESCE($3::boolean, ads_meta_active),
+                ads_google_active = COALESCE($4::boolean, ads_google_active),
+                updated_at = NOW()
+          WHERE id = $1 AND tenant_id = $2`,
+        [row.id, tenantId, nextMeta, nextGoogle]
+      );
+      repaired += 1;
+      if (nextMeta !== null) metaRepaired += 1;
+      if (nextGoogle !== null) googleRepaired += 1;
+    }
+    return {
+      scanned: candidates.rows.length,
+      repaired,
+      metaRepaired,
+      googleRepaired
+    };
+  });
 }
 
 export async function updateBusinessScore({ businessId, score, tenantId, breakdown }) {
@@ -1599,6 +1703,17 @@ export async function listBusinesses({
          AND lm.lead_list_id = ANY($${params.length}::uuid[])
          AND ll.tenant_id = b.tenant_id
     )`);
+  }
+  if (adsActive) {
+    await repairStoredAdsActiveFlags({
+      tenantId,
+      extractionJobId,
+      extractionJobIds: campaignIds,
+      nationalCampaignId,
+      listId,
+      listIds: selectedListIds,
+      limit: 20000
+    });
   }
   const phoneDigitsExpr = `regexp_replace(COALESCE(NULLIF(b.phone_e164, ''), NULLIF(b.phone, ''), ''), '[^0-9]', '', 'g')`;
   const localPhoneExpr = `(CASE

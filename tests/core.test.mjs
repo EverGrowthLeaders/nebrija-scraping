@@ -7,7 +7,11 @@ import {
   summarizeDeepseekEnrichmentCosts,
   validateDeepseekCostBudget
 } from "../packages/core/src/aiUsage.mjs";
-import { adsEnrichmentForStorage, aiBackedAdsActiveForStorage } from "../packages/core/src/adsStoragePolicy.mjs";
+import {
+  adsEnrichmentForStorage,
+  aiBackedAdsActiveForStorage,
+  operationalAdsActiveForStorage
+} from "../packages/core/src/adsStoragePolicy.mjs";
 import {
   decisionMakerEnrichmentForStorage,
   verifiedDecisionMakerForStorage
@@ -256,6 +260,52 @@ test("stores Ads active flags only when backed by resolved AI", () => {
   assert.equal(aiBackedAdsActiveForStorage({ active: true }), null);
 });
 
+test("recovers stored Ads active flags from strong scraper evidence", () => {
+  assert.equal(operationalAdsActiveForStorage("google", {
+    active: null,
+    status: "unknown",
+    attempts: [{
+      provider: "google",
+      sourceProvider: "apify",
+      status: "active",
+      active: true,
+      reason: "apify_google_recent_domain_ad",
+      matchedFields: ["domain"],
+      adArchiveId: "CR123"
+    }]
+  }), true);
+  assert.equal(operationalAdsActiveForStorage("meta", {
+    active: null,
+    status: "unknown",
+    attempts: [{
+      provider: "meta",
+      sourceProvider: "apify",
+      status: "unknown",
+      active: null,
+      reason: "apify_meta_active_item_candidate",
+      matchedFields: ["domain", "landing_domain"],
+      landingUrls: ["https://reformas.test/contacto"]
+    }]
+  }), true);
+  assert.equal(operationalAdsActiveForStorage("meta", {
+    active: null,
+    status: "unknown",
+    attempts: [{
+      provider: "meta",
+      sourceProvider: "apify",
+      status: "unknown",
+      active: null,
+      reason: "apify_meta_page_scoped_candidate",
+      matchedFields: ["facebook_handle"]
+    }]
+  }), null);
+  assert.equal(operationalAdsActiveForStorage("meta", {
+    active: true,
+    status: "active",
+    reason: "manual_claim"
+  }), null);
+});
+
 test("sanitizes Ads enrichment JSON before storage when AI verification is missing", () => {
   const sanitized = adsEnrichmentForStorage({
     checkedAt: "2026-06-05T00:00:00.000Z",
@@ -265,7 +315,16 @@ test("sanitizes Ads enrichment JSON before storage when AI verification is missi
       confidence: 0.91,
       reason: "manual_claim",
       spendEstimate: { estimatedSpendMin: 100 },
-      ai: { status: "resolved" }
+      ai: { status: "resolved" },
+      attempts: [{
+        provider: "meta",
+        sourceProvider: "apify",
+        status: "unknown",
+        active: null,
+        reason: "apify_meta_active_item_candidate",
+        matchedFields: ["domain", "landing_domain"],
+        landingUrls: ["https://reformas.test/contacto"]
+      }]
     },
     google: {
       active: false,
@@ -288,6 +347,7 @@ test("sanitizes Ads enrichment JSON before storage when AI verification is missi
   assert.equal(sanitized.google.active, null);
   assert.equal(sanitized.classification.type, "unknown");
   assert.equal(sanitized.classification.reason, "storage_requires_verified_active_ads");
+  assert.equal(operationalAdsActiveForStorage("meta", sanitized.meta), true);
 });
 
 test("stores decision maker contacts only when resolved and independently verified", () => {
