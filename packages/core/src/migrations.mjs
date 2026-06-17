@@ -138,6 +138,7 @@ export async function ensureRuntimeSchema() {
       city_preset TEXT NOT NULL DEFAULT 'top_50',
       source_type TEXT NOT NULL DEFAULT 'google_places_api',
       enrich_ads BOOLEAN NOT NULL DEFAULT FALSE,
+      low_consumption_mode BOOLEAN NOT NULL DEFAULT FALSE,
       limit_per_city INTEGER,
       requested_limit_total INTEGER,
       estimated_requested_limit INTEGER,
@@ -147,6 +148,8 @@ export async function ensureRuntimeSchema() {
     )
   `);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS national_campaign_id UUID REFERENCES national_campaigns(id) ON DELETE SET NULL`);
+    await run(`ALTER TABLE national_campaigns ADD COLUMN IF NOT EXISTS low_consumption_mode BOOLEAN NOT NULL DEFAULT FALSE`);
+    await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS low_consumption_mode BOOLEAN NOT NULL DEFAULT FALSE`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_id TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_assistant_name TEXT`);
     await run(`ALTER TABLE extraction_jobs ADD COLUMN IF NOT EXISTS voice_phone_number_id TEXT`);

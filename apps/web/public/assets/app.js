@@ -6,6 +6,11 @@ const appShell = $(".app");
 
 let currentSession = null;
 let healthTimer = null;
+let enrichmentProgressTimer = null;
+const ENRICHMENT_PROGRESS_KEY = "nebrija.enrichmentProgress.v1";
+const ENRICHMENT_PROGRESS_POLL_MS = 2500;
+const ENRICHMENT_PROGRESS_DONE_TTL_MS = 90_000;
+let enrichmentProgressBatches = loadEnrichmentProgressBatches();
 
 const escape = (str) =>
   String(str ?? "")
@@ -289,6 +294,8 @@ function showAppShell() {
   $("#login-shell")?.remove();
   appShell.hidden = false;
   renderSessionChip();
+  renderEnrichmentProgress();
+  startEnrichmentProgressPolling();
 }
 
 function showAuthLoading() {
@@ -351,6 +358,8 @@ async function logout() {
     await api("/auth/logout", { method: "POST", body: "{}", skipAuthRedirect: true });
   } finally {
     currentSession = null;
+    if (enrichmentProgressTimer) clearInterval(enrichmentProgressTimer);
+    enrichmentProgressTimer = null;
     await showLogin();
   }
 }
@@ -393,6 +402,203 @@ function toast(message, tone = "info") {
     el.style.transition = "opacity .25s ease";
     setTimeout(() => el.remove(), 260);
   }, 3200);
+}
+
+// ── Enrichment progress ───────────────────────────────────
+function loadEnrichmentProgressBatches() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(ENRICHMENT_PROGRESS_KEY) || "[]");
+    const batches = {};
+    for (const batch of Array.isArray(stored) ? stored : []) {
+      const normalized = normalizeEnrichmentProgressBatch(batch);
+      if (normalized && shouldKeepEnrichmentBatch(normalized)) batches[normalized.id] = normalized;
+    }
+    return batches;
+  } catch {
+    return {};
+  }
+}
+
+function saveEnrichmentProgressBatches() {
+  const batches = Object.values(enrichmentProgressBatches).filter(shouldKeepEnrichmentBatch);
+  try {
+    localStorage.setItem(ENRICHMENT_PROGRESS_KEY, JSON.stringify(batches));
+  } catch {}
+}
+
+function normalizeEnrichmentProgressBatch(batch = {}) {
+  if (!batch.id) return null;
+  const total = Math.max(0, Number(batch.total) || 0);
+  const completed = Math.max(0, Number(batch.completed) || 0);
+  const failed = Math.max(0, Number(batch.failed) || 0);
+  const processed = Math.min(total, Number(batch.processed) || completed + failed);
+  return {
+    id: String(batch.id),
+    type: batch.type || "enrichment",
+    queue: batch.queue || "",
+    label: batch.label || enrichmentProgressTypeLabel(batch.type),
+    status: batch.status || (processed >= total ? "completed" : "running"),
+    total,
+    completed,
+    failed,
+    processed,
+    pending: Math.max(0, total - processed),
+    percentage: total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 100,
+    createdAt: batch.createdAt || new Date().toISOString(),
+    updatedAt: batch.updatedAt || null,
+    finishedAt: batch.finishedAt || null,
+    completedSeenAt: batch.completedSeenAt || null
+  };
+}
+
+function enrichmentProgressTypeLabel(type) {
+  const labels = {
+    ads: "Ads/Funnel",
+    ads_reverification: "Reverificación Ads",
+    decision_maker: "Decisor",
+    company: "Empresa"
+  };
+  return labels[type] || "Enrichment";
+}
+
+function shouldKeepEnrichmentBatch(batch) {
+  if (!batch) return false;
+  if (batch.status !== "completed") return true;
+  const seenAt = new Date(batch.completedSeenAt || batch.finishedAt || batch.updatedAt || batch.createdAt).getTime();
+  if (Number.isNaN(seenAt)) return false;
+  return Date.now() - seenAt < ENRICHMENT_PROGRESS_DONE_TTL_MS;
+}
+
+function trackEnrichmentProgress(result, fallbackLabel = "") {
+  const batch = normalizeEnrichmentProgressBatch(result?.progressBatch);
+  if (!batch) return;
+  if (fallbackLabel && !batch.label) batch.label = fallbackLabel;
+  enrichmentProgressBatches[batch.id] = batch;
+  saveEnrichmentProgressBatches();
+  renderEnrichmentProgress();
+  startEnrichmentProgressPolling();
+}
+
+function startEnrichmentProgressPolling() {
+  if (enrichmentProgressTimer) return;
+  if (!Object.keys(enrichmentProgressBatches).length) return;
+  enrichmentProgressTimer = setInterval(refreshEnrichmentProgressBatches, ENRICHMENT_PROGRESS_POLL_MS);
+  refreshEnrichmentProgressBatches();
+}
+
+function stopEnrichmentProgressPollingIfIdle() {
+  const hasVisibleBatches = Object.values(enrichmentProgressBatches).some(shouldKeepEnrichmentBatch);
+  if (!hasVisibleBatches && enrichmentProgressTimer) {
+    clearInterval(enrichmentProgressTimer);
+    enrichmentProgressTimer = null;
+  }
+}
+
+async function refreshEnrichmentProgressBatches() {
+  const batches = Object.values(enrichmentProgressBatches);
+  if (!batches.length) {
+    renderEnrichmentProgress();
+    stopEnrichmentProgressPollingIfIdle();
+    return;
+  }
+
+  let changed = false;
+  for (const batch of batches) {
+    if (batch.status === "completed" && !shouldKeepEnrichmentBatch(batch)) {
+      delete enrichmentProgressBatches[batch.id];
+      changed = true;
+      continue;
+    }
+    if (batch.status === "completed") continue;
+    try {
+      const result = await api(`/api/enrichment-batches/${encodeURIComponent(batch.id)}`);
+      const updated = normalizeEnrichmentProgressBatch(result.batch);
+      if (updated) {
+        if (updated.status === "completed" && !updated.completedSeenAt) {
+          updated.completedSeenAt = new Date().toISOString();
+        }
+        enrichmentProgressBatches[updated.id] = updated;
+        changed = true;
+      }
+    } catch (err) {
+      if (err.status === 404) {
+        delete enrichmentProgressBatches[batch.id];
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) saveEnrichmentProgressBatches();
+  renderEnrichmentProgress();
+  stopEnrichmentProgressPollingIfIdle();
+}
+
+function renderEnrichmentProgress() {
+  Object.values(enrichmentProgressBatches).forEach((batch) => {
+    if (batch.status === "completed" && !batch.completedSeenAt) {
+      batch.completedSeenAt = new Date().toISOString();
+    }
+    if (!shouldKeepEnrichmentBatch(batch)) delete enrichmentProgressBatches[batch.id];
+  });
+
+  const batches = Object.values(enrichmentProgressBatches)
+    .filter(shouldKeepEnrichmentBatch)
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  let host = $("#enrichment-progress-host");
+  if (!batches.length) {
+    if (host) host.remove();
+    saveEnrichmentProgressBatches();
+    return;
+  }
+  if (!host) {
+    host = document.createElement("section");
+    host.id = "enrichment-progress-host";
+    host.className = "enrichment-progress-host";
+    document.body.appendChild(host);
+  }
+  host.innerHTML = `
+    <div class="enrichment-progress">
+      <div class="enrichment-progress__head">
+        <strong>Enrichment</strong>
+        <span>${fmtNumber(batches.length)} activo${batches.length === 1 ? "" : "s"}</span>
+      </div>
+      <div class="enrichment-progress__list">
+        ${batches.map(renderEnrichmentProgressItem).join("")}
+      </div>
+    </div>
+  `;
+  $$("[data-action='dismiss-progress-batch']", host).forEach((button) =>
+    button.addEventListener("click", () => {
+      delete enrichmentProgressBatches[button.dataset.batchId];
+      saveEnrichmentProgressBatches();
+      renderEnrichmentProgress();
+      stopEnrichmentProgressPollingIfIdle();
+    })
+  );
+}
+
+function renderEnrichmentProgressItem(batch) {
+  const done = batch.processed || batch.completed + batch.failed;
+  const status = batch.status === "completed" ? "Completado" : "En curso";
+  const failed = batch.failed ? ` · ${fmtNumber(batch.failed)} fallidos` : "";
+  return `
+    <article class="enrichment-progress__item">
+      <div class="enrichment-progress__row">
+        <span class="enrichment-progress__label">${escape(batch.label || enrichmentProgressTypeLabel(batch.type))}</span>
+        <button class="btn btn--icon btn--ghost" data-action="dismiss-progress-batch" data-batch-id="${escape(batch.id)}" type="button" title="Ocultar" aria-label="Ocultar progreso">
+          <svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path fill="currentColor" d="m6.4 5 12.6 12.6-1.4 1.4L5 6.4 6.4 5Zm11.2 0L19 6.4 6.4 19 5 17.6 17.6 5Z"/></svg>
+        </button>
+      </div>
+      <div class="enrichment-progress__meta">
+        <span>${escape(status)}</span>
+        <strong>${fmtNumber(done)} / ${fmtNumber(batch.total)}</strong>
+        ${failed ? `<span>${escape(failed)}</span>` : ""}
+      </div>
+      <div class="enrichment-progress__bar" aria-hidden="true">
+        <span style="width:${Math.max(0, Math.min(100, batch.percentage))}%"></span>
+      </div>
+    </article>
+  `;
 }
 
 // ── Modal ─────────────────────────────────────────────────
@@ -454,6 +660,7 @@ const routes = [
 ];
 
 let currentRoute = null;
+let routeRefreshTimer = null;
 
 function parseHash() {
   const raw = (location.hash || "#/").replace(/^#/, "");
@@ -462,7 +669,9 @@ function parseHash() {
   return { pathname: pathname || "/", search };
 }
 
-async function router() {
+async function router({ preserveScroll = false } = {}) {
+  const previousScrollY = window.scrollY;
+  clearRouteRefresh();
   const { pathname, search } = parseHash();
   for (const r of routes) {
     const match = pathname.match(r.match);
@@ -481,11 +690,26 @@ async function router() {
         }
         view.innerHTML = `<div class="empty"><h4>Error al cargar</h4><p>${escape(err.message)}</p></div>`;
       }
-      window.scrollTo({ top: 0 });
+      if (preserveScroll) window.scrollTo({ top: previousScrollY });
+      else window.scrollTo({ top: 0 });
       return;
     }
   }
   view.innerHTML = `<div class="empty"><h4>404</h4><p>Ruta no encontrada</p></div>`;
+}
+
+function clearRouteRefresh() {
+  if (!routeRefreshTimer) return;
+  clearTimeout(routeRefreshTimer);
+  routeRefreshTimer = null;
+}
+
+function scheduleRouteRefresh(ms = 5000) {
+  clearRouteRefresh();
+  const hash = location.hash;
+  routeRefreshTimer = setTimeout(() => {
+    if (location.hash === hash) router({ preserveScroll: true });
+  }, ms);
 }
 
 function setActiveNav(key) {
@@ -606,6 +830,92 @@ function kpiCard(label, value, hint, variant) {
     </div>
   `;
 }
+function campaignProgressModel(campaign = {}, options = {}) {
+  const requested = Number(campaign.requested_limit || campaign.requestedLimit || campaign.requested_limit_total || 0) || 0;
+  const leads = Number(campaign.leads_count || campaign.leadsCount || 0) || 0;
+  const websites = Number(campaign.website_count || campaign.websiteCount || 0) || 0;
+  const missingWebsites = Math.max(Number(campaign.missing_website_count || campaign.missingWebsiteCount || 0) || 0, Math.max(leads - websites, 0));
+  const activeCrawls = Number(campaign.web_crawl_active_count || campaign.webCrawlActiveCount || 0) || 0;
+  const childTotal = Number(campaign.child_campaigns_count || campaign.cities_count || campaign.citiesCount || 0) || 0;
+  const completedChildren = Array.isArray(options.children)
+    ? options.children.filter((child) => child.status === "completed").length
+    : Number(campaign.completed_jobs || campaign.completedJobs || 0) || 0;
+  const queuedChildren = Array.isArray(options.children)
+    ? options.children.filter((child) => child.status === "queued").length
+    : Number(campaign.queued_jobs || campaign.queuedJobs || 0) || 0;
+  const runningChildren = Array.isArray(options.children)
+    ? options.children.filter((child) => child.status === "running").length
+    : Number(campaign.running_jobs || campaign.runningJobs || 0) || 0;
+  return {
+    requested,
+    leads,
+    websites,
+    missingWebsites,
+    activeCrawls,
+    childTotal,
+    completedChildren,
+    queuedChildren,
+    runningChildren,
+    status: campaign.status || "queued"
+  };
+}
+function renderProgressLine(label, value, total, hint, variant = "") {
+  const safeValue = Math.max(Number(value) || 0, 0);
+  const safeTotal = Math.max(Number(total) || 0, 0);
+  const percent = safeTotal ? Math.min(Math.round((safeValue / safeTotal) * 100), 100) : 0;
+  return `
+    <div class="progress-line ${variant ? `progress-line--${escape(variant)}` : ""}">
+      <div class="progress-line__top">
+        <strong>${escape(label)}</strong>
+        <span>${fmtNumber(safeValue)}${safeTotal ? ` / ${fmtNumber(safeTotal)}` : ""}</span>
+      </div>
+      <div class="progress-line__bar"><i style="width:${percent}%"></i></div>
+      ${hint ? `<div class="progress-line__hint">${hint}</div>` : ""}
+    </div>
+  `;
+}
+function renderCampaignProgressPanel(campaign = {}, options = {}) {
+  const stats = campaignProgressModel(campaign, options);
+  const discoveryHint = stats.status === "completed"
+    ? "Búsqueda de negocios terminada"
+    : `${fmtNumber(Math.max(stats.requested - stats.leads, 0))} pendientes sobre el límite solicitado`;
+  const websiteHintParts = [`${fmtNumber(stats.missingWebsites)} sin web resuelta`];
+  if (stats.activeCrawls) websiteHintParts.push(`${fmtNumber(stats.activeCrawls)} rastreos activos`);
+  const childLine = stats.childTotal
+    ? renderProgressLine(
+        "Ciudades completadas",
+        stats.completedChildren,
+        stats.childTotal,
+        `${fmtNumber(stats.runningChildren)} ejecutando · ${fmtNumber(stats.queuedChildren)} en cola`,
+        "city"
+      )
+    : "";
+  return `
+    <div class="progress-panel">
+      ${childLine}
+      ${renderProgressLine("Negocios encontrados", stats.leads, stats.requested || stats.leads, discoveryHint, "lead")}
+      ${renderProgressLine("Webs oficiales", stats.websites, stats.leads, websiteHintParts.join(" · "), "web")}
+    </div>
+  `;
+}
+function renderCampaignProgressMini(campaign = {}) {
+  const stats = campaignProgressModel(campaign);
+  const leadTotal = stats.requested || stats.leads;
+  const leadPercent = leadTotal ? Math.min(Math.round((stats.leads / leadTotal) * 100), 100) : 0;
+  const webPercent = stats.leads ? Math.min(Math.round((stats.websites / stats.leads) * 100), 100) : 0;
+  return `
+    <div class="progress-mini">
+      <span>${fmtNumber(stats.leads)} / ${fmtNumber(leadTotal)} leads</span>
+      <div class="progress-mini__bar"><i style="width:${leadPercent}%"></i></div>
+      <span>${fmtNumber(stats.websites)} / ${fmtNumber(stats.leads)} webs</span>
+      <div class="progress-mini__bar progress-mini__bar--web"><i style="width:${webPercent}%"></i></div>
+    </div>
+  `;
+}
+function campaignNeedsRefresh(campaign = {}, children = []) {
+  const stats = campaignProgressModel(campaign, { children });
+  return ["queued", "running"].includes(stats.status) || stats.activeCrawls > 0 || stats.runningChildren > 0 || stats.queuedChildren > 0;
+}
 function pct(part, total) {
   if (!total) return 0;
   return Math.round((Number(part) / Number(total)) * 100);
@@ -652,11 +962,12 @@ async function renderCampaignsList() {
             <th class="col-num">Solicitados</th>
             <th class="col-num">Candidatos</th>
             <th class="col-num">Leads</th>
+            <th>Progreso</th>
             <th>Estado</th>
             <th>Creada</th>
           </tr>
         </thead>
-        <tbody data-bind="rows"><tr><td colspan="8" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
+        <tbody data-bind="rows"><tr><td colspan="9" style="padding:40px;text-align:center"><span class="spinner"></span></td></tr></tbody>
       </table>
     </div>
   `;
@@ -675,7 +986,7 @@ async function renderCampaignsList() {
     ...((data.rows || []).map((campaign) => ({ ...campaign, __type: "city" })))
   ].sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0));
   if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="8">${emptyState(
+    tbody.innerHTML = `<tr><td colspan="9">${emptyState(
       "Sin campañas todavía",
       "Crea tu primera campaña para descubrir leads.",
       `<button class="btn btn--primary" data-action="new-campaign">Nueva campaña</button>`
@@ -695,6 +1006,7 @@ async function renderCampaignsList() {
         <td class="col-num">${fmtNumber(j.requested_limit)}</td>
         <td class="col-num">${fmtNumber(j.candidates_count)}</td>
         <td class="col-num">${fmtNumber(j.leads_count)}</td>
+        <td>${renderCampaignProgressMini(j)}</td>
         <td>${renderStatus(j.status)}</td>
         <td>${fmtRel(j.created_at)}</td>
       </tr>`
@@ -736,9 +1048,12 @@ async function renderCampaignDetail({ params }) {
     <div class="kpi-grid" style="margin-top:8px">
       ${kpiCard("Candidatos", fmtNumber(job.candidates_count), "Lugares descubiertos")}
       ${kpiCard("Leads creados", fmtNumber(job.leads_count), "Negocios en pipeline", "accent")}
+      ${kpiCard("Webs resueltas", fmtNumber(job.website_count || 0), `${fmtNumber(job.missing_website_count || 0)} pendientes`)}
       ${kpiCard("Llamados", fmtNumber(calledRows), "Con primer contacto registrado")}
       ${kpiCard("Solicitados", fmtNumber(job.requested_limit) || "—", "Límite de la campaña")}
     </div>
+
+    ${renderCampaignProgressPanel(job)}
 
     <div class="crm-board crm-board--campaign" data-campaign-id="${escape(job.id)}" style="margin-top:18px">
       <datalist id="crm-objection-options">
@@ -783,6 +1098,7 @@ async function renderCampaignDetail({ params }) {
         <dt>Nicho</dt><dd>${escape(job.niche)}</dd>
         <dt>Ciudad</dt><dd>${escape(job.city)}</dd>
         <dt>Origen</dt><dd class="mono">${escape(job.source_type)}</dd>
+        <dt>Modo Google</dt><dd>${job.low_consumption_mode ? "Bajo consumo" : "Completo"}</dd>
         <dt>Bbox</dt><dd class="mono">${escape(JSON.stringify(job.bbox || null))}</dd>
         <dt>Grid step</dt><dd>${job.grid_step ?? "—"}</dd>
         <dt>Iniciada</dt><dd>${fmtDate(job.started_at)}</dd>
@@ -812,6 +1128,7 @@ async function renderCampaignDetail({ params }) {
   });
   voiceForm?.addEventListener("submit", (event) => saveCampaignVoiceSettings(event, job.id));
   $("[data-action='campaign-ads']", view).addEventListener("click", () => campaignAdsAction(job.id));
+  if (campaignNeedsRefresh(job)) scheduleRouteRefresh();
   hydrateCrmBoard(view, {
     rows,
     options,
@@ -858,11 +1175,14 @@ async function renderNationalCampaignDetail({ params }) {
     <div class="kpi-grid" style="margin-top:8px">
       ${kpiCard("Ciudades", fmtNumber(nationalCampaign.cities_count), "Campañas hijas")}
       ${kpiCard("Leads creados", fmtNumber(nationalCampaign.leads_count), "Negocios en pipeline", "accent")}
+      ${kpiCard("Webs resueltas", fmtNumber(nationalCampaign.website_count || 0), `${fmtNumber(nationalCampaign.missing_website_count || 0)} pendientes`)}
       ${kpiCard("Candidatos", fmtNumber(nationalCampaign.candidates_count), "Lugares descubiertos")}
       ${kpiCard("Ads revisados", fmtNumber(nationalCampaign.ads_checked_count || 0), `${fmtNumber(nationalCampaign.ads_evidence_count || 0)} con evidencia`)}
       ${kpiCard("Apify guardado", fmtNumber((Number(nationalCampaign.meta_apify_evidence_count) || 0) + (Number(nationalCampaign.google_apify_evidence_count) || 0)), `Meta ${fmtNumber(nationalCampaign.meta_apify_evidence_count || 0)} · Google ${fmtNumber(nationalCampaign.google_apify_evidence_count || 0)}`)}
       ${kpiCard("Solicitados", fmtNumber(nationalCampaign.requested_limit) || "—", "Límite total")}
     </div>
+
+    ${renderCampaignProgressPanel(nationalCampaign, { children })}
 
     <div class="crm-board crm-board--campaign" data-national-campaign-id="${escape(nationalCampaign.id)}" style="margin-top:18px">
       <datalist id="crm-objection-options">
@@ -890,6 +1210,7 @@ async function renderNationalCampaignDetail({ params }) {
               <th class="col-num">Solicitados</th>
               <th class="col-num">Candidatos</th>
               <th class="col-num">Leads</th>
+              <th>Progreso</th>
               <th>Estado</th>
             </tr>
           </thead>
@@ -900,6 +1221,7 @@ async function renderNationalCampaignDetail({ params }) {
                 <td class="col-num">${fmtNumber(child.requested_limit)}</td>
                 <td class="col-num">${fmtNumber(child.candidates_count)}</td>
                 <td class="col-num">${fmtNumber(child.leads_count)}</td>
+                <td>${renderCampaignProgressMini(child)}</td>
                 <td>${renderStatus(child.status)}</td>
               </tr>
             `).join("")}
@@ -915,6 +1237,7 @@ async function renderNationalCampaignDetail({ params }) {
         <dt>País</dt><dd>España</dd>
         <dt>Cobertura</dt><dd>${escape(nationalCampaign.city_preset)}</dd>
         <dt>Origen</dt><dd class="mono">${escape(nationalCampaign.source_type)}</dd>
+        <dt>Modo Google</dt><dd>${nationalCampaign.low_consumption_mode ? "Bajo consumo" : "Completo"}</dd>
         <dt>Límite por ciudad</dt><dd>${fmtNumber(nationalCampaign.limit_per_city)}</dd>
         <dt>Creada</dt><dd>${fmtDate(nationalCampaign.created_at)}</dd>
         ${nationalCampaign.backfilled_at ? `<dt>Recuperada</dt><dd>${fmtDate(nationalCampaign.backfilled_at)}</dd>` : ""}
@@ -930,6 +1253,7 @@ async function renderNationalCampaignDetail({ params }) {
 
   $("[data-action='national-campaign-ads']", view).addEventListener("click", () => nationalCampaignAdsAction(nationalCampaign.id));
   $("[data-action='national-campaign-ads-reverify']", view).addEventListener("click", () => nationalCampaignAdsReverifyAction(nationalCampaign.id));
+  if (campaignNeedsRefresh(nationalCampaign, children)) scheduleRouteRefresh();
   bindRowNav(view);
   hydrateCrmBoard(view, {
     rows,
@@ -2066,7 +2390,10 @@ async function leadAction(business, kind) {
         : kind === "company"
           ? `/api/businesses/${business.id}/company-enrichment`
           : `/businesses/${business.id}/${kind}`;
-    await api(url, { method: "POST", body: "{}" });
+    const result = await api(url, { method: "POST", body: "{}" });
+    if (["ads", "decisionMaker", "company"].includes(kind)) {
+      trackEnrichmentProgress(result);
+    }
     toast(
       kind === "call"
         ? "Llamada en cola"
@@ -2091,6 +2418,7 @@ async function campaignAdsAction(campaignId) {
   button.disabled = true;
   try {
     const result = await api(`/api/campaigns/${campaignId}/ads-enrichment`, { method: "POST", body: "{}" });
+    trackEnrichmentProgress(result, "Ads · campaña");
     toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento Ads`, "ok");
   } catch (err) {
     toast(`No se pudo enriquecer la campaña (${err.message})`, "error");
@@ -2104,6 +2432,7 @@ async function nationalCampaignAdsAction(nationalCampaignId) {
   button.disabled = true;
   try {
     const result = await api(`/api/national-campaigns/${nationalCampaignId}/ads-enrichment`, { method: "POST", body: "{}" });
+    trackEnrichmentProgress(result, "Ads · campaña nacional");
     toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento Ads`, "ok");
   } catch (err) {
     toast(`No se pudo enriquecer la campaña España (${err.message})`, "error");
@@ -2117,6 +2446,7 @@ async function nationalCampaignAdsReverifyAction(nationalCampaignId) {
   button.disabled = true;
   try {
     const result = await api(`/api/national-campaigns/${nationalCampaignId}/ads-reverification`, { method: "POST", body: "{}" });
+    trackEnrichmentProgress(result, "Reverificación Ads · campaña nacional");
     const metaApify = result.evidence?.metaApifyEvidenceCount || 0;
     const googleApify = result.evidence?.googleApifyEvidenceCount || 0;
     const suffix = metaApify || googleApify
@@ -2139,6 +2469,7 @@ async function bulkLeadAdsAction(leads, button) {
       method: "POST",
       body: JSON.stringify({ businessIds })
     });
+    trackEnrichmentProgress(result, "Ads/Funnel · selección de leads");
     const skipped = result.skipped ? ` · ${fmtNumber(result.skipped)} omitidos` : "";
     toast(`${fmtNumber(result.queued)} leads enviados a Ads/Funnel${skipped}`, result.queued ? "ok" : "error");
   } catch (err) {
@@ -2157,6 +2488,7 @@ async function bulkLeadDecisionMakerAction(leads, button) {
       method: "POST",
       body: JSON.stringify({ businessIds })
     });
+    trackEnrichmentProgress(result, "Decisor · selección de leads");
     const skipped = result.skipped ? ` · ${fmtNumber(result.skipped)} omitidos` : "";
     toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento de decisor${skipped}`, result.queued ? "ok" : "error");
   } catch (err) {
@@ -2175,6 +2507,7 @@ async function bulkLeadCompanyAction(leads, button) {
       method: "POST",
       body: JSON.stringify({ businessIds })
     });
+    trackEnrichmentProgress(result, "Empresa · selección de leads");
     const skipped = result.skipped ? ` · ${fmtNumber(result.skipped)} omitidos` : "";
     toast(`${fmtNumber(result.queued)} leads enviados a enriquecimiento de empresa${skipped}`, result.queued ? "ok" : "error");
   } catch (err) {
@@ -4520,6 +4853,11 @@ async function openCampaignModal() {
       <input type="checkbox" name="enrichAds" checked />
       <span>Enriquecer Ads/Funnel automáticamente al descubrir leads</span>
     </label>
+    <label class="check-row">
+      <input type="checkbox" name="lowConsumptionMode" />
+      <span>Modo bajo consumo Google</span>
+    </label>
+    <div class="form-hint">Usa Google sin web, teléfono ni rating; la web oficial se intenta resolver con Firecrawl.</div>
     <div class="divider"></div>
     <div class="field">
       <label>Asistente NebrijaAI</label>

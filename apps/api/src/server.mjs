@@ -10,6 +10,7 @@ import { getRequestApiKey, isAuthorizedApiKey } from "../../../packages/core/src
 import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { exchangeGoogleCode, getGoogleAuthUrl, verifyGoogleIdToken } from "../../../packages/core/src/googleOAuth.mjs";
 import { createQueue, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
+import { createEnrichmentBatch, getEnrichmentBatch } from "../../../packages/core/src/enrichmentBatches.mjs";
 import { normalizeSpanishPhone } from "../../../packages/core/src/phone.mjs";
 import { LEAD_VARIABLES, defaultVariableMap } from "../../../packages/core/src/leadVariables.mjs";
 import { buildImportedLeadRows, parseLeadFile, previewLeadImport } from "../../../packages/core/src/leadImport.mjs";
@@ -518,19 +519,28 @@ const server = http.createServer(async (req, res) => {
         limit: Number(url.searchParams.get("limit")) || 20000,
         onlyUnchecked: !includeReviewed
       });
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "ads",
+        queue: QUEUE_NAMES.adsEnrichment,
+        total: businessIds.length,
+        label: `Ads · ${nationalCampaign.name || "Campaña nacional"}`,
+        meta: { nationalCampaignId: nationalCampaign.id }
+      });
       const queueJobs = [];
       for (const businessId of businessIds) {
         queueJobs.push(
-          await queues.adsEnrichment.add("enrich", {
+          await queues.adsEnrichment.add("enrich", withProgressBatch({
             tenantId: auth.tenantId,
             businessId,
             nationalCampaignId: nationalCampaign.id
-          })
+          }, progressBatch))
         );
       }
       return sendJson(res, 202, {
         queued: queueJobs.length,
         queue: QUEUE_NAMES.adsEnrichment,
+        ...progressBatchResponse(progressBatch),
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
     }
@@ -545,21 +555,30 @@ const server = http.createServer(async (req, res) => {
         limit: Number(url.searchParams.get("limit")) || 20000,
         onlyWithAdsEvidence: true
       });
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "ads_reverification",
+        queue: QUEUE_NAMES.adsEnrichment,
+        total: businessIds.length,
+        label: `Reverificación Ads · ${nationalCampaign.name || "Campaña nacional"}`,
+        meta: { nationalCampaignId: nationalCampaign.id }
+      });
       const queueJobs = [];
       for (const businessId of businessIds) {
         queueJobs.push(
-          await queues.adsEnrichment.add("reverify", {
+          await queues.adsEnrichment.add("reverify", withProgressBatch({
             tenantId: auth.tenantId,
             businessId,
             nationalCampaignId: nationalCampaign.id,
             reverifyStoredEvidence: true
-          })
+          }, progressBatch))
         );
       }
       return sendJson(res, 202, {
         queued: queueJobs.length,
         queue: QUEUE_NAMES.adsEnrichment,
         mode: "stored_ads_evidence_only",
+        ...progressBatchResponse(progressBatch),
         evidence: {
           adsEvidenceCount: Number(nationalCampaign.ads_evidence_count) || 0,
           adsAttemptsCount: Number(nationalCampaign.ads_attempts_count) || 0,
@@ -629,19 +648,28 @@ const server = http.createServer(async (req, res) => {
         campaignId: job.id,
         limit: Number(url.searchParams.get("limit")) || 1000
       });
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "ads",
+        queue: QUEUE_NAMES.adsEnrichment,
+        total: businessIds.length,
+        label: `Ads · ${job.niche || "Campaña"}${job.city ? ` · ${job.city}` : ""}`,
+        meta: { campaignId: job.id }
+      });
       const queueJobs = [];
       for (const businessId of businessIds) {
         queueJobs.push(
-          await queues.adsEnrichment.add("enrich", {
+          await queues.adsEnrichment.add("enrich", withProgressBatch({
             tenantId: auth.tenantId,
             businessId,
             campaignId: job.id
-          })
+          }, progressBatch))
         );
       }
       return sendJson(res, 202, {
         queued: queueJobs.length,
         queue: QUEUE_NAMES.adsEnrichment,
+        ...progressBatchResponse(progressBatch),
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
     }
@@ -677,7 +705,7 @@ const server = http.createServer(async (req, res) => {
       const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 20000);
       if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
 
-      const queueJobs = [];
+      const businesses = [];
       let skipped = 0;
       for (const businessId of businessIds) {
         const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
@@ -685,18 +713,31 @@ const server = http.createServer(async (req, res) => {
           skipped += 1;
           continue;
         }
+        businesses.push(business);
+      }
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "ads",
+        queue: QUEUE_NAMES.adsEnrichment,
+        total: businesses.length,
+        label: "Ads/Funnel · selección de leads",
+        meta: { source: "bulk_selection" }
+      });
+      const queueJobs = [];
+      for (const business of businesses) {
         queueJobs.push(
-          await queues.adsEnrichment.add("enrich", {
+          await queues.adsEnrichment.add("enrich", withProgressBatch({
             tenantId: auth.tenantId,
             businessId: business.id,
             bulk: true
-          })
+          }, progressBatch))
         );
       }
       return sendJson(res, 202, {
         queued: queueJobs.length,
         skipped,
         queue: QUEUE_NAMES.adsEnrichment,
+        ...progressBatchResponse(progressBatch),
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
     }
@@ -706,7 +747,7 @@ const server = http.createServer(async (req, res) => {
       const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 20000);
       if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
 
-      const queueJobs = [];
+      const businesses = [];
       let skipped = 0;
       for (const businessId of businessIds) {
         const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
@@ -714,18 +755,31 @@ const server = http.createServer(async (req, res) => {
           skipped += 1;
           continue;
         }
+        businesses.push(business);
+      }
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "decision_maker",
+        queue: QUEUE_NAMES.decisionMakerEnrichment,
+        total: businesses.length,
+        label: "Decisor · selección de leads",
+        meta: { source: "bulk_selection" }
+      });
+      const queueJobs = [];
+      for (const business of businesses) {
         queueJobs.push(
-          await queues.decisionMakerEnrichment.add("enrich", {
+          await queues.decisionMakerEnrichment.add("enrich", withProgressBatch({
             tenantId: auth.tenantId,
             businessId: business.id,
             bulk: true
-          })
+          }, progressBatch))
         );
       }
       return sendJson(res, 202, {
         queued: queueJobs.length,
         skipped,
         queue: QUEUE_NAMES.decisionMakerEnrichment,
+        ...progressBatchResponse(progressBatch),
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
     }
@@ -735,7 +789,7 @@ const server = http.createServer(async (req, res) => {
       const businessIds = uniqueStringIds(json.businessIds || json.business_ids || json.ids).slice(0, 20000);
       if (!businessIds.length) return sendJson(res, 400, { error: "business_ids_required" });
 
-      const queueJobs = [];
+      const businesses = [];
       let skipped = 0;
       for (const businessId of businessIds) {
         const business = await findBusinessById(businessId, { tenantId: auth.tenantId });
@@ -743,20 +797,43 @@ const server = http.createServer(async (req, res) => {
           skipped += 1;
           continue;
         }
+        businesses.push(business);
+      }
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "company",
+        queue: QUEUE_NAMES.companyEnrichment,
+        total: businesses.length,
+        label: "Empresa · selección de leads",
+        meta: { source: "bulk_selection" }
+      });
+      const queueJobs = [];
+      for (const business of businesses) {
         queueJobs.push(
-          await queues.companyEnrichment.add("enrich", {
+          await queues.companyEnrichment.add("enrich", withProgressBatch({
             tenantId: auth.tenantId,
             businessId: business.id,
             bulk: true
-          })
+          }, progressBatch))
         );
       }
       return sendJson(res, 202, {
         queued: queueJobs.length,
         skipped,
         queue: QUEUE_NAMES.companyEnrichment,
+        ...progressBatchResponse(progressBatch),
         jobIds: queueJobs.map((queueJob) => queueJob.id)
       });
+    }
+
+    const enrichmentBatchMatch = matchPath(url.pathname, /^\/api\/enrichment-batches\/([^/]+)$/);
+    if (req.method === "GET" && enrichmentBatchMatch) {
+      const batch = await getEnrichmentBatch({
+        tenantId: auth.tenantId,
+        batchId: enrichmentBatchMatch[1]
+      });
+      if (!batch) return sendJson(res, 404, { error: "enrichment_batch_not_found" });
+      return sendJson(res, 200, { batch });
     }
 
     const businessDetailMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)$/);
@@ -1430,11 +1507,13 @@ const server = http.createServer(async (req, res) => {
 
       const sourceType = json.sourceType || json.source_type || "google_places_api";
       const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
+      const lowConsumptionMode = parseBoolean(json.lowConsumptionMode ?? json.low_consumption_mode ?? false);
       const job = await createExtractionJob({
         tenantId: auth.tenantId,
         niche: json.niche,
         city: json.city,
         sourceType,
+        lowConsumptionMode,
         bbox: json.bbox,
         gridStep: json.gridStep || json.grid_step,
         requestedLimit: json.requestedLimit || json.requested_limit,
@@ -1449,7 +1528,7 @@ const server = http.createServer(async (req, res) => {
         });
       }
 
-      return sendJson(res, 201, { job, enrichAds });
+      return sendJson(res, 201, { job, enrichAds, lowConsumptionMode });
     }
 
     if (req.method === "POST" && url.pathname === "/businesses") {
@@ -1506,33 +1585,57 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && adsEnrichmentMatch) {
       const business = await findBusinessById(adsEnrichmentMatch[1], { tenantId: auth.tenantId });
       if (!business) return sendJson(res, 404, { error: "business_not_found" });
-      const job = await queues.adsEnrichment.add("enrich", {
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "ads",
+        queue: QUEUE_NAMES.adsEnrichment,
+        total: 1,
+        label: `Ads · ${business.name || "Lead"}`,
+        meta: { businessId: business.id }
+      });
+      const job = await queues.adsEnrichment.add("enrich", withProgressBatch({
         tenantId: auth.tenantId,
         businessId: business.id
-      });
-      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.adsEnrichment });
+      }, progressBatch));
+      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.adsEnrichment, ...progressBatchResponse(progressBatch) });
     }
 
     const decisionMakerEnrichmentMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)\/decision-maker-enrichment$/);
     if (req.method === "POST" && decisionMakerEnrichmentMatch) {
       const business = await findBusinessById(decisionMakerEnrichmentMatch[1], { tenantId: auth.tenantId });
       if (!business) return sendJson(res, 404, { error: "business_not_found" });
-      const job = await queues.decisionMakerEnrichment.add("enrich", {
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "decision_maker",
+        queue: QUEUE_NAMES.decisionMakerEnrichment,
+        total: 1,
+        label: `Decisor · ${business.name || "Lead"}`,
+        meta: { businessId: business.id }
+      });
+      const job = await queues.decisionMakerEnrichment.add("enrich", withProgressBatch({
         tenantId: auth.tenantId,
         businessId: business.id
-      });
-      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.decisionMakerEnrichment });
+      }, progressBatch));
+      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.decisionMakerEnrichment, ...progressBatchResponse(progressBatch) });
     }
 
     const companyEnrichmentMatch = matchPath(url.pathname, /^\/api\/businesses\/([^/]+)\/company-enrichment$/);
     if (req.method === "POST" && companyEnrichmentMatch) {
       const business = await findBusinessById(companyEnrichmentMatch[1], { tenantId: auth.tenantId });
       if (!business) return sendJson(res, 404, { error: "business_not_found" });
-      const job = await queues.companyEnrichment.add("enrich", {
+      const progressBatch = await createProgressBatchIfNeeded({
+        tenantId: auth.tenantId,
+        type: "company",
+        queue: QUEUE_NAMES.companyEnrichment,
+        total: 1,
+        label: `Empresa · ${business.name || "Lead"}`,
+        meta: { businessId: business.id }
+      });
+      const job = await queues.companyEnrichment.add("enrich", withProgressBatch({
         tenantId: auth.tenantId,
         businessId: business.id
-      });
-      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.companyEnrichment });
+      }, progressBatch));
+      return sendJson(res, 202, { jobId: job.id, queue: QUEUE_NAMES.companyEnrichment, ...progressBatchResponse(progressBatch) });
     }
 
     const callMatch = matchPath(url.pathname, /^\/businesses\/([^/]+)\/call$/);
@@ -2114,6 +2217,7 @@ function parseStringArray(value) {
 async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }) {
   const plan = buildNationalCampaignPlan(json);
   const enrichAds = parseBoolean(json.enrichAds ?? json.enrich_ads ?? false);
+  const lowConsumptionMode = parseBoolean(json.lowConsumptionMode ?? json.low_consumption_mode ?? false);
   const voiceSettings = parseCampaignVoiceSettings(json);
   const nationalCampaign = await createNationalCampaign({
     tenantId,
@@ -2123,6 +2227,7 @@ async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }
     cityPreset: plan.cityPreset,
     sourceType: plan.sourceType,
     enrichAds,
+    lowConsumptionMode,
     limitPerCity: plan.limitPerCity,
     requestedLimitTotal: plan.requestedLimitTotal,
     estimatedRequestedLimit: plan.limitPerCity * plan.cities.length
@@ -2137,6 +2242,7 @@ async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }
       niche: plannedCampaign.niche,
       city: plannedCampaign.city,
       sourceType: plannedCampaign.sourceType,
+      lowConsumptionMode,
       requestedLimit: plannedCampaign.requestedLimit,
       ...voiceSettings
     });
@@ -2170,6 +2276,7 @@ async function createNationalCampaignFromRequest({ tenantId, json = {}, testId }
       cityPreset: nationalCampaign.city_preset,
       sourceType: nationalCampaign.source_type,
       enrichAds: nationalCampaign.enrich_ads,
+      lowConsumptionMode: nationalCampaign.low_consumption_mode,
       citiesCount: plan.cities.length,
       limitPerCity: nationalCampaign.limit_per_city,
       requestedLimitTotal: nationalCampaign.requested_limit_total,
@@ -2278,6 +2385,25 @@ function matchPath(pathname, regex) {
 function uniqueStringIds(value) {
   const items = Array.isArray(value) ? value : [];
   return Array.from(new Set(items.map((item) => String(item || "").trim()).filter(Boolean)));
+}
+
+async function createProgressBatchIfNeeded({ tenantId, type, queue, total, label, meta } = {}) {
+  const safeTotal = Math.max(0, Number(total) || 0);
+  if (!safeTotal) return null;
+  return createEnrichmentBatch({ tenantId, type, queue, total: safeTotal, label, meta });
+}
+
+function withProgressBatch(jobData, progressBatch) {
+  if (!progressBatch?.id) return jobData;
+  return {
+    ...jobData,
+    progressBatchId: progressBatch.id,
+    progressBatchType: progressBatch.type
+  };
+}
+
+function progressBatchResponse(progressBatch) {
+  return progressBatch ? { progressBatch } : {};
 }
 
 function parseBoolean(value) {

@@ -19,6 +19,11 @@ import {
   summarizeApifyUsage,
   validateApifyUsage
 } from "../packages/core/src/apifyUsagePolicy.mjs";
+import {
+  createEnrichmentBatch,
+  getEnrichmentBatch,
+  markEnrichmentBatchJobDone
+} from "../packages/core/src/enrichmentBatches.mjs";
 import { extractEmails, extractLeadSignals, extractPhones, selectBusinessUrls } from "../packages/core/src/extractors.mjs";
 import { calculateLeadScore, nextOutreachChannel } from "../packages/core/src/scoring.mjs";
 import { parseEndOfCallReport } from "../packages/core/src/vapiReport.mjs";
@@ -30,7 +35,7 @@ import {
   normalizeScrapeResponse,
   normalizeSearchResponse
 } from "../packages/core/src/firecrawl.mjs";
-import { mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
+import { LOW_CONSUMPTION_FIELD_MASK, mergePlacesFieldMask, normalizePlaces } from "../packages/core/src/googlePlaces.mjs";
 import { buildGoogleDiscoveryQueries } from "../packages/core/src/googleDiscoveryQueries.mjs";
 import { buildNationalCampaignPlan, resolveNationalCampaignCities } from "../packages/core/src/nationalCampaigns.mjs";
 import { isAuthorizedApiKey, parseApiKeyHashes, parseApiKeys } from "../packages/core/src/auth.mjs";
@@ -61,6 +66,40 @@ import {
   cleanLandingHtml,
   extractLandingUrlsFromText
 } from "../packages/core/src/adsLandingClassifier.mjs";
+
+function createMemoryRedis() {
+  const hashes = new Map();
+  return {
+    async hset(key, values, ...rest) {
+      const current = hashes.get(key) || {};
+      if (values && typeof values === "object" && !Array.isArray(values)) {
+        Object.assign(current, Object.fromEntries(Object.entries(values).map(([field, value]) => [field, String(value)])));
+      } else {
+        const pairs = [values, ...rest];
+        for (let i = 0; i < pairs.length; i += 2) {
+          current[String(pairs[i])] = String(pairs[i + 1] ?? "");
+        }
+      }
+      hashes.set(key, current);
+      return 1;
+    },
+    async hgetall(key) {
+      return { ...(hashes.get(key) || {}) };
+    },
+    async hincrby(key, field, increment) {
+      const current = hashes.get(key) || {};
+      current[field] = String((Number(current[field]) || 0) + Number(increment || 0));
+      hashes.set(key, current);
+      return Number(current[field]);
+    },
+    async exists(key) {
+      return hashes.has(key) ? 1 : 0;
+    },
+    async expire() {
+      return 1;
+    }
+  };
+}
 
 function adsAiResolverFromEvidence(assertEvidence) {
   return async ({ evidence, phase }) => {
@@ -578,6 +617,39 @@ function buildReformasReportFixture({ count = 2 } = {}) {
   };
 }
 
+test("tracks enrichment batch progress across completed and failed jobs", async () => {
+  const redis = createMemoryRedis();
+  const batch = await createEnrichmentBatch({
+    tenantId: "tenant-demo",
+    type: "ads",
+    queue: "ads-enrichment",
+    total: 3,
+    label: "Ads demo",
+    redis
+  });
+
+  assert.equal(batch.total, 3);
+  assert.equal(batch.processed, 0);
+  assert.equal(batch.status, "running");
+
+  await markEnrichmentBatchJobDone({ tenantId: "tenant-demo", batchId: batch.id, redis });
+  await markEnrichmentBatchJobDone({ tenantId: "tenant-demo", batchId: batch.id, redis });
+  const partial = await getEnrichmentBatch({ tenantId: "tenant-demo", batchId: batch.id, redis });
+  assert.equal(partial.completed, 2);
+  assert.equal(partial.failed, 0);
+  assert.equal(partial.processed, 2);
+  assert.equal(partial.pending, 1);
+
+  await markEnrichmentBatchJobDone({ tenantId: "tenant-demo", batchId: batch.id, failed: true, redis });
+  const done = await getEnrichmentBatch({ tenantId: "tenant-demo", batchId: batch.id, redis });
+  assert.equal(done.completed, 2);
+  assert.equal(done.failed, 1);
+  assert.equal(done.processed, 3);
+  assert.equal(done.pending, 0);
+  assert.equal(done.status, "completed");
+  assert.equal(done.percentage, 100);
+});
+
 test("counts and validates Apify usage budgets for enrichment smoke", () => {
   const stats = createApifyUsageStats("on_unknown");
   recordApifyCall(stats, "meta", { urls: [{ url: "https://www.facebook.com/ads/library/?q=demo" }], count: 10 });
@@ -749,6 +821,17 @@ test("adds lead fields to Google Places field masks", () => {
   assert.equal(fieldMask.includes("places.websiteUri"), true);
   assert.equal(fieldMask.includes("places.internationalPhoneNumber"), true);
   assert.equal(fieldMask.includes("places.userRatingCount"), true);
+});
+
+test("keeps low consumption Google Places field masks out of Enterprise fields", () => {
+  const fieldMask = mergePlacesFieldMask(LOW_CONSUMPTION_FIELD_MASK, LOW_CONSUMPTION_FIELD_MASK);
+  assert.equal(fieldMask.includes("places.displayName"), true);
+  assert.equal(fieldMask.includes("places.formattedAddress"), true);
+  assert.equal(fieldMask.includes("places.websiteUri"), false);
+  assert.equal(fieldMask.includes("places.internationalPhoneNumber"), false);
+  assert.equal(fieldMask.includes("places.nationalPhoneNumber"), false);
+  assert.equal(fieldMask.includes("places.rating"), false);
+  assert.equal(fieldMask.includes("places.userRatingCount"), false);
 });
 
 test("builds enough Google discovery queries for requested campaign limits", () => {

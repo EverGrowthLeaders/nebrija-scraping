@@ -15,16 +15,28 @@ export const LEAD_FIELD_MASK = [
   "places.userRatingCount"
 ];
 
+export const LOW_CONSUMPTION_FIELD_MASK = [
+  "places.id",
+  "places.displayName",
+  "places.formattedAddress",
+  "places.location",
+  "places.googleMapsUri"
+];
+
 export function mergePlacesFieldMask(fieldMask, requiredFields = LEAD_FIELD_MASK) {
   if (String(fieldMask || "").trim() === "*") return "*";
   const fields = new Set(
-    String(fieldMask || "")
+    normalizeFieldMaskInput(fieldMask)
       .split(",")
       .map((field) => field.trim())
       .filter(Boolean)
   );
   for (const field of requiredFields) fields.add(field);
   return [...fields].join(",");
+}
+
+function normalizeFieldMaskInput(fieldMask) {
+  return Array.isArray(fieldMask) ? fieldMask.join(",") : String(fieldMask || "");
 }
 
 export class GooglePlacesClient {
@@ -34,14 +46,14 @@ export class GooglePlacesClient {
     this.fieldMask = mergePlacesFieldMask(options.fieldMask || config.google.defaultFieldMask);
   }
 
-  headers(fieldMask = this.fieldMask) {
+  headers(fieldMask = this.fieldMask, requiredFields = LEAD_FIELD_MASK) {
     return {
       "X-Goog-Api-Key": requireEnv(this.apiKey, "GOOGLE_MAPS_API_KEY"),
-      "X-Goog-FieldMask": mergePlacesFieldMask(fieldMask)
+      "X-Goog-FieldMask": mergePlacesFieldMask(fieldMask, requiredFields)
     };
   }
 
-  async searchText({ query, languageCode = "es", regionCode = "ES", maxResultCount = 20, fieldMask } = {}) {
+  async searchText({ query, languageCode = "es", regionCode = "ES", maxResultCount = 20, fieldMask, requiredFields } = {}) {
     const body = {
       textQuery: query,
       languageCode,
@@ -50,14 +62,14 @@ export class GooglePlacesClient {
     };
     const response = await fetchJson(`${this.baseUrl}/places:searchText`, {
       method: "POST",
-      headers: this.headers(fieldMask),
+      headers: this.headers(fieldMask, requiredFields),
       body: JSON.stringify(body),
       timeoutMs: 30_000
     });
     return normalizePlaces(response?.places || []);
   }
 
-  async searchNearby({ latitude, longitude, radiusMeters = 1500, includedTypes = [], fieldMask } = {}) {
+  async searchNearby({ latitude, longitude, radiusMeters = 1500, includedTypes = [], fieldMask, requiredFields } = {}) {
     const body = {
       locationRestriction: {
         circle: {
@@ -73,7 +85,7 @@ export class GooglePlacesClient {
 
     const response = await fetchJson(`${this.baseUrl}/places:searchNearby`, {
       method: "POST",
-      headers: this.headers(fieldMask),
+      headers: this.headers(fieldMask, requiredFields),
       body: JSON.stringify(body),
       timeoutMs: 30_000
     });

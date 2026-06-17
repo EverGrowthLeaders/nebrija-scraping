@@ -3,10 +3,11 @@ import { logger } from "../../../packages/core/src/logger.mjs";
 import { closeDb } from "../../../packages/core/src/db.mjs";
 import { ensureRuntimeSchema } from "../../../packages/core/src/migrations.mjs";
 import { createQueue, createWorker, QUEUE_NAMES, closeQueues } from "../../../packages/core/src/queues.mjs";
+import { markEnrichmentBatchJobDone } from "../../../packages/core/src/enrichmentBatches.mjs";
 import { FirecrawlClient } from "../../../packages/core/src/firecrawl.mjs";
 import { ApifyClient } from "../../../packages/core/src/apify.mjs";
 import { AdsBrowserClient } from "../../../packages/core/src/adsBrowser.mjs";
-import { GooglePlacesClient } from "../../../packages/core/src/googlePlaces.mjs";
+import { GooglePlacesClient, LOW_CONSUMPTION_FIELD_MASK } from "../../../packages/core/src/googlePlaces.mjs";
 import { buildGoogleDiscoveryQueries } from "../../../packages/core/src/googleDiscoveryQueries.mjs";
 import { NebrijaClient } from "../../../packages/core/src/nebrija.mjs";
 import { buildVariableValues } from "../../../packages/core/src/leadVariables.mjs";
@@ -69,9 +70,33 @@ const workers = [
 ];
 
 for (const worker of workers) {
-  worker.on("completed", (job) => logger.info({ queue: worker.name, jobId: job.id }, "job completed"));
-  worker.on("failed", (job, error) =>
-    logger.error({ queue: worker.name, jobId: job?.id, error: serializeWorkerError(error) }, "job failed")
+  worker.on("completed", (job) => {
+    logger.info({ queue: worker.name, jobId: job.id }, "job completed");
+    recordProgressBatch(job, false);
+  });
+  worker.on("failed", (job, error) => {
+    logger.error({ queue: worker.name, jobId: job?.id, error: serializeWorkerError(error) }, "job failed");
+    recordProgressBatch(job, true);
+  });
+}
+
+function recordProgressBatch(job, failed) {
+  const progressBatchId = job?.data?.progressBatchId;
+  if (!progressBatchId) return;
+  markEnrichmentBatchJobDone({
+    tenantId: job.data.tenantId,
+    batchId: progressBatchId,
+    failed
+  }).catch((error) =>
+    logger.warn(
+      {
+        queue: job.queueName,
+        jobId: job.id,
+        progressBatchId,
+        error: serializeWorkerError(error)
+      },
+      "could not update enrichment progress batch"
+    )
   );
 }
 
@@ -104,6 +129,10 @@ async function runGoogleDiscovery(job) {
 
   const requestedLimit = positiveInt(extractionJob.requested_limit, 20);
   const queries = buildGoogleQueries(extractionJob, { requestedLimit });
+  const lowConsumptionMode = Boolean(extractionJob.low_consumption_mode);
+  const googleSearchOptions = lowConsumptionMode
+    ? { fieldMask: LOW_CONSUMPTION_FIELD_MASK, requiredFields: LOW_CONSUMPTION_FIELD_MASK }
+    : {};
   const seenPlaceIds = new Set();
   let candidateCount = 0;
   let businessCount = 0;
@@ -111,7 +140,7 @@ async function runGoogleDiscovery(job) {
   try {
     for (const queryText of queries) {
       if (businessCount >= requestedLimit) break;
-      const places = await googlePlaces.searchText({ query: queryText });
+      const places = await googlePlaces.searchText({ query: queryText, ...googleSearchOptions });
       candidateCount += places.length;
       for (const place of places) {
         if (!place.placeId) continue;
@@ -184,10 +213,11 @@ async function runGoogleDiscovery(job) {
         queries: queries.length,
         candidateCount,
         businessCount,
-        enrichAdsQueued: enrichAds
+        enrichAdsQueued: enrichAds,
+        lowConsumptionMode
       }
     });
-    return { queries: queries.length, candidateCount, businessCount };
+    return { queries: queries.length, candidateCount, businessCount, lowConsumptionMode };
   } catch (error) {
     await updateExtractionJob(extractionJobId, {
       status: "failed",

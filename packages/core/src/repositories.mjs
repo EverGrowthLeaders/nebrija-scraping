@@ -378,6 +378,7 @@ export async function createExtractionJob({
   niche,
   city,
   sourceType,
+  lowConsumptionMode = false,
   bbox,
   gridStep,
   requestedLimit,
@@ -389,9 +390,9 @@ export async function createExtractionJob({
 }) {
   const result = await query(
     `INSERT INTO extraction_jobs
-       (tenant_id, national_campaign_id, niche, city, source_type, bbox, grid_step, requested_limit,
+       (tenant_id, national_campaign_id, niche, city, source_type, low_consumption_mode, bbox, grid_step, requested_limit,
         voice_assistant_id, voice_assistant_name, voice_phone_number_id, voice_variable_map, voice_assistant_variables)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
      RETURNING *`,
     [
       tenantId,
@@ -399,6 +400,7 @@ export async function createExtractionJob({
       niche,
       city,
       sourceType || "google_places_api",
+      Boolean(lowConsumptionMode),
       bbox || null,
       gridStep || null,
       requestedLimit || null,
@@ -420,15 +422,16 @@ export async function createNationalCampaign({
   cityPreset = "top_50",
   sourceType = "google_places_api",
   enrichAds = false,
+  lowConsumptionMode = false,
   limitPerCity,
   requestedLimitTotal,
   estimatedRequestedLimit
 }) {
   const result = await query(
     `INSERT INTO national_campaigns
-       (id, tenant_id, niche, country, city_preset, source_type, enrich_ads,
+       (id, tenant_id, niche, country, city_preset, source_type, enrich_ads, low_consumption_mode,
         limit_per_city, requested_limit_total, estimated_requested_limit)
-     VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10)
+     VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       id || null,
@@ -438,6 +441,7 @@ export async function createNationalCampaign({
       cityPreset || "top_50",
       sourceType || "google_places_api",
       Boolean(enrichAds),
+      Boolean(lowConsumptionMode),
       limitPerCity || null,
       requestedLimitTotal || null,
       estimatedRequestedLimit || null
@@ -533,6 +537,8 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
      business_stats AS (
        SELECT j.national_campaign_id,
               COUNT(b.id)::int AS leads_count,
+              COUNT(b.id) FILTER (WHERE NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NOT NULL)::int AS website_count,
+              COUNT(b.id) FILTER (WHERE NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NULL)::int AS missing_website_count,
               COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
               COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
               COUNT(b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
@@ -547,6 +553,16 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
         WHERE j.tenant_id = $1
           AND j.national_campaign_id IS NOT NULL
         GROUP BY j.national_campaign_id
+     ),
+     web_crawl_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(DISTINCT cr.business_id) FILTER (WHERE cr.status IN ('queued', 'running'))::int AS web_crawl_active_count
+         FROM extraction_jobs j
+         JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = j.tenant_id
+         LEFT JOIN crawler_runs cr ON cr.business_id = b.id AND cr.tenant_id = j.tenant_id
+        WHERE j.tenant_id = $1
+          AND j.national_campaign_id IS NOT NULL
+        GROUP BY j.national_campaign_id
      )
      SELECT nc.*,
             COALESCE(js.child_campaigns_count, 0)::int AS child_campaigns_count,
@@ -554,6 +570,9 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
             COALESCE(js.requested_limit, 0)::int AS requested_limit,
             COALESCE(cs.candidates_count, 0)::int AS candidates_count,
             COALESCE(bs.leads_count, 0)::int AS leads_count,
+            COALESCE(bs.website_count, 0)::int AS website_count,
+            COALESCE(bs.missing_website_count, 0)::int AS missing_website_count,
+            COALESCE(wcs.web_crawl_active_count, 0)::int AS web_crawl_active_count,
             COALESCE(bs.ads_checked_count, 0)::int AS ads_checked_count,
             COALESCE(bs.ads_unchecked_count, 0)::int AS ads_unchecked_count,
             COALESCE(bs.meta_active_count, 0)::int AS meta_active_count,
@@ -576,6 +595,7 @@ export async function listNationalCampaigns({ tenantId = DEFAULT_TENANT_ID, limi
        LEFT JOIN job_stats js ON js.national_campaign_id = nc.id
        LEFT JOIN candidate_stats cs ON cs.national_campaign_id = nc.id
        LEFT JOIN business_stats bs ON bs.national_campaign_id = nc.id
+       LEFT JOIN web_crawl_stats wcs ON wcs.national_campaign_id = nc.id
       WHERE nc.tenant_id = $1
       ORDER BY nc.created_at DESC
       LIMIT $2 OFFSET $3`,
@@ -616,6 +636,8 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
      business_stats AS (
        SELECT j.national_campaign_id,
               COUNT(b.id)::int AS leads_count,
+              COUNT(b.id) FILTER (WHERE NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NOT NULL)::int AS website_count,
+              COUNT(b.id) FILTER (WHERE NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NULL)::int AS missing_website_count,
               COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NOT NULL)::int AS ads_checked_count,
               COUNT(b.id) FILTER (WHERE b.ads_last_checked_at IS NULL)::int AS ads_unchecked_count,
               COUNT(b.id) FILTER (WHERE b.ads_meta_active IS TRUE)::int AS meta_active_count,
@@ -630,6 +652,16 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
         WHERE j.tenant_id = $2
           AND j.national_campaign_id = $1
         GROUP BY j.national_campaign_id
+     ),
+     web_crawl_stats AS (
+       SELECT j.national_campaign_id,
+              COUNT(DISTINCT cr.business_id) FILTER (WHERE cr.status IN ('queued', 'running'))::int AS web_crawl_active_count
+         FROM extraction_jobs j
+         JOIN businesses b ON b.extraction_job_id = j.id AND b.tenant_id = j.tenant_id
+         LEFT JOIN crawler_runs cr ON cr.business_id = b.id AND cr.tenant_id = j.tenant_id
+        WHERE j.tenant_id = $2
+          AND j.national_campaign_id = $1
+        GROUP BY j.national_campaign_id
      )
      SELECT nc.*,
             COALESCE(js.child_campaigns_count, 0)::int AS child_campaigns_count,
@@ -637,6 +669,9 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
             COALESCE(js.requested_limit, 0)::int AS requested_limit,
             COALESCE(cs.candidates_count, 0)::int AS candidates_count,
             COALESCE(bs.leads_count, 0)::int AS leads_count,
+            COALESCE(bs.website_count, 0)::int AS website_count,
+            COALESCE(bs.missing_website_count, 0)::int AS missing_website_count,
+            COALESCE(wcs.web_crawl_active_count, 0)::int AS web_crawl_active_count,
             COALESCE(bs.ads_checked_count, 0)::int AS ads_checked_count,
             COALESCE(bs.ads_unchecked_count, 0)::int AS ads_unchecked_count,
             COALESCE(bs.meta_active_count, 0)::int AS meta_active_count,
@@ -659,6 +694,7 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
        LEFT JOIN job_stats js ON js.national_campaign_id = nc.id
        LEFT JOIN candidate_stats cs ON cs.national_campaign_id = nc.id
        LEFT JOIN business_stats bs ON bs.national_campaign_id = nc.id
+       LEFT JOIN web_crawl_stats wcs ON wcs.national_campaign_id = nc.id
       WHERE nc.id = $1 AND nc.tenant_id = $2`,
     [id, tenantId]
   );
@@ -667,7 +703,19 @@ export async function findNationalCampaignDetail(id, { tenantId = DEFAULT_TENANT
   const children = await query(
     `SELECT j.*,
             (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
-            (SELECT COUNT(*)::int FROM businesses b WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count
+            (SELECT COUNT(*)::int FROM businesses b WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count,
+            (SELECT COUNT(*)::int FROM businesses b
+              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id
+                AND NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NOT NULL) AS website_count,
+            (SELECT COUNT(*)::int FROM businesses b
+              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id
+                AND NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NULL) AS missing_website_count,
+            (SELECT COUNT(DISTINCT cr.business_id)::int
+               FROM crawler_runs cr
+               JOIN businesses b ON b.id = cr.business_id AND b.tenant_id = j.tenant_id
+              WHERE b.extraction_job_id = j.id
+                AND cr.tenant_id = j.tenant_id
+                AND cr.status IN ('queued', 'running')) AS web_crawl_active_count
        FROM extraction_jobs j
       WHERE j.tenant_id = $1 AND j.national_campaign_id = $2
       ORDER BY j.created_at ASC`,
@@ -1297,7 +1345,19 @@ export async function listExtractionJobs({ tenantId = DEFAULT_TENANT_ID, limit =
     `SELECT j.*,
             (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = j.id) AS candidates_count,
             (SELECT COUNT(*)::int FROM businesses b
-              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count
+              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id) AS leads_count,
+            (SELECT COUNT(*)::int FROM businesses b
+              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id
+                AND NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NOT NULL) AS website_count,
+            (SELECT COUNT(*)::int FROM businesses b
+              WHERE b.tenant_id = j.tenant_id AND b.extraction_job_id = j.id
+                AND NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NULL) AS missing_website_count,
+            (SELECT COUNT(DISTINCT cr.business_id)::int
+               FROM crawler_runs cr
+               JOIN businesses b ON b.id = cr.business_id AND b.tenant_id = j.tenant_id
+              WHERE b.extraction_job_id = j.id
+                AND cr.tenant_id = j.tenant_id
+                AND cr.status IN ('queued', 'running')) AS web_crawl_active_count
        FROM extraction_jobs j
       WHERE ${where.join(" AND ")}
       ORDER BY j.created_at DESC
@@ -1407,7 +1467,19 @@ export async function findExtractionJobDetail(id, { tenantId = DEFAULT_TENANT_ID
     `SELECT
         (SELECT COUNT(*)::int FROM google_place_candidates c WHERE c.extraction_job_id = $1) AS candidates_count,
         (SELECT COUNT(*)::int FROM businesses b
-          WHERE b.tenant_id = $2 AND b.extraction_job_id = $1) AS leads_count`,
+          WHERE b.tenant_id = $2 AND b.extraction_job_id = $1) AS leads_count,
+        (SELECT COUNT(*)::int FROM businesses b
+          WHERE b.tenant_id = $2 AND b.extraction_job_id = $1
+            AND NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NOT NULL) AS website_count,
+        (SELECT COUNT(*)::int FROM businesses b
+          WHERE b.tenant_id = $2 AND b.extraction_job_id = $1
+            AND NULLIF(BTRIM(COALESCE(b.website, '')), '') IS NULL) AS missing_website_count,
+        (SELECT COUNT(DISTINCT cr.business_id)::int
+           FROM crawler_runs cr
+           JOIN businesses b ON b.id = cr.business_id AND b.tenant_id = $2
+          WHERE b.extraction_job_id = $1
+            AND cr.tenant_id = $2
+            AND cr.status IN ('queued', 'running')) AS web_crawl_active_count`,
     [id, tenantId]
   );
   return { ...job.rows[0], ...stats.rows[0] };
