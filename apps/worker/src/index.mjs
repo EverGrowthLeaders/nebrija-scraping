@@ -491,21 +491,41 @@ async function runDecisionMakerEnrichment(job) {
   const decisionMaker = verifiedDecisionMakerForStorage(enrichment) || {};
   const linkedinCompany = enrichment.linkedinCompany || {};
   const recommendedAccessContact = enrichment.recommendedAccessContact || {};
-  if (decisionMaker.linkedinUrl) {
-    await upsertContact({
-      businessId: business.id,
-      kind: "linkedin_decision_maker",
-      value: decisionMaker.linkedinUrl,
-      confidence: decisionMaker.confidence || 0.75,
-      sourceUrl: decisionMaker.linkedinUrl
-    });
+  if (decisionMaker.linkedinUrl || decisionMaker.fullName || decisionMaker.phone || decisionMaker.email) {
+    if (decisionMaker.linkedinUrl) {
+      await upsertContact({
+        businessId: business.id,
+        kind: "linkedin_decision_maker",
+        value: decisionMaker.linkedinUrl,
+        confidence: decisionMaker.confidence || 0.75,
+        sourceUrl: decisionMaker.linkedinUrl
+      });
+    }
     if (decisionMaker.fullName) {
       await upsertContact({
         businessId: business.id,
         kind: "decision_maker_name",
         value: decisionMaker.fullName,
         confidence: decisionMaker.confidence || 0.75,
-        sourceUrl: decisionMaker.linkedinUrl
+        sourceUrl: decisionMaker.sourceUrl || decisionMaker.linkedinUrl
+      });
+    }
+    if (decisionMaker.phone) {
+      await upsertContact({
+        businessId: business.id,
+        kind: "decision_maker_phone",
+        value: decisionMaker.phone,
+        confidence: decisionMaker.confidence || 0.75,
+        sourceUrl: decisionMaker.sourceUrl || decisionMaker.linkedinUrl
+      });
+    }
+    if (decisionMaker.email) {
+      await upsertContact({
+        businessId: business.id,
+        kind: "decision_maker_email",
+        value: decisionMaker.email,
+        confidence: decisionMaker.confidence || 0.72,
+        sourceUrl: decisionMaker.sourceUrl || decisionMaker.linkedinUrl
       });
     }
     if (decisionMaker.role) {
@@ -514,19 +534,21 @@ async function runDecisionMakerEnrichment(job) {
         kind: "decision_maker_role",
         value: decisionMaker.role,
         confidence: decisionMaker.confidence || 0.75,
-        sourceUrl: decisionMaker.linkedinUrl
+        sourceUrl: decisionMaker.sourceUrl || decisionMaker.linkedinUrl
       });
     }
     await recordProvenance({
       businessId: business.id,
       fieldName: "linkedin_decision_maker",
-      sourceType: "google_dork_linkedin",
-      sourceUrl: decisionMaker.linkedinUrl,
+      sourceType: decisionMaker.linkedinUrl ? "google_dork_linkedin" : "business_website_decision_maker",
+      sourceUrl: decisionMaker.linkedinUrl || decisionMaker.sourceUrl,
       observedValue: JSON.stringify({
         query: enrichment.query,
         fullName: decisionMaker.fullName,
         role: decisionMaker.role,
         linkedinUrl: decisionMaker.linkedinUrl,
+        phone: decisionMaker.phone,
+        email: decisionMaker.email,
         confidence: decisionMaker.confidence
       })
     });

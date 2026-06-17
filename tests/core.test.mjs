@@ -51,6 +51,7 @@ import {
   buildLinkedInDecisionMakerDork,
   buildLinkedInDecisionMakerQueries,
   enrichDecisionMaker,
+  normalizeWebsiteDecisionMakerResult,
   selectDecisionMakerFromSearchResults
 } from "../packages/core/src/decisionMakerEnrichment.mjs";
 import {
@@ -406,6 +407,40 @@ test("stores decision maker contacts only when resolved and independently verifi
     ...verified,
     decisionMaker: { ...verified.decisionMaker, linkedinUrl: "https://www.linkedin.com/company/riojanas" }
   }), null);
+});
+
+test("stores website decision maker when web evidence verifies a person and mobile", () => {
+  const normalized = normalizeWebsiteDecisionMakerResult({
+    found: true,
+    decisor: "Marta López",
+    role: "Gerente",
+    movil: "600 111 222",
+    email: "marta@example.com",
+    sourceUrl: "https://demo.example/contacto",
+    confidence: 0.86
+  }, {
+    business: { name: "Reformas Demo", website: "https://demo.example" },
+    pages: [],
+    checkedAt: "2026-06-17T09:00:00.000Z"
+  });
+  const enrichment = {
+    found: true,
+    decisionStatus: "verified",
+    decisionMaker: {
+      fullName: normalized.fullName,
+      role: normalized.role,
+      phone: normalized.phone,
+      email: normalized.email,
+      sourceUrl: normalized.sourceUrl,
+      sourceType: "business_website",
+      confidence: normalized.confidence
+    },
+    websiteDecisionMaker: normalized
+  };
+
+  assert.equal(normalized.phone, "+34600111222");
+  assert.equal(verifiedDecisionMakerForStorage(enrichment).fullName, "Marta López");
+  assert.equal(verifiedDecisionMakerForStorage(enrichment).phone, "+34600111222");
 });
 
 test("sanitizes decision maker JSON before storage when AI verification is missing", () => {
@@ -1063,6 +1098,63 @@ test("passes empty LinkedIn search results through AI resolver", async () => {
   assert.equal(result.decisionStatus, "not_found");
   assert.equal(result.reason, "ai_no_search_results");
   assert.equal(result.ai.status, "resolved_no_match");
+});
+
+test("enriches decision maker from candidate website contact pages", async () => {
+  const scrapedUrls = [];
+  const firecrawl = {
+    async search() {
+      return [];
+    },
+    async scrape(url) {
+      scrapedUrls.push(url);
+      if (url.endsWith("/contacto")) {
+        return {
+          markdown: "Gerente: Marta López. WhatsApp directo 600 111 222. Email marta@reformasdemo.example",
+          html: `<a href="tel:+34600111222">Marta</a>`,
+          links: []
+        };
+      }
+      return {
+        markdown: "Inicio Reformas Demo",
+        html: `<a href="/contacto">Contacto</a><a href="/blog">Blog</a>`,
+        links: [{ url: "https://reformasdemo.example/contacto", text: "Contacto" }]
+      };
+    }
+  };
+  const result = await enrichDecisionMaker({
+    business: {
+      name: "Reformas Demo",
+      city: "Madrid",
+      website: "https://reformasdemo.example"
+    },
+    contacts: [],
+    searchClient: firecrawl,
+    websiteUrlPlanner: async () => ({ urls: ["https://reformasdemo.example/contacto"] }),
+    websiteResolver: async ({ pages }) => ({
+      found: true,
+      decisor: "Marta López",
+      role: "Gerente",
+      movil: pages.find((page) => page.url.endsWith("/contacto"))?.phones?.[0],
+      email: "marta@reformasdemo.example",
+      sourceUrl: "https://reformasdemo.example/contacto",
+      confidence: 0.88
+    }),
+    aiResolver: async () => ({
+      found: false,
+      decisionStatus: "not_found",
+      selectedCandidateId: null,
+      confidence: 0.2,
+      reason: "no_linkedin_results"
+    }),
+    aiConfig: { provider: "deepinfra", mode: "always", apiKey: "test", verifyMode: "always" }
+  });
+
+  assert.ok(scrapedUrls.includes("https://reformasdemo.example/contacto"));
+  assert.equal(result.found, true);
+  assert.equal(result.decisionMaker.fullName, "Marta López");
+  assert.equal(result.decisionMaker.phone, "+34600111222");
+  assert.equal(result.decisionMaker.sourceType, "business_website");
 });
 
 test("searches and resolves decision maker even when city is missing", async () => {

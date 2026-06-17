@@ -1,9 +1,13 @@
 import { config } from "./config.mjs";
 import { estimateDeepseekUsageCost } from "./aiUsage.mjs";
 import { postDeepInfraJson } from "./deepinfraClient.mjs";
+import { extractEmails, extractPhones } from "./extractors.mjs";
+import { normalizeSpanishPhone } from "./phone.mjs";
 
 const LINKEDIN_PROFILE_HOSTS = ["linkedin.com"];
 const DEFAULT_MAX_AI_EVIDENCE_CHARS = 12000;
+const DEFAULT_MAX_WEBSITE_DECISION_PAGES = 6;
+const WEBSITE_DECISION_PAGE_TEXT_CHARS = 2200;
 const ROLE_PATTERNS = [
   /\b(ceo|founder|cofounder|co-founder|owner|partner|managing director)\b/i,
   /\b(gerente|director|directora|propietario|propietaria|fundador|fundadora|socio|socia|administrador|administradora|responsable)\b/i
@@ -13,9 +17,12 @@ export async function enrichDecisionMaker({
   business = {},
   contacts = [],
   searchClient,
+  websiteScraper,
   aiSearchPlanner,
   aiResolver,
   aiVerifier,
+  websiteResolver,
+  websiteUrlPlanner,
   aiConfig = config.decisionMakerAi,
   now = new Date()
 } = {}) {
@@ -23,6 +30,15 @@ export async function enrichDecisionMaker({
     return emptyDecisionMakerResult({ business, now, reason: "missing_required_fields" });
   }
 
+  const websiteDecisionMaker = await enrichDecisionMakerFromWebsite({
+    business,
+    contacts,
+    firecrawl: websiteScraper || searchClient,
+    aiConfig,
+    aiUrlPlanner: websiteUrlPlanner,
+    aiResolver: websiteResolver,
+    now
+  });
   const searchPlan = await planDecisionMakerSearch({ business, contacts, aiSearchPlanner, aiConfig, now });
   const search = await runEscalatedDecisionMakerSearch({ business, searchClient, searchPlan, now });
   const deterministic = selectDecisionMakerFromSearchResults({
@@ -33,6 +49,7 @@ export async function enrichDecisionMaker({
     results: search.results,
     linkedinCompany: search.linkedinCompany,
     accessContacts: buildAccessContacts({ business, contacts, linkedinCompany: search.linkedinCompany }),
+    websiteDecisionMaker,
     now
   });
 
@@ -51,6 +68,7 @@ export async function enrichDecisionMaker({
           searchResults: deterministic.searchResults || [],
           accessContacts: deterministic.accessContacts || [],
           linkedinCompany: deterministic.linkedinCompany || null,
+          websiteDecisionMaker,
           deterministic,
           aiConfig
         })
@@ -63,6 +81,7 @@ export async function enrichDecisionMaker({
           searchResults: deterministic.searchResults || [],
           accessContacts: deterministic.accessContacts || [],
           linkedinCompany: deterministic.linkedinCompany || null,
+          websiteDecisionMaker,
           deterministic,
           aiConfig
         });
@@ -72,16 +91,18 @@ export async function enrichDecisionMaker({
       aiConfig,
       requireAiPlannedSearch: shouldRequireAiPlannedDecisionMakerSearch({ aiResolver, aiConfig })
     });
-    if (!canUseDecisionMakerVerifier({ aiVerifier, aiConfig }) || resolved.found !== true) return resolved;
-    return await verifyDecisionMakerResolution({
+    const merged = mergeWebsiteDecisionMakerResult({ resolved, websiteDecisionMaker, now });
+    if (!canUseDecisionMakerVerifier({ aiVerifier, aiConfig }) || merged.found !== true || !merged.decisionMaker?.linkedinUrl) return merged;
+    const verified = await verifyDecisionMakerResolution({
       business,
       deterministic,
-      resolved,
+      resolved: merged,
       aiVerifier,
       aiConfig
     });
+    return mergeWebsiteDecisionMakerResult({ resolved: verified, websiteDecisionMaker, now });
   } catch (error) {
-    return unverifiedDecisionMakerResult({
+    const failed = unverifiedDecisionMakerResult({
       deterministic,
       reason: "ai_resolution_failed",
       ai: {
@@ -91,6 +112,7 @@ export async function enrichDecisionMaker({
         error: error.message
       }
     });
+    return mergeWebsiteDecisionMakerResult({ resolved: failed, websiteDecisionMaker, now });
   }
 }
 
@@ -126,6 +148,7 @@ export function selectDecisionMakerFromSearchResults({
   results = [],
   linkedinCompany,
   accessContacts,
+  websiteDecisionMaker,
   now = new Date()
 } = {}) {
   const candidates = results
@@ -146,6 +169,7 @@ export function selectDecisionMakerFromSearchResults({
       searchPlan: searchPlan || null,
       reason: best ? "low_confidence_match" : "no_linkedin_profile_match",
       linkedinCompany: company || null,
+      websiteDecisionMaker: websiteDecisionMaker || null,
       accessContacts: contacts,
       recommendedAccessContact: contacts[0] || null,
       searchResults,
@@ -161,10 +185,337 @@ export function selectDecisionMakerFromSearchResults({
     searchPlan: searchPlan || null,
     decisionMaker: best,
     linkedinCompany: company || null,
+    websiteDecisionMaker: websiteDecisionMaker || null,
     accessContacts: contacts,
     recommendedAccessContact: contacts[0] || null,
     searchResults,
     candidates: candidates.slice(0, 5)
+  };
+}
+
+export async function enrichDecisionMakerFromWebsite({
+  business = {},
+  contacts = [],
+  firecrawl,
+  aiUrlPlanner,
+  aiResolver,
+  aiConfig = config.decisionMakerAi,
+  now = new Date()
+} = {}) {
+  if (!business.website || !firecrawl?.scrape || (!aiResolver && !canUseDecisionMakerSearchPlanner({ aiConfig }))) {
+    return null;
+  }
+  const checkedAt = now.toISOString();
+  try {
+    const homePage = await firecrawl.scrape(business.website, { formats: ["markdown", "html", "links"] });
+    const homeUrl = normalizeWebsiteUrl(business.website, business.website);
+    const urlsWithAnchors = extractWebsiteUrlsWithAnchors({
+      rootUrl: business.website,
+      links: homePage.links || [],
+      html: homePage.html || ""
+    });
+    const plannedUrls = await planDecisionMakerWebsiteUrls({
+      business,
+      urlsWithAnchors,
+      aiUrlPlanner,
+      aiConfig
+    });
+    const selectedUrls = uniqueStrings([
+      homeUrl,
+      ...plannedUrls.urls.map((url) => normalizeWebsiteUrl(url, business.website))
+    ]).filter(Boolean).slice(0, DEFAULT_MAX_WEBSITE_DECISION_PAGES);
+
+    const pages = [];
+    for (const url of selectedUrls) {
+      try {
+        const page = url === homeUrl ? homePage : await firecrawl.scrape(url, { formats: ["markdown", "html", "links"] });
+        pages.push(compactWebsiteDecisionPage({ url, page }));
+      } catch (error) {
+        pages.push({ url, status: "error", error: error.message });
+      }
+    }
+    const rawResult = aiResolver
+      ? await aiResolver({ business, contacts, pages, plannedUrls, aiConfig })
+      : await resolveDecisionMakerWebsiteWithDeepInfra({ business, contacts, pages, plannedUrls, aiConfig });
+    const normalized = normalizeWebsiteDecisionMakerResult(rawResult, { business, pages, checkedAt, aiConfig });
+    return {
+      ...normalized,
+      checkedAt,
+      urlPlan: {
+        ...(plannedUrls.ai ? { ai: plannedUrls.ai } : {}),
+        urls: plannedUrls.urls
+      },
+      pages: pages.map((page) => ({
+        url: page.url,
+        status: page.status || "ok",
+        emails: page.emails || [],
+        phones: page.phones || []
+      }))
+    };
+  } catch (error) {
+    return {
+      status: "error",
+      found: false,
+      checkedAt,
+      reason: "website_scrape_failed",
+      error: error.message
+    };
+  }
+}
+
+function extractWebsiteUrlsWithAnchors({ rootUrl, links = [], html = "" } = {}) {
+  const rows = [];
+  const add = (url, text = "") => {
+    const normalized = normalizeWebsiteUrl(url, rootUrl);
+    if (!normalized || !isSameWebsiteUrl(normalized, rootUrl) || isBlockedWebsiteDecisionUrl(normalized)) return;
+    if (rows.some((row) => normalizeUrlForDedupe(row.url) === normalizeUrlForDedupe(normalized))) return;
+    rows.push({
+      url: normalized,
+      text: cleanText(text || "") || "Sin texto"
+    });
+  };
+  for (const link of links || []) add(link.url || link.href, link.text || link.title);
+  for (const match of String(html || "").matchAll(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    add(match[1], cleanHtmlText(match[2]));
+  }
+  return rows.slice(0, 80);
+}
+
+async function planDecisionMakerWebsiteUrls({
+  business = {},
+  urlsWithAnchors = [],
+  aiUrlPlanner,
+  aiConfig = config.decisionMakerAi
+} = {}) {
+  const seeded = seedDecisionMakerWebsiteUrls(urlsWithAnchors);
+  if (!urlsWithAnchors.length) return { urls: seeded, ai: { status: "no_urls" } };
+  try {
+    const rawPlan = aiUrlPlanner
+      ? await aiUrlPlanner({ business, urlsWithAnchors, seedUrls: seeded, aiConfig })
+      : await planDecisionMakerWebsiteUrlsWithDeepInfra({ business, urlsWithAnchors, seedUrls: seeded, aiConfig });
+    const normalized = normalizeWebsiteUrlPlan(rawPlan, business.website);
+    if (!normalized.urls.length) {
+      return { urls: seeded, ai: { status: "invalid_response_repaired_to_seed", rawPlan } };
+    }
+    return {
+      urls: uniqueStrings([...normalized.urls, ...seeded]).slice(0, DEFAULT_MAX_WEBSITE_DECISION_PAGES),
+      ai: {
+        status: "planned",
+        provider: aiConfig?.provider || "deepinfra",
+        model: aiConfig?.model || null,
+        usage: rawPlan?.usage || null,
+        cost: estimateDeepseekUsageCost(rawPlan?.usage)
+      }
+    };
+  } catch (error) {
+    return {
+      urls: seeded,
+      ai: {
+        status: "failed",
+        provider: aiConfig?.provider || "deepinfra",
+        model: aiConfig?.model || null,
+        error: error.message
+      }
+    };
+  }
+}
+
+function seedDecisionMakerWebsiteUrls(urlsWithAnchors = []) {
+  return urlsWithAnchors
+    .map((entry) => ({
+      url: entry.url,
+      score: websiteDecisionUrlScore(`${entry.url} ${entry.text}`)
+    }))
+    .sort((a, b) => b.score - a.score)
+    .filter((entry) => entry.score > 0)
+    .slice(0, DEFAULT_MAX_WEBSITE_DECISION_PAGES)
+    .map((entry) => entry.url);
+}
+
+async function planDecisionMakerWebsiteUrlsWithDeepInfra({
+  business = {},
+  urlsWithAnchors = [],
+  seedUrls = [],
+  aiConfig = config.decisionMakerAi
+} = {}) {
+  const baseUrl = String(aiConfig?.baseUrl || "https://api.deepinfra.com/v1/openai").replace(/\/+$/, "");
+  const model = aiConfig?.model || "deepseek-ai/DeepSeek-V4-Flash";
+  const body = {
+    model,
+    temperature: 0,
+    max_tokens: 350,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: "Eres un experto en enriquecer listas de Leads. Devuelve solo JSON valido, sin markdown."
+      },
+      {
+        role: "user",
+        content: [
+          "Te voy a pasar un listado de URLs con su correspondiente Anchor text.",
+          "Necesito que me devuelvas un listado con todas las URLs que tienen mas potencial de contener informacion de contacto como el email, movil o el nombre del encargado/ceo/propietario del negocio.",
+          "Suelen funcionar bien los siguientes tipos de pagina: Contacto, Conocenos, Equipo, Aviso legal, Politica de privacidad.",
+          "Usa tanto la ruta de la URL como el anchor text para priorizar.",
+          "No des mas indicaciones, solo las URLs que debe priorizar.",
+          "",
+          JSON.stringify({
+            outputSchema: { urls: ["https://dominio.com/contacto"] },
+            negocio: compactObject({
+              nombre: business.name,
+              direccion: business.address,
+              ciudad: business.city,
+              dominio: business.website
+            }),
+            seedUrls,
+            urlsWithAnchors: urlsWithAnchors.slice(0, 70).map((entry) => `URL: ${entry.url} | Texto: ${entry.text}`)
+          })
+        ].join("\n")
+      }
+    ]
+  };
+  let json;
+  try {
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body, timeoutMs: aiConfig?.requestTimeoutMs || 30000 });
+  } catch (error) {
+    if (!/response_format|json_object|unsupported/i.test(error.message)) throw error;
+    const fallbackBody = { ...body };
+    delete fallbackBody.response_format;
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackBody, timeoutMs: aiConfig?.requestTimeoutMs || 30000 });
+  }
+  return {
+    ...parseAiJson(json?.choices?.[0]?.message?.content),
+    usage: json?.usage || null
+  };
+}
+
+function compactWebsiteDecisionPage({ url, page = {} } = {}) {
+  const markdown = cleanText(page.markdown || cleanHtmlText(page.html || ""));
+  const html = page.html || "";
+  const links = page.links || [];
+  return {
+    url,
+    status: "ok",
+    title: cleanText(page.metadata?.title || ""),
+    text: markdown.slice(0, WEBSITE_DECISION_PAGE_TEXT_CHARS),
+    emails: extractEmails(`${markdown}\n${html}`).slice(0, 8),
+    phones: extractPhones(markdown, { html, links, strict: true, maxPhones: 8 }).slice(0, 8)
+  };
+}
+
+async function resolveDecisionMakerWebsiteWithDeepInfra({
+  business = {},
+  contacts = [],
+  pages = [],
+  plannedUrls,
+  aiConfig = config.decisionMakerAi
+} = {}) {
+  const baseUrl = String(aiConfig?.baseUrl || "https://api.deepinfra.com/v1/openai").replace(/\/+$/, "");
+  const model = aiConfig?.model || "deepseek-ai/DeepSeek-V4-Flash";
+  const body = {
+    model,
+    temperature: 0,
+    max_tokens: 520,
+    response_format: { type: "json_object" },
+    messages: [
+      {
+        role: "system",
+        content: "Eres un experto en enriquecer listas de Leads. Devuelve solo JSON valido, sin markdown. No inventes datos."
+      },
+      {
+        role: "user",
+        content: [
+          "Recopila la siguiente informacion para un negocio local usando los datos y paginas scrapeadas disponibles:",
+          "",
+          "Decisor: El nombre mas probable del propietario, fundador, gerente, administrador o persona de mayor cargo. No uses nombres comerciales. Si no encuentras un nombre de persona, deja este campo vacio.",
+          "Movil decisor: El numero movil mas probable de pertenecer a esa persona o a un WhatsApp directo de alta intencion. No confundas telefonos fijos o telefonos genericos de centralita con movil del decisor. Si no puedes atribuirlo con suficiente evidencia, deja el campo vacio.",
+          "Email: El email mas probable de pertenecer al propietario, fundador o persona de alto cargo. Si no puedes atribuirlo, usa el mejor email de contacto disponible y marca la razon.",
+          "",
+          "Datos disponibles:",
+          `Nombre del negocio: ${business.name || ""}`,
+          `Direccion: ${business.address || ""}`,
+          `Dominio: ${business.website || ""}`,
+          `Email inicial: ${(contacts || []).find((contact) => normalizeContactKind(contact.kind) === "email")?.value || ""}`,
+          "",
+          "Instrucciones clave:",
+          "Usa solo el texto, emails, telefonos y URLs scrapeadas que recibes abajo.",
+          "Prioriza paginas de contacto, conocenos, equipo, aviso legal y politica de privacidad.",
+          "El campo decisor debe contener una persona, nunca un nombre comercial, calle o direccion.",
+          "Asegurate de revisar todas las paginas aportadas antes de rendirte.",
+          "",
+          JSON.stringify({
+            outputSchema: {
+              found: "boolean",
+              decisor: "nombre de persona o string vacio",
+              role: "cargo o string vacio",
+              movil: "telefono movil o string vacio",
+              email: "email o string vacio",
+              sourceUrl: "url de la pagina que contiene la evidencia",
+              confidence: "number 0..1",
+              reason: "short snake_case reason",
+              evidenceSummary: "frase breve"
+            },
+            urlsPlanificadas: plannedUrls?.urls || [],
+            paginas: pages.map((page) => ({
+              url: page.url,
+              title: page.title || "",
+              text: page.text || "",
+              emails: page.emails || [],
+              phones: page.phones || [],
+              status: page.status || "ok"
+            }))
+          })
+        ].join("\n")
+      }
+    ]
+  };
+  let json;
+  try {
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body, timeoutMs: aiConfig?.requestTimeoutMs || 30000 });
+  } catch (error) {
+    if (!/response_format|json_object|unsupported/i.test(error.message)) throw error;
+    const fallbackBody = { ...body };
+    delete fallbackBody.response_format;
+    json = await postDeepInfraJson({ baseUrl, apiKey: aiConfig?.apiKey, body: fallbackBody, timeoutMs: aiConfig?.requestTimeoutMs || 30000 });
+  }
+  return {
+    ...parseAiJson(json?.choices?.[0]?.message?.content),
+    usage: json?.usage || null
+  };
+}
+
+export function normalizeWebsiteDecisionMakerResult(rawResult, { business = {}, pages = [], checkedAt = new Date().toISOString(), aiConfig = config.decisionMakerAi } = {}) {
+  const raw = rawResult && typeof rawResult === "object" ? rawResult : {};
+  const found = normalizeAiBoolean(raw.found) === true;
+  const fullName = cleanPersonName(raw.decisor || raw.fullName || raw.full_name || raw.nombre, business.name);
+  const phone = normalizeDecisionMakerMobile(raw.movil || raw.mobile || raw.mobilePhone || raw.phone || raw.telefono);
+  const email = normalizeDecisionMakerEmail(raw.email);
+  const sourceUrl = normalizeWebsiteUrl(raw.sourceUrl || raw.source_url, business.website) || pages.find((page) => page.status === "ok")?.url || business.website || "";
+  const confidence = roundConfidence(raw.confidence || (fullName && phone ? 0.78 : fullName ? 0.68 : 0.35));
+  const status = found && fullName
+    ? "verified"
+    : fullName || phone || email
+      ? "candidate"
+      : "not_found";
+  return {
+    status,
+    found: status === "verified",
+    fullName,
+    role: cleanText(raw.role || raw.cargo),
+    phone,
+    email,
+    sourceUrl,
+    confidence,
+    reason: normalizeReason(raw.reason) || (status === "verified" ? "website_decision_maker_found" : "website_decision_maker_not_found"),
+    evidenceSummary: cleanText(raw.evidenceSummary || raw.evidence_summary || raw.summary),
+    checkedAt,
+    ai: {
+      status: rawResult ? "resolved" : "invalid_response",
+      provider: aiConfig?.provider || "deepinfra",
+      model: aiConfig?.model || null,
+      usage: rawResult?.usage || null,
+      cost: estimateDeepseekUsageCost(rawResult?.usage)
+    }
   };
 }
 
@@ -684,6 +1035,7 @@ async function resolveDecisionMakerWithDeepInfra({
   searchResults = [],
   accessContacts = [],
   linkedinCompany,
+  websiteDecisionMaker,
   deterministic = {},
   aiConfig = config.decisionMakerAi
 } = {}) {
@@ -698,6 +1050,7 @@ async function resolveDecisionMakerWithDeepInfra({
     searchResults,
     accessContacts,
     linkedinCompany,
+    websiteDecisionMaker,
     deterministic,
     maxEvidenceChars: aiConfig?.maxEvidenceChars || DEFAULT_MAX_AI_EVIDENCE_CHARS
   });
@@ -880,6 +1233,7 @@ function buildDecisionMakerEvidencePack({
   searchResults = [],
   accessContacts = [],
   linkedinCompany,
+  websiteDecisionMaker,
   deterministic = {},
   maxEvidenceChars = DEFAULT_MAX_AI_EVIDENCE_CHARS
 } = {}) {
@@ -895,6 +1249,7 @@ function buildDecisionMakerEvidencePack({
     }),
     query,
     queries: queries.slice(0, 12),
+    websiteDecisionMaker: compactWebsiteDecisionForAi(websiteDecisionMaker || deterministic.websiteDecisionMaker),
     searchPlan: searchPlan ? {
       ai: searchPlan.ai || null,
       queries: normalizeDecisionMakerQueryEntries(searchPlan.queries || [], "seed").slice(0, 12).map((entry) => ({
@@ -945,6 +1300,7 @@ function buildDecisionMakerEvidencePack({
     })),
     decisionRules: [
       "The selected candidate must be a personal LinkedIn /in/ profile.",
+      "Website decision-maker evidence may provide names, roles, phones or emails, but it does not prove a LinkedIn profile unless a search result URL also matches.",
       "If selectedCandidateId is unavailable but a raw search result clearly contains the personal LinkedIn /in/ profile, return selectedResultId.",
       "The title or snippet should connect the person to the business name or distinctive business tokens.",
       "The title or snippet should connect the person to the city/province when available.",
@@ -1212,6 +1568,85 @@ function applyDecisionMakerVerification({ deterministic = {}, resolved = {}, raw
   };
 }
 
+function mergeWebsiteDecisionMakerResult({ resolved = {}, websiteDecisionMaker, now = new Date() } = {}) {
+  if (!websiteDecisionMaker || !["verified", "candidate"].includes(websiteDecisionMaker.status)) {
+    return {
+      ...resolved,
+      websiteDecisionMaker: websiteDecisionMaker || resolved.websiteDecisionMaker || null
+    };
+  }
+  const existing = resolved.decisionMaker || {};
+  const namesCompatible = namesLikelySamePerson(existing.fullName, websiteDecisionMaker.fullName);
+  const canAttachWebsiteFields = !existing.fullName || !websiteDecisionMaker.fullName || namesCompatible;
+  const mergedDecisionMaker = compactObject({
+    ...existing,
+    fullName: existing.fullName || websiteDecisionMaker.fullName,
+    role: existing.role || websiteDecisionMaker.role,
+    phone: canAttachWebsiteFields ? existing.phone || websiteDecisionMaker.phone : existing.phone,
+    email: canAttachWebsiteFields ? existing.email || websiteDecisionMaker.email : existing.email,
+    sourceUrl: existing.sourceUrl || websiteDecisionMaker.sourceUrl,
+    sourceType: existing.linkedinUrl ? "linkedin" : "business_website",
+    confidence: roundConfidence(Math.max(existing.confidence || 0, websiteDecisionMaker.confidence || 0))
+  });
+
+  if (existing.linkedinUrl || resolved.found === true) {
+    return {
+      ...resolved,
+      decisionMaker: mergedDecisionMaker,
+      websiteDecisionMaker,
+      recommendedAccessContact: resolved.recommendedAccessContact || websiteDecisionAccessContact(websiteDecisionMaker)
+    };
+  }
+
+  if (websiteDecisionMaker.status === "verified" && websiteDecisionMaker.fullName) {
+    return {
+      ...resolved,
+      found: true,
+      decisionStatus: "verified",
+      checkedAt: resolved.checkedAt || websiteDecisionMaker.checkedAt || now.toISOString(),
+      decisionMaker: mergedDecisionMaker,
+      websiteDecisionMaker,
+      recommendedAccessContact: websiteDecisionAccessContact(websiteDecisionMaker) || resolved.recommendedAccessContact || null,
+      reason: websiteDecisionMaker.reason || "website_decision_maker_found",
+      ai: {
+        ...(resolved.ai || {}),
+        status: resolved.ai?.status || "resolved",
+        website: websiteDecisionMaker.ai || null
+      }
+    };
+  }
+
+  return {
+    ...resolved,
+    websiteDecisionMaker,
+    recommendedAccessContact: resolved.recommendedAccessContact || websiteDecisionAccessContact(websiteDecisionMaker)
+  };
+}
+
+function websiteDecisionAccessContact(websiteDecisionMaker = {}) {
+  if (websiteDecisionMaker.phone) {
+    return {
+      contactId: "website_decision_phone",
+      kind: "phone",
+      value: websiteDecisionMaker.phone,
+      confidence: websiteDecisionMaker.confidence || 0.75,
+      sourceUrl: websiteDecisionMaker.sourceUrl,
+      reason: "website_decision_maker_mobile"
+    };
+  }
+  if (websiteDecisionMaker.email) {
+    return {
+      contactId: "website_decision_email",
+      kind: "email",
+      value: websiteDecisionMaker.email,
+      confidence: Math.min(websiteDecisionMaker.confidence || 0.7, 0.82),
+      sourceUrl: websiteDecisionMaker.sourceUrl,
+      reason: "website_decision_maker_email"
+    };
+  }
+  return null;
+}
+
 function normalizeAiDecisionMakerResult(rawResult) {
   if (!rawResult || typeof rawResult !== "object") return null;
   const selectedCandidateId = String(rawResult.selectedCandidateId || rawResult.selected_candidate_id || "").trim();
@@ -1302,6 +1737,7 @@ function unverifiedDecisionMakerResult({ deterministic = {}, decisionStatus, rea
     searchPlan: deterministic.searchPlan || null,
     reason,
     linkedinCompany: deterministic.linkedinCompany || null,
+    websiteDecisionMaker: deterministic.websiteDecisionMaker || null,
     accessContacts: deterministic.accessContacts || [],
     recommendedAccessContact: status === "access_contact" ? deterministic.recommendedAccessContact || null : null,
     searchResults: deterministic.searchResults || [],
@@ -1464,7 +1900,11 @@ function buildAccessContacts({ business = {}, contacts = [], linkedinCompany }) 
 
 function normalizeContactKind(kind) {
   const value = String(kind || "").toLowerCase();
-  if (value === "phone" || value === "email" || value === "whatsapp") return value;
+  if (value === "phone" || value === "decision_maker_phone" || value === "email" || value === "decision_maker_email" || value === "whatsapp") {
+    if (value.endsWith("_phone")) return "phone";
+    if (value.endsWith("_email")) return "email";
+    return value;
+  }
   if (value === "linkedin" || value === "linkedin_company") return "linkedin_company";
   if (value === "instagram" || value === "facebook" || value === "website") return value;
   return "";
@@ -1506,6 +1946,19 @@ function normalizeDecisionStatus(value, found) {
 function normalizeStringArray(value) {
   if (!Array.isArray(value)) return [];
   return value.map((item) => cleanText(item)).filter(Boolean);
+}
+
+function uniqueStrings(values = []) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values || []) {
+    const clean = cleanText(value);
+    const key = clean.toLowerCase();
+    if (!clean || seen.has(key)) continue;
+    seen.add(key);
+    out.push(clean);
+  }
+  return out;
 }
 
 function normalizeReason(value) {
@@ -1562,6 +2015,131 @@ function normalizeUrlForDedupe(value) {
   } catch {
     return String(value || "").trim().toLowerCase();
   }
+}
+
+function normalizeWebsiteUrl(value, rootUrl) {
+  const raw = cleanText(value);
+  if (!raw) return "";
+  try {
+    const base = rootUrl ? new URL(String(rootUrl).startsWith("http") ? rootUrl : `https://${rootUrl}`) : undefined;
+    const parsed = new URL(raw, base);
+    if (!/^https?:$/i.test(parsed.protocol)) return "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "";
+  }
+}
+
+function isSameWebsiteUrl(url, rootUrl) {
+  try {
+    const parsed = new URL(url);
+    const root = new URL(String(rootUrl).startsWith("http") ? rootUrl : `https://${rootUrl}`);
+    return parsed.hostname.replace(/^www\./i, "").toLowerCase() === root.hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return false;
+  }
+}
+
+function isBlockedWebsiteDecisionUrl(url) {
+  try {
+    const parsed = new URL(url);
+    const href = parsed.toString().toLowerCase();
+    if (/\.(?:jpg|jpeg|png|gif|webp|svg|bmp|tiff|ico|pdf|zip|rar|mp4|mp3)(?:[?#]|$)/i.test(href)) return true;
+    if (/facebook\.com|instagram\.com|linkedin\.com|youtube\.com|tiktok\.com|wa\.me|whatsapp/i.test(href)) return true;
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function websiteDecisionUrlScore(value) {
+  const text = normalizeText(value);
+  let score = 0;
+  if (/contact|contacto|ubicacion|telefono|whatsapp/.test(text)) score += 90;
+  if (/conocenos|quienes|sobre-nosotros|sobre nosotros|about|equipo|team/.test(text)) score += 70;
+  if (/aviso-legal|legal|privacidad|privacy|politica/.test(text)) score += 55;
+  if (/empresa|direccion|administrador|gerente|fundador|propietario|titular/.test(text)) score += 35;
+  if (/blog|noticia|news|categoria|tag|producto|servicio|galeria/.test(text)) score -= 35;
+  return score;
+}
+
+function normalizeWebsiteUrlPlan(rawPlan, rootUrl) {
+  const rawUrls = Array.isArray(rawPlan?.urls)
+    ? rawPlan.urls
+    : Array.isArray(rawPlan?.prioritizedUrls)
+      ? rawPlan.prioritizedUrls
+      : Array.isArray(rawPlan?.prioritized_urls)
+        ? rawPlan.prioritized_urls
+        : [];
+  const urls = rawUrls
+    .map((item) => normalizeWebsiteUrl(typeof item === "string" ? item : item?.url, rootUrl))
+    .filter((url) => url && isSameWebsiteUrl(url, rootUrl) && !isBlockedWebsiteDecisionUrl(url));
+  return { urls: uniqueStrings(urls) };
+}
+
+function normalizeDecisionMakerMobile(value) {
+  const phone = normalizeSpanishPhone(value);
+  return phone && /^\+34[67]/.test(phone) ? phone : "";
+}
+
+function normalizeDecisionMakerEmail(value) {
+  const match = cleanText(value).match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
+  return match ? match[0].toLowerCase() : "";
+}
+
+function cleanPersonName(value, businessName = "") {
+  const clean = cleanText(value)
+    .replace(/\b(gerente|director|directora|propietario|propietaria|fundador|fundadora|administrador|administradora|ceo|owner)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean || clean.length < 3) return "";
+  const normalized = normalizeText(clean);
+  const businessNorm = normalizeText(businessName);
+  const cleanBusinessNorm = normalizeText(cleanCompanyName(businessName));
+  if ((businessNorm && businessNorm.includes(normalized)) || (cleanBusinessNorm && normalized.includes(cleanBusinessNorm))) return "";
+  if (!/[a-záéíóúüñ]{2,}\s+[a-záéíóúüñ]{2,}/i.test(clean) && clean.split(/\s+/).length > 3) return "";
+  return clean.slice(0, 120);
+}
+
+function namesLikelySamePerson(left, right) {
+  if (!left || !right) return true;
+  const leftTokens = significantPersonTokens(left);
+  const rightTokens = significantPersonTokens(right);
+  if (!leftTokens.length || !rightTokens.length) return true;
+  return leftTokens.some((token) => rightTokens.includes(token));
+}
+
+function significantPersonTokens(value) {
+  const blocked = new Set(["de", "del", "la", "las", "los", "el", "y"]);
+  return normalizeText(value).split(/[^a-z0-9]+/).filter((token) => token.length >= 3 && !blocked.has(token));
+}
+
+function cleanHtmlText(value) {
+  return String(value || "")
+    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function compactWebsiteDecisionForAi(value = {}) {
+  if (!value || typeof value !== "object") return null;
+  return compactObject({
+    status: value.status,
+    found: value.found,
+    fullName: value.fullName,
+    role: value.role,
+    phone: value.phone,
+    email: value.email,
+    sourceUrl: value.sourceUrl,
+    confidence: value.confidence,
+    reason: value.reason,
+    evidenceSummary: value.evidenceSummary
+  });
 }
 
 function cleanCompanyName(value) {

@@ -189,6 +189,7 @@ export async function ensureRuntimeSchema() {
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS first_contact_at DATE`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS decision_maker_name TEXT`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS decision_maker_email TEXT`);
+    await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS decision_maker_phone TEXT`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS answered_by TEXT`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS crm_status TEXT NOT NULL DEFAULT 'Nuevo'`);
     await run(`ALTER TABLE lead_list_members ADD COLUMN IF NOT EXISTS follow_up_date DATE`);

@@ -85,7 +85,7 @@ export const config = {
       ? undefined
       : boolFromEnv("ADS_ACTIVITY_AI_REQUIRE_PLANNED_EVIDENCE", true),
     requestTimeoutMs: intFromEnv("ADS_ACTIVITY_AI_REQUEST_TIMEOUT_MS", 45000),
-    maxEvidenceChars: intFromEnv("ADS_ACTIVITY_AI_MAX_EVIDENCE_CHARS", 22000)
+    maxEvidenceChars: intFromEnv("ADS_ACTIVITY_AI_MAX_EVIDENCE_CHARS", 9000)
   },
   adsFunnelAi: {
     provider: "deepinfra",

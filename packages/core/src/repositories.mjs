@@ -3,6 +3,7 @@ import { config } from "./config.mjs";
 import { adsEnrichmentForStorage, adsReviewCompletedForStorage, aiBackedAdsActiveForStorage } from "./adsStoragePolicy.mjs";
 import { decisionMakerEnrichmentForStorage } from "./decisionMakerStoragePolicy.mjs";
 import { DEFAULT_SCORING_RULES, normalizeScoringRules } from "./scoring.mjs";
+import { normalizeSpanishPhone } from "./phone.mjs";
 
 export const DEFAULT_TENANT_ID = "00000000-0000-0000-0000-000000000001";
 export const CRM_STATUS_OPTIONS = [
@@ -1639,14 +1640,35 @@ export async function listCampaignLeadsForExport({ tenantId = DEFAULT_TENANT_ID,
             b.status,
             b.source_url,
             b.custom_fields,
+            COALESCE(dm_name.value, b.custom_fields #>> '{decision_maker,decisionMaker,fullName}') AS decision_maker_name,
+            COALESCE(dm_phone.value, b.custom_fields #>> '{decision_maker,decisionMaker,phone}') AS decision_maker_phone,
+            COALESCE(dm_linkedin.value, b.custom_fields #>> '{decision_maker,decisionMaker,linkedinUrl}') AS decision_maker_linkedin,
             b.created_at,
             b.updated_at,
             COALESCE(array_agg(DISTINCT c.value) FILTER (WHERE c.kind = 'email'), ARRAY[]::text[]) AS emails
        FROM businesses b
        LEFT JOIN business_contacts c ON c.business_id = b.id
+       LEFT JOIN LATERAL (
+         SELECT value FROM business_contacts
+          WHERE business_id = b.id AND kind = 'decision_maker_name'
+          ORDER BY confidence DESC, created_at DESC
+          LIMIT 1
+       ) dm_name ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT value FROM business_contacts
+          WHERE business_id = b.id AND kind = 'decision_maker_phone'
+          ORDER BY confidence DESC, created_at DESC
+          LIMIT 1
+       ) dm_phone ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT value FROM business_contacts
+          WHERE business_id = b.id AND kind = 'linkedin_decision_maker'
+          ORDER BY confidence DESC, created_at DESC
+          LIMIT 1
+       ) dm_linkedin ON TRUE
       WHERE b.tenant_id = $1
         AND b.extraction_job_id = $2
-      GROUP BY b.id
+      GROUP BY b.id, dm_name.value, dm_phone.value, dm_linkedin.value
       ORDER BY b.score DESC, b.updated_at DESC`,
     [tenantId, campaignId]
   );
@@ -1690,11 +1712,32 @@ export async function listCampaignLeadsForExportByIds({ tenantId = DEFAULT_TENAN
             b.status,
             b.source_url,
             b.custom_fields,
+            COALESCE(dm_name.value, b.custom_fields #>> '{decision_maker,decisionMaker,fullName}') AS decision_maker_name,
+            COALESCE(dm_phone.value, b.custom_fields #>> '{decision_maker,decisionMaker,phone}') AS decision_maker_phone,
+            COALESCE(dm_linkedin.value, b.custom_fields #>> '{decision_maker,decisionMaker,linkedinUrl}') AS decision_maker_linkedin,
             b.created_at,
             b.updated_at,
             COALESCE(array_agg(DISTINCT c.value) FILTER (WHERE c.kind = 'email'), ARRAY[]::text[]) AS emails
        FROM businesses b
        LEFT JOIN business_contacts c ON c.business_id = b.id
+       LEFT JOIN LATERAL (
+         SELECT value FROM business_contacts
+          WHERE business_id = b.id AND kind = 'decision_maker_name'
+          ORDER BY confidence DESC, created_at DESC
+          LIMIT 1
+       ) dm_name ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT value FROM business_contacts
+          WHERE business_id = b.id AND kind = 'decision_maker_phone'
+          ORDER BY confidence DESC, created_at DESC
+          LIMIT 1
+       ) dm_phone ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT value FROM business_contacts
+          WHERE business_id = b.id AND kind = 'linkedin_decision_maker'
+          ORDER BY confidence DESC, created_at DESC
+          LIMIT 1
+       ) dm_linkedin ON TRUE
       WHERE b.tenant_id = $1
         AND b.extraction_job_id = ANY($2::uuid[])
       GROUP BY b.id
@@ -1728,6 +1771,7 @@ export async function listBusinesses({
   listId,
   listIds,
   phoneType,
+  decisionMaker,
   adsActive,
   adsFunnelType,
   hasMetaAdsEstimate,
@@ -1811,6 +1855,20 @@ export async function listBusinesses({
     else if (phoneType === "with_phone") where.push(`${localPhoneExpr} <> ''`);
     else if (phoneType === "without_phone") where.push(`${localPhoneExpr} = ''`);
     else if (phoneType === "unknown") where.push(`${localPhoneExpr} <> '' AND ${localPhoneExpr} !~ '^[6789]'`);
+  }
+  if (decisionMaker) {
+    const decisionMakerNameExists = `(NULLIF(b.custom_fields #>> '{decision_maker,decisionMaker,fullName}', '') IS NOT NULL
+      OR EXISTS (SELECT 1 FROM business_contacts c WHERE c.business_id = b.id AND c.kind = 'decision_maker_name' AND NULLIF(c.value, '') IS NOT NULL))`;
+    const decisionMakerPhoneExists = `(NULLIF(b.custom_fields #>> '{decision_maker,decisionMaker,phone}', '') ~ '^\\+34[67][0-9]{8}$'
+      OR EXISTS (SELECT 1 FROM business_contacts c WHERE c.business_id = b.id AND c.kind = 'decision_maker_phone' AND c.value ~ '^\\+34[67][0-9]{8}$'))`;
+    const decisionMakerLinkedinExists = `(NULLIF(b.custom_fields #>> '{decision_maker,decisionMaker,linkedinUrl}', '') IS NOT NULL
+      OR EXISTS (SELECT 1 FROM business_contacts c WHERE c.business_id = b.id AND c.kind = 'linkedin_decision_maker' AND NULLIF(c.value, '') IS NOT NULL))`;
+    if (decisionMaker === "name_mobile") where.push(`(${decisionMakerNameExists} AND ${decisionMakerPhoneExists})`);
+    else if (decisionMaker === "name") where.push(decisionMakerNameExists);
+    else if (decisionMaker === "mobile") where.push(decisionMakerPhoneExists);
+    else if (decisionMaker === "linkedin") where.push(decisionMakerLinkedinExists);
+    else if (decisionMaker === "name_no_mobile") where.push(`(${decisionMakerNameExists} AND NOT ${decisionMakerPhoneExists})`);
+    else if (decisionMaker === "none") where.push(`(NOT ${decisionMakerNameExists} AND NOT ${decisionMakerPhoneExists} AND NOT ${decisionMakerLinkedinExists})`);
   }
   if (adsActive) {
     const platforms = String(adsActive)
@@ -2038,8 +2096,9 @@ const CRM_ROW_SELECT = `
     lm.business_id,
     lm.added_at,
     to_char(lm.first_contact_at, 'YYYY-MM-DD') AS first_contact_at,
-    lm.decision_maker_name,
-    lm.decision_maker_email,
+    COALESCE(lm.decision_maker_name, dm_name_contact.value, b.custom_fields #>> '{decision_maker,decisionMaker,fullName}') AS decision_maker_name,
+    COALESCE(lm.decision_maker_email, dm_email_contact.value, b.custom_fields #>> '{decision_maker,decisionMaker,email}') AS decision_maker_email,
+    COALESCE(lm.decision_maker_phone, dm_phone_contact.value, b.custom_fields #>> '{decision_maker,decisionMaker,phone}') AS decision_maker_phone,
     lm.answered_by,
     COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') AS crm_status,
     to_char(lm.follow_up_date, 'YYYY-MM-DD') AS follow_up_date,
@@ -2086,6 +2145,30 @@ const CRM_ROW_SELECT = `
      ORDER BY c.confidence DESC, c.created_at DESC
      LIMIT 1
   ) email_contact ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT c.value
+      FROM business_contacts c
+     WHERE c.business_id = b.id
+       AND c.kind = 'decision_maker_name'
+     ORDER BY c.confidence DESC, c.created_at DESC
+     LIMIT 1
+  ) dm_name_contact ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT c.value
+      FROM business_contacts c
+     WHERE c.business_id = b.id
+       AND c.kind = 'decision_maker_email'
+     ORDER BY c.confidence DESC, c.created_at DESC
+     LIMIT 1
+  ) dm_email_contact ON TRUE
+  LEFT JOIN LATERAL (
+    SELECT c.value
+      FROM business_contacts c
+     WHERE c.business_id = b.id
+       AND c.kind = 'decision_maker_phone'
+     ORDER BY c.confidence DESC, c.created_at DESC
+     LIMIT 1
+  ) dm_phone_contact ON TRUE
 `;
 
 export async function listLeadListCrmEntries({ tenantId = DEFAULT_TENANT_ID, listId }) {
@@ -2108,8 +2191,9 @@ export async function listCampaignCrmEntries({ tenantId = DEFAULT_TENANT_ID, cam
         b.id AS business_id,
         COALESCE(lm.added_at, b.created_at) AS added_at,
         to_char(lm.first_contact_at, 'YYYY-MM-DD') AS first_contact_at,
-        lm.decision_maker_name,
-        lm.decision_maker_email,
+        COALESCE(lm.decision_maker_name, dm_name_contact.value, b.custom_fields #>> '{decision_maker,decisionMaker,fullName}') AS decision_maker_name,
+        COALESCE(lm.decision_maker_email, dm_email_contact.value, b.custom_fields #>> '{decision_maker,decisionMaker,email}') AS decision_maker_email,
+        COALESCE(lm.decision_maker_phone, dm_phone_contact.value, b.custom_fields #>> '{decision_maker,decisionMaker,phone}') AS decision_maker_phone,
         lm.answered_by,
         COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') AS crm_status,
         to_char(lm.follow_up_date, 'YYYY-MM-DD') AS follow_up_date,
@@ -2164,6 +2248,30 @@ export async function listCampaignCrmEntries({ tenantId = DEFAULT_TENANT_ID, cam
           ORDER BY c.confidence DESC, c.created_at DESC
           LIMIT 1
        ) email_contact ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT c.value
+           FROM business_contacts c
+          WHERE c.business_id = b.id
+            AND c.kind = 'decision_maker_name'
+          ORDER BY c.confidence DESC, c.created_at DESC
+          LIMIT 1
+       ) dm_name_contact ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT c.value
+           FROM business_contacts c
+          WHERE c.business_id = b.id
+            AND c.kind = 'decision_maker_email'
+          ORDER BY c.confidence DESC, c.created_at DESC
+          LIMIT 1
+       ) dm_email_contact ON TRUE
+       LEFT JOIN LATERAL (
+         SELECT c.value
+           FROM business_contacts c
+          WHERE c.business_id = b.id
+            AND c.kind = 'decision_maker_phone'
+          ORDER BY c.confidence DESC, c.created_at DESC
+          LIMIT 1
+       ) dm_phone_contact ON TRUE
       WHERE b.tenant_id = $1
         AND b.extraction_job_id = $2
       ORDER BY
@@ -2202,14 +2310,42 @@ export async function listCampaignCrmEntriesByIds({ tenantId = DEFAULT_TENANT_ID
          JOIN target_businesses tb ON tb.id = c.business_id
         WHERE c.kind = 'email'
         ORDER BY c.business_id, c.confidence DESC, c.created_at DESC
+     ),
+     dm_names AS (
+       SELECT DISTINCT ON (c.business_id)
+              c.business_id,
+              c.value
+         FROM business_contacts c
+         JOIN target_businesses tb ON tb.id = c.business_id
+        WHERE c.kind = 'decision_maker_name'
+        ORDER BY c.business_id, c.confidence DESC, c.created_at DESC
+     ),
+     dm_emails AS (
+       SELECT DISTINCT ON (c.business_id)
+              c.business_id,
+              c.value
+         FROM business_contacts c
+         JOIN target_businesses tb ON tb.id = c.business_id
+        WHERE c.kind = 'decision_maker_email'
+        ORDER BY c.business_id, c.confidence DESC, c.created_at DESC
+     ),
+     dm_phones AS (
+       SELECT DISTINCT ON (c.business_id)
+              c.business_id,
+              c.value
+         FROM business_contacts c
+         JOIN target_businesses tb ON tb.id = c.business_id
+        WHERE c.kind = 'decision_maker_phone'
+        ORDER BY c.business_id, c.confidence DESC, c.created_at DESC
      )
      SELECT
         lm.lead_list_id,
         b.id AS business_id,
         COALESCE(lm.added_at, b.created_at) AS added_at,
         to_char(lm.first_contact_at, 'YYYY-MM-DD') AS first_contact_at,
-        lm.decision_maker_name,
-        lm.decision_maker_email,
+        COALESCE(lm.decision_maker_name, dm_names.value, b.custom_fields #>> '{decision_maker,decisionMaker,fullName}') AS decision_maker_name,
+        COALESCE(lm.decision_maker_email, dm_emails.value, b.custom_fields #>> '{decision_maker,decisionMaker,email}') AS decision_maker_email,
+        COALESCE(lm.decision_maker_phone, dm_phones.value, b.custom_fields #>> '{decision_maker,decisionMaker,phone}') AS decision_maker_phone,
         lm.answered_by,
         COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') AS crm_status,
         to_char(lm.follow_up_date, 'YYYY-MM-DD') AS follow_up_date,
@@ -2249,6 +2385,9 @@ export async function listCampaignCrmEntriesByIds({ tenantId = DEFAULT_TENANT_ID
        FROM target_businesses b
        LEFT JOIN latest_crm lm ON lm.business_id = b.id
        LEFT JOIN fallback_emails email_contact ON email_contact.business_id = b.id
+       LEFT JOIN dm_names ON dm_names.business_id = b.id
+       LEFT JOIN dm_emails ON dm_emails.business_id = b.id
+       LEFT JOIN dm_phones ON dm_phones.business_id = b.id
       ORDER BY
         CASE WHEN COALESCE(NULLIF(lm.crm_status, ''), 'Nuevo') = 'Descartado' THEN 1 ELSE 0 END,
         lm.crm_updated_at DESC NULLS LAST,
@@ -2275,6 +2414,8 @@ export async function updateLeadListCrmEntry({ tenantId = DEFAULT_TENANT_ID, lis
     decision_maker_name: ["decision_maker_name", normalizeCrmText],
     decisionMakerEmail: ["decision_maker_email", normalizeCrmText],
     decision_maker_email: ["decision_maker_email", normalizeCrmText],
+    decisionMakerPhone: ["decision_maker_phone", normalizeCrmPhone],
+    decision_maker_phone: ["decision_maker_phone", normalizeCrmPhone],
     answeredBy: ["answered_by", normalizeCrmText],
     answered_by: ["answered_by", normalizeCrmText],
     crmStatus: ["crm_status", normalizeCrmStatus],
@@ -2323,6 +2464,12 @@ export async function updateLeadListCrmEntry({ tenantId = DEFAULT_TENANT_ID, lis
 function normalizeCrmText(value) {
   const text = String(value ?? "").trim();
   return text || null;
+}
+
+function normalizeCrmPhone(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return null;
+  return normalizeSpanishPhone(text) || text;
 }
 
 function normalizeCrmStatus(value) {

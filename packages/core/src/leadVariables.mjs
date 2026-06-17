@@ -9,6 +9,9 @@ export const LEAD_VARIABLES = [
   { key: "website", label: "Web" },
   { key: "phone", label: "Telefono original" },
   { key: "phone_e164", label: "Telefono E.164" },
+  { key: "decision_maker_name", label: "Nombre decisor" },
+  { key: "decision_maker_phone", label: "Movil decisor" },
+  { key: "decision_maker_linkedin", label: "LinkedIn decisor" },
   { key: "address", label: "Direccion" },
   { key: "rating", label: "Rating Google" },
   { key: "review_count", label: "Numero de reviews" },
@@ -22,6 +25,9 @@ export const LEAD_VARIABLES = [
 
 export function leadVariablePayload(business) {
   const name = business.name || "";
+  const decisionMaker = business.custom_fields?.decision_maker?.decisionMaker ||
+    business.custom_fields?.decision_maker?.decision_maker ||
+    {};
   return {
     business_id: business.id || "",
     business_name: name,
@@ -33,6 +39,9 @@ export function leadVariablePayload(business) {
     website: business.website || "",
     phone: business.phone || business.phone_e164 || "",
     phone_e164: business.phone_e164 || "",
+    decision_maker_name: business.decision_maker_name || decisionMaker.fullName || "",
+    decision_maker_phone: business.decision_maker_phone || decisionMaker.phone || "",
+    decision_maker_linkedin: business.decision_maker_linkedin || decisionMaker.linkedinUrl || "",
     address: business.address || "",
     rating: business.rating == null ? "" : String(business.rating),
     review_count: business.review_count == null ? "" : String(business.review_count),
@@ -56,6 +65,11 @@ export function defaultVariableMap(variableNames = []) {
     lead: "business_name",
     phone_number: "phone_e164",
     telefono: "phone_e164",
+    decisor: "decision_maker_name",
+    nombre_decisor: "decision_maker_name",
+    movil_decisor: "decision_maker_phone",
+    telefono_decisor: "decision_maker_phone",
+    linkedin_decisor: "decision_maker_linkedin",
     reviews: "review_count",
     rating_google: "rating",
     ciudad: "city",

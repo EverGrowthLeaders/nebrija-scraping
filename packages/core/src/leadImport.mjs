@@ -11,6 +11,7 @@ export const LEAD_IMPORT_FIELDS = [
   { key: "phone_e164", label: "Telefono E.164", group: "Contacto", aliases: ["phone_e164", "telefono e164", "teléfono e164", "e164"] },
   { key: "email", label: "Email", group: "Contacto", aliases: ["email", "correo", "correo electronico", "correo electrónico", "mail", "e-mail"] },
   { key: "first_contact_at", label: "Primer contacto", group: "CRM", aliases: ["primer contacto", "fecha primer contacto", "first contact", "hecha", "fecha hecha"] },
+  { key: "decision_maker_phone", label: "Movil decisor", group: "CRM", aliases: ["movil decisor", "móvil decisor", "telefono decisor", "teléfono decisor", "decision maker phone", "decision_maker_phone"] },
   { key: "crm_status", label: "Estado", group: "CRM", aliases: ["estado", "status", "resultado", "result"] },
   { key: "follow_up_date", label: "Día (Seguimiento)", group: "CRM", aliases: ["día seguimiento", "dia seguimiento", "fecha seguimiento", "fecha reintento", "reintento"] },
   { key: "follow_up_time", label: "Hora (Seguimiento)", group: "CRM", aliases: ["hora seguimiento", "hora reintento", "hora"] },
@@ -57,6 +58,7 @@ const BUSINESS_FIELD_KEYS = new Set([
 const CONTACT_FIELD_KEYS = new Set(["first_name", "last_name", "full_name"]);
 const CRM_FIELD_KEYS = new Set([
   "first_contact_at",
+  "decision_maker_phone",
   "crm_status",
   "follow_up_date",
   "follow_up_time",
@@ -424,6 +426,7 @@ function toContactInputKey(field) {
 function toCrmInputKey(field) {
   const map = {
     first_contact_at: "firstContactAt",
+    decision_maker_phone: "decisionMakerPhone",
     crm_status: "crmStatus",
     follow_up_date: "followUpDate",
     follow_up_time: "followUpTime",
@@ -440,6 +443,7 @@ function buildContactFullName(contact = {}) {
 function normalizeCrmImportValue(field, value) {
   if (field === "first_contact_at" || field === "follow_up_date") return normalizeImportDate(value);
   if (field === "follow_up_time") return normalizeImportTime(value);
+  if (field === "decision_maker_phone") return normalizeSpanishPhone(value) || value;
   if (field === "checkpoint" && value === "Objeción") return "Objeción inicial";
   return value;
 }

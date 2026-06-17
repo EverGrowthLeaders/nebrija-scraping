@@ -8,7 +8,7 @@ const DEFAULT_COUNTRY = "ES";
 const GOOGLE_RECENT_DAYS = 30;
 const GOOGLE_RECENT_DATE_PRESET = "Últimos 30 días";
 const DEFAULT_META_CPM_EUR = 8;
-const DEFAULT_MAX_AI_EVIDENCE_CHARS = 22000;
+const DEFAULT_MAX_AI_EVIDENCE_CHARS = 9000;
 const ADS_ACTIVITY_PROVIDERS = ["meta", "google"];
 const META_CPM_BY_NICHE = [
   [/abogad|legal|jurid|bufete/i, 18],
@@ -1971,32 +1971,21 @@ async function resolveAdsActivityWithDeepInfra({ evidence, aiConfig = config.ads
   const body = {
     model,
     temperature: 0,
-    max_tokens: 900,
+    max_tokens: 560,
     response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
         content: [
-          "You decide whether a local business is currently running active ads on Meta and Google.",
-          "Use only the supplied Firecrawl, Apify, and official browser evidence.",
-          "Treat activeSignal/statusSignal/reasonSignal as scraper observations, never as final proof.",
-          "Do not rely on generic scraper labels as proof. Verify advertiser identity, business/domain/social match, recency and official library context from raw evidence.",
-          "Official browser evidence comes from the live Meta Ads Library or Google Ads Transparency page and may contain DOM text, Library IDs, active labels, advertiser names, and decoded CTA landing URLs.",
-          "For Google, an official Google Ads Transparency domain page for the exact business domain that says the domain includes results and shows a positive active ads count is sufficient domain-owned evidence, even if the advertiser legal name differs from the lead name.",
-          "For Meta, active=true requires an active ad item from the official library plus ownership proof for the advertiser. Ownership proof can be business-domain/owned landing URL, or an exact official Facebook/Instagram page/handle identity for this business when the selected ad item exposes an ad Library ID, active ad copy, advertiser page/name/handle, and current active context.",
-          "For Meta, an Apify result from an exact-domain source query for the lead website with active items is business-domain evidence; reject only if the item evidence clearly belongs to a different advertiser or source query is not the exact lead domain.",
-          "For Meta, evidence should be interpreted as an ordered source chain: domain first, Instagram second, business name third, brand fourth, Facebook page fifth. If any source proves a business-owned active ad, return active=true and select that exact source attempt.",
-          "For Meta, if the ordered Apify source chain was fully attempted and every source produced no active business-owned ad item, active=false may be returned. Use unknown only when the chain was blocked, incomplete, or advertiser identity remains ambiguous.",
-          "For Meta, a Facebook page, page id, profile, handle, or social identity with no selected active ad item is not enough.",
-          "For Meta, an Apify active ad item with the business landing domain or owned landing URL plus matching advertiser page/name/handle is sufficient active-ad evidence.",
-          "For Meta, an Apify active ad item with no domain landing URL can still be sufficient when the ad is published by the exact official advertiser page/Instagram/Facebook identity of the business and includes a Library ID or current ad creative text.",
-          "For Meta, browser_meta_no_results_unverified is only a weak environment-specific absence signal; it must not veto Apify or browser evidence that contains an active ad item with business-domain, owned landing URL, or exact owned social-advertiser proof.",
-          "For Meta, exact page-scoped sourceIdentityEvidence may identify the advertiser, but it does not prove active ads unless the selected returned item also exposes a real active ad item with Library ID, active copy/creative, or owned landing/domain evidence.",
-          "For Meta, reject page-scoped Apify active items when scrapeAdDetails or the returned item does not expose a business-domain match, owned landing URL, or exact owned social-advertiser proof on a real ad item.",
-          "For Meta, reject domain/keyword query hits when the returned page/ad identity is unrelated or merely mentions the domain.",
-          "Return active=false only when official evidence clearly says there are no active/current ads for this exact business query.",
-          "Return active=null/status=unknown when pages are loading, blocked, unrelated, ambiguous, stale, or identity is not proven.",
-          "Return only valid JSON. Do not include markdown."
+          "Decide active ads for this exact business on Meta and Google using only supplied evidence. Return only JSON.",
+          "Scraper active/status fields are claims; verify identity, recency, official-library context and selectedAttemptIds.",
+          "Google active=true: exact business domain in Google Ads Transparency with positive current ads/results is enough, even if legal advertiser differs.",
+          "Meta active=true: selected active ad item plus owned proof: business domain/owned landing URL, or exact official FB/IG advertiser identity with Library ID/current ad copy.",
+          "Meta Apify exact-domain query with active items is owned-domain evidence unless the item clearly belongs elsewhere.",
+          "Meta source order: domain, Instagram, name, brand, Facebook. Select the exact attempt that proves the business-owned active ad.",
+          "Meta active=false only when the ordered source chain was completed and no source has business-owned active ads. Blocked/incomplete/ambiguous = unknown.",
+          "Never count a mere FB page/profile/handle, generic UI text, unrelated advertiser, stale result, or domain mention inside unrelated ads as active.",
+          "Copy sourceUrl/landingUrls only from evidence; never invent."
         ].join(" ")
       },
       {
@@ -2119,31 +2108,23 @@ async function verifyAdsActivityWithDeepInfra({ evidence, aiConfig = config.adsA
   const body = {
     model,
     temperature: 0,
-    max_tokens: 650,
+    max_tokens: 430,
     response_format: { type: "json_object" },
     messages: [
       {
         role: "system",
         content: [
-          "You are a skeptical auditor for Meta and Google Ads Library enrichment.",
-          "Use only the supplied evidence and proposed decision.",
-          "Confirm a proposed active=true or active=false only when the exact business identity and current ads state are proven by official or directly relevant evidence.",
-          "Treat the proposed decision and scraper activeSignal as claims to audit, not evidence by themselves.",
-          "Treat official browser evidence from live Meta Ads Library or Google Ads Transparency as auditable evidence when it includes raw DOM text, active labels, Library IDs, advertiser identity, or decoded CTA landing URLs.",
-          "For Google active=true, confirm exact-domain Google Ads Transparency evidence when the official page says that domain includes results and shows a positive ads count; do not reject only because the advertiser legal name differs from the business name.",
-          "For Meta active=true, require selected active ad evidence plus ownership proof. Ownership proof can be business domain/owned landing URL, or the exact official Facebook/Instagram page/handle identity of this business when the selected item exposes a real Library ID, active ad copy/creative, advertiser page/name/handle, and current active context.",
-          "For Meta, confirm an Apify exact-domain source query for the lead website when it returns active items, unless the returned item evidence clearly belongs to a different advertiser.",
-          "For Meta, verify the exact source attempt selected by the resolver. The source chain priority is domain, Instagram, business name, brand, Facebook page; an active decision must point to the source attempt that found the business-owned active ad.",
-          "For Meta active=false, confirm only when the ordered Apify source chain was completed and no selected or attempted source contains a business-owned active ad item.",
-          "For Meta active=true, confirm an Apify active ad item when it includes the business landing domain or owned landing URL and a matching advertiser page/name/handle.",
-          "For Meta active=true, also confirm an Apify active ad item with no domain landing URL when it is published by the exact official business social identity and includes a Library ID or current ad creative text.",
-          "For Meta, do not use browser_meta_no_results_unverified to reject active ad-item evidence with owned landing-domain proof or exact owned social-advertiser proof; treat that browser result as inconclusive.",
-          "Reject exact page-scoped Meta Apify evidence when itemsSeen > 0 but the returned item has no business-domain, owned landing, exact owned social-advertiser proof, Library ID, or ad creative evidence.",
-          "Reject when advertiser identity, domain, social handle, recency, selected attempts, or official library context are ambiguous.",
+          "Audit the proposed Meta/Google ads decision using only evidence. Return only JSON.",
+          "Confirm booleans only when exact business identity and current ads state are proven; otherwise reject/unknown.",
+          "Google active=true: exact-domain Transparency evidence with positive current results is enough despite legal-name mismatch.",
+          "Meta active=true: selected active ad item plus owned proof: business domain/landing, or exact owned FB/IG advertiser with Library ID/current creative.",
+          "Meta exact-domain Apify active items are valid unless item clearly belongs elsewhere. Mere page/profile/handle is not enough.",
+          "Meta active=false only when ordered source chain completed with no business-owned active ad. Ambiguous/blocked/incomplete = unknown.",
+          "Ignore browser no-results as veto against stronger owned active-ad evidence.",
           adjudication
-            ? "As final adjudicator, treat exact-domain Google Transparency evidence as directly relevant when the business domain or landing identity matches; confirm active=false for exact-domain Apify zero-result evidence unless another selected attempt proves active ads. For Meta, never confirm active=true without a selected active ad item and owned advertiser proof, either business-domain/owned-landing evidence or exact owned social-advertiser identity with Library ID/ad creative evidence."
+            ? "Final adjudication: exact-domain Google/Apify evidence is directly relevant. Never confirm Meta active=true without selected active ad item and owned proof."
             : "",
-          "Return unknown when more evidence is needed. Return only valid JSON."
+          "Use selectedAttemptIds from evidence. Never invent."
         ].filter(Boolean).join(" ")
       },
       {
@@ -2735,17 +2716,12 @@ function buildAdsActivityEvidencePack({
       providerEvidenceForAi(providerEvidence[provider], provider)
     ])),
     decisionRules: [
-      "A provider is active only when evidence proves active/current ads for this exact business domain, owned landing URL, or exact owned advertiser identity.",
-      "A provider is inactive only when official library evidence clearly says no active/current ads for this exact business query.",
-      "Search results, generic library UI text, loading pages, unrelated advertisers, stale dates, or domain mentions inside unrelated ads are unknown.",
-      "For Google, exact Google Ads Transparency domain evidence with a positive ads count belongs to the business domain and may be active even when the displayed advertiser/legal entity name is different.",
-      "Apify items are evidence, not a decision. Verify page name, domain, social handle, landing URL, advertiser identity and recency before active=true.",
-      "For Meta, Apify sources are tried in this order: domain, Instagram, business name, brand, Facebook page. Stop at active=true only when the selected source proves a business-owned active ad.",
-      "For Meta, an Apify source whose query is exactly the lead website domain and returns active items is domain-owned evidence unless the item clearly points to a different advertiser.",
-      "For Meta, Apify sources are candidates until the model verifies a selected active ad item plus owned advertiser proof. Owned advertiser proof may be business-domain/owned landing evidence, or exact official Facebook/Instagram page/handle identity with Library ID/ad creative evidence on the selected item.",
-      "For Meta, when the full ordered Apify source chain is attempted and no source proves a business-owned active ad, active=false is allowed. If sources are blocked or incomplete, use unknown.",
-      "For Meta, domain mentions inside unrelated ads are not owned landing evidence.",
-      "Copy landing URLs only from the evidence. Never invent URLs, advertiser names, profile names or dates."
+      "Active requires current ads for exact business domain, owned landing URL, or exact owned advertiser identity.",
+      "Inactive requires clear official/no-active evidence for the exact query; ambiguous/blocked/unrelated/stale = unknown.",
+      "Google exact-domain Transparency positive count is active even if legal advertiser name differs.",
+      "Meta source order: domain, Instagram, name, brand, Facebook; select the attempt that proves business-owned active ad.",
+      "Meta exact-domain Apify active items are owned-domain evidence unless contradicted.",
+      "Never invent URLs, names or dates."
     ]
   };
   return enforceAdsEvidenceBudget(evidencePack, maxEvidenceChars);
@@ -2789,17 +2765,11 @@ function buildAdsActivityVerificationPack({
     })),
     providers: evidence?.providers || {},
     auditRules: [
-      "Confirm only the exact proposed boolean decision for each provider.",
-      "confirmed=true requires a selected attempt or source URL that supports the same active boolean for the exact business identity.",
-      "Reject if active ads belong to a similarly named, unrelated, stale, or unproven advertiser.",
-      "For Google, do not reject selected exact-domain Transparency evidence only because the advertiser/legal entity name differs when the domain itself matches the business website.",
-      "For Meta, accept active=true from Apify only when selected ad evidence includes business-domain/owned landing evidence, or exact owned Facebook/Instagram advertiser identity with Library ID/ad creative evidence.",
-      "For Meta, exact lead-domain Apify sources with active items satisfy business-domain evidence unless the returned item clearly contradicts the lead identity.",
-      "For Meta, confirm active=false only when the ordered Apify source chain was completed without any business-owned active ad evidence.",
-      "For Meta, exact official page/page_id source identity plus itemsSeen > 0 is still unknown when scrapeAdDetails or returned item data lacks business-domain/landing evidence and lacks exact owned social-advertiser proof on a real ad item.",
-      "For Meta, exact domain/keyword query hits are not enough when the returned page/ad identity is unrelated or only mentions the domain.",
-      "Reject inactive when the evidence only shows a failed scrape, blocked page, generic no-results text, or an unverified query.",
-      "Use unknown when the evidence is insufficient and set needsMoreEvidence=true."
+      "Confirm only exact proposed boolean when selected evidence supports exact business identity.",
+      "Google exact-domain Transparency positive count is active despite legal-name mismatch.",
+      "Meta active=true needs selected active ad plus business-domain/landing or exact owned FB/IG identity with Library ID/current creative.",
+      "Meta active=false needs completed ordered source chain with no business-owned active ad.",
+      "Failed scrape, blocked page, generic no-results, unrelated identity or mere page/profile = unknown."
     ]
   };
   return enforceAdsEvidenceBudget(verificationPack, maxEvidenceChars);
@@ -2829,9 +2799,9 @@ function providerEvidenceForAi(providerEvidence = {}, provider) {
     samplePageName: attempt.samplePageName || null,
     adArchiveId: attempt.adArchiveId || null,
     identityValidationRequired: attempt.identityValidationRequired === true,
-    sourceIdentityEvidence: attempt.sourceIdentityEvidence || null,
-    scraperObservation: attempt.scraperObservation || null,
-    evidenceSnippet: compactSnippet(attempt.evidenceSnippet || "", 1100)
+    sourceIdentityEvidence: compactAdsIdentityEvidence(attempt.sourceIdentityEvidence),
+    scraperObservation: compactSnippet(attempt.scraperObservation || "", 220),
+    evidenceSnippet: compactSnippet(attempt.evidenceSnippet || "", 650)
   })).sort((left, right) => rankAdsAiAttempt(right) - rankAdsAiAttempt(left));
   return {
     deterministicSummary: {
@@ -2866,8 +2836,27 @@ function rankAdsAiAttempt(attempt = {}) {
   return score;
 }
 
+function compactAdsIdentityEvidence(value) {
+  if (!value || typeof value !== "object") return null;
+  return compactObject({
+    scope: value.scope,
+    searchType: value.searchType || value.search_type,
+    query: value.query,
+    sourceMatchesBusinessIdentity: value.sourceMatchesBusinessIdentity,
+    matchedBusinessIdentityFields: Array.isArray(value.matchedBusinessIdentityFields) ? value.matchedBusinessIdentityFields.slice(0, 6) : undefined,
+    domain: value.domain || value.websiteDomain || value.website_domain,
+    landingDomain: value.landingDomain || value.landing_domain,
+    pageName: value.pageName || value.page_name,
+    pageId: value.pageId || value.page_id,
+    facebookHandle: value.facebookHandle || value.facebook_handle,
+    instagramHandle: value.instagramHandle || value.instagram_handle,
+    matchedFields: Array.isArray(value.matchedFields) ? value.matchedFields.slice(0, 6) : undefined,
+    sourceUrl: value.sourceUrl || value.source_url
+  });
+}
+
 function enforceAdsEvidenceBudget(evidencePack, maxEvidenceChars) {
-  const limit = Math.max(5000, Number(maxEvidenceChars) || DEFAULT_MAX_AI_EVIDENCE_CHARS);
+  const limit = Math.max(3000, Number(maxEvidenceChars) || DEFAULT_MAX_AI_EVIDENCE_CHARS);
   let serialized = JSON.stringify(evidencePack);
   if (serialized.length <= limit) return evidencePack;
   let reduced = {
@@ -2876,9 +2865,10 @@ function enforceAdsEvidenceBudget(evidencePack, maxEvidenceChars) {
       provider,
       {
         ...value,
-        attempts: value.attempts.slice(0, 12).map((attempt) => ({
+        attempts: value.attempts.slice(0, 8).map((attempt) => ({
           ...attempt,
-          evidenceSnippet: compactSnippet(attempt.evidenceSnippet, 550)
+          evidenceSnippet: compactSnippet(attempt.evidenceSnippet, 300),
+          scraperObservation: compactSnippet(attempt.scraperObservation, 140)
         }))
       }
     ]))
@@ -2891,9 +2881,10 @@ function enforceAdsEvidenceBudget(evidencePack, maxEvidenceChars) {
       provider,
       {
         ...value,
-        attempts: value.attempts.slice(0, 8).map((attempt) => ({
+        attempts: value.attempts.slice(0, 5).map((attempt) => ({
           ...attempt,
-          evidenceSnippet: compactSnippet(attempt.evidenceSnippet, 320)
+          evidenceSnippet: compactSnippet(attempt.evidenceSnippet, 180),
+          scraperObservation: compactSnippet(attempt.scraperObservation, 100)
         }))
       }
     ]))

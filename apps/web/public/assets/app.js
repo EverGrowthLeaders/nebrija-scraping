@@ -198,9 +198,10 @@ const renderAdsFunnelBadge = (type, confidence) => {
 };
 
 const CRM_PAGE_SIZE = 120;
-const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v4";
+const CRM_COLUMN_ORDER_KEY = "nebrija.crm.columnOrder.v5";
 const CRM_DEFAULT_COLUMNS = [
   "decision_maker_name",
+  "decision_maker_phone",
   "first_contact_at",
   "business",
   "crm_status",
@@ -951,6 +952,7 @@ async function renderLeadsList({ search }) {
   const nationalCampaignId = search.get("nationalCampaignId") || "";
   const listIds = selectedFilterValues(search, "listIds", "listId");
   const phoneType = search.get("phoneType") || "";
+  const decisionMaker = search.get("decisionMaker") || "";
   const adsActive = search.get("adsActive") || "";
   const adsPlatforms = selectedAdsPlatforms(adsActive);
   const adsFunnelType = search.get("adsFunnelType") || "";
@@ -1020,6 +1022,9 @@ async function renderLeadsList({ search }) {
         <select class="select" name="phoneType" style="max-width:170px">
           <option value="">Cualquier teléfono</option>
           ${renderPhoneTypeOptions(phoneType)}
+        </select>
+        <select class="select" name="decisionMaker" style="max-width:190px">
+          ${renderDecisionMakerFilterOptions(decisionMaker)}
         </select>
         ${renderAdsPlatformFilter(adsPlatforms)}
         <select class="select" name="hasMetaAdsEstimate" style="max-width:170px">
@@ -1152,6 +1157,7 @@ async function renderLeadsList({ search }) {
   }
   for (const listId of listIds) params.append("listIds", listId);
   if (phoneType) params.set("phoneType", phoneType);
+  if (decisionMaker) params.set("decisionMaker", decisionMaker);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
   if (hasMetaAdsEstimate) params.set("hasMetaAdsEstimate", hasMetaAdsEstimate);
@@ -1307,6 +1313,20 @@ function renderPhoneTypeOptions(selected = "") {
     ["with_phone", "Con teléfono"],
     ["without_phone", "Sin teléfono"],
     ["unknown", "Otro formato"]
+  ]
+    .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
+    .join("");
+}
+
+function renderDecisionMakerFilterOptions(selected = "") {
+  return [
+    ["", "Cualquier decisor"],
+    ["name_mobile", "Nombre + móvil"],
+    ["mobile", "Con móvil decisor"],
+    ["linkedin", "Con LinkedIn decisor"],
+    ["name", "Con nombre decisor"],
+    ["name_no_mobile", "Nombre sin móvil"],
+    ["none", "Sin decisor"]
   ]
     .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
     .join("");
@@ -2520,7 +2540,10 @@ function renderDecisionMakerCustomField(value) {
     <div class="decision-maker-field">
       <strong>${escape(decisionMaker.fullName || "Decisor detectado")}</strong>
       ${decisionMaker.role ? `<span>${escape(decisionMaker.role)}</span>` : ""}
+      ${decisionMaker.phone ? `<span>Móvil: ${escape(decisionMaker.phone)}</span>` : ""}
+      ${decisionMaker.email ? `<span>Email: ${escape(decisionMaker.email)}</span>` : ""}
       ${decisionMaker.linkedinUrl ? `<a href="${escape(decisionMaker.linkedinUrl)}" target="_blank" rel="noopener">Perfil de LinkedIn</a>` : ""}
+      ${decisionMaker.sourceUrl ? `<a href="${escape(decisionMaker.sourceUrl)}" target="_blank" rel="noopener">Fuente web</a>` : ""}
       ${linkedinCompany.linkedinUrl ? `<a href="${escape(linkedinCompany.linkedinUrl)}" target="_blank" rel="noopener">LinkedIn empresa</a>` : ""}
       <span class="muted">Confianza ${escape(confidence)}</span>
       ${value.query ? `<span class="decision-maker-field__query">${escape(value.query)}</span>` : ""}
@@ -2817,6 +2840,15 @@ function createCrmColumns(options = {}, rows = [], { editable = true } = {}) {
       filter: "text",
       value: (row) => row.decision_maker_name,
       render: (row) => editable ? crmInput("decisionMakerName", row.decision_maker_name, "text", "crm-input--name") : crmReadonly(row.decision_maker_name)
+    },
+    {
+      key: "decision_maker_phone",
+      label: "Móvil Decisor",
+      width: 132,
+      filter: "phone_type",
+      value: (row) => row.decision_maker_phone,
+      filterValue: (row) => crmPhoneType({ phone_e164: row.decision_maker_phone, phone: row.decision_maker_phone }),
+      render: (row) => editable ? crmInput("decisionMakerPhone", row.decision_maker_phone, "tel", "crm-input--phone") : crmReadonly(row.decision_maker_phone)
     },
     {
       key: "phone",
@@ -3450,6 +3482,7 @@ function updateCrmLocalRow(board, businessId, field, value) {
     firstContactAt: "first_contact_at",
     decisionMakerName: "decision_maker_name",
     decisionMakerEmail: "decision_maker_email",
+    decisionMakerPhone: "decision_maker_phone",
     answeredBy: "answered_by",
     crmStatus: "crm_status",
     checkpoint: "checkpoint",
