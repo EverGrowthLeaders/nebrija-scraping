@@ -1480,6 +1480,58 @@ a {
   font-size: 12px;
 }
 
+/* ── Domain diff (restar dominios) ─────────────────── */
+.diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+.diff-input {
+  min-height: 280px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+}
+.diff-output {
+  min-height: 200px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  resize: vertical;
+  background: var(--bg-deep);
+  color: var(--green-bright);
+}
+.diff-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-2);
+}
+.diff-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.diff-stat strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  margin-right: 4px;
+}
+.diff-stat--new strong {
+  color: var(--green-bright);
+}
+@media (max-width: 860px) {
+  .diff-grid { grid-template-columns: 1fr; }
+}
+
 .company-card {
   display: grid;
   gap: 12px;

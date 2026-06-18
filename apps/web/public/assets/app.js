@@ -652,6 +652,7 @@ const routes = [
   { match: /^\/leads\/([^/]+)$/, render: renderLeadDetail, key: "leads", title: "Lead" },
   { match: /^\/lists$/, render: renderLists, key: "lists", title: "Listas" },
   { match: /^\/lists\/([^/]+)$/, render: renderListDetail, key: "lists", title: "Lista" },
+  { match: /^\/domains$/, render: renderDomainDiff, key: "domains", title: "Restar dominios" },
   { match: /^\/analytics$/, render: renderAnalytics, key: "analytics", title: "Analítica" },
   { match: /^\/scoring$/, render: renderScoring, key: "scoring", title: "Scoring" },
   { match: /^\/calls$/, render: renderCallsList, key: "calls", title: "Llamadas" },
@@ -2912,6 +2913,101 @@ async function saveScoringNotes(businessId) {
 }
 
 // ── Lists ────────────────────────────────────────────────
+// ── Domain diff (restar dominios) ─────────────────────────
+function parseDomainList(text) {
+  const set = new Set();
+  for (const token of String(text || "").split(/[\s,;]+/)) {
+    const domain = domainFromWebsite(token);
+    if (domain) set.add(domain);
+  }
+  return set;
+}
+
+async function renderDomainDiff() {
+  setCurrentCrumb("Nuevos vs antiguos");
+  view.innerHTML = `
+    <h1 class="headline">Restar dominios</h1>
+    <p class="subhead">Pega las dos listas y obtén los dominios <strong>nuevos</strong>: los que están en la lista nueva pero <em>no</em> estaban en la antigua. Acepta dominios o URLs (se normalizan: sin <span class="mono">https://</span> ni <span class="mono">www.</span>) y elimina duplicados.</p>
+
+    <div class="diff-grid">
+      <div class="card">
+        <div class="card__head">
+          <h3>Lista antigua</h3>
+          <span class="badge badge--zinc" data-bind="old-count">0</span>
+        </div>
+        <textarea class="textarea diff-input" data-bind="old" placeholder="Un dominio o URL por línea…&#10;ejemplo.com&#10;https://www.otro.es/contacto"></textarea>
+      </div>
+      <div class="card">
+        <div class="card__head">
+          <h3>Lista nueva</h3>
+          <span class="badge badge--zinc" data-bind="new-count">0</span>
+        </div>
+        <textarea class="textarea diff-input" data-bind="new" placeholder="Un dominio o URL por línea…&#10;ejemplo.com&#10;nuevo-negocio.com"></textarea>
+      </div>
+    </div>
+
+    <div class="diff-bar">
+      <div class="diff-stats" data-bind="stats">
+        <span class="diff-stat diff-stat--new"><strong data-bind="stat-new">0</strong> nuevos</span>
+        <span class="diff-stat"><strong data-bind="stat-common">0</strong> en común</span>
+        <span class="diff-stat"><strong data-bind="stat-removed">0</strong> solo en la antigua</span>
+      </div>
+      <div class="row" style="gap:8px;flex-wrap:nowrap">
+        <button class="btn btn--ghost" data-action="diff-clear" type="button">Limpiar</button>
+        <button class="btn btn--primary" data-action="diff-copy" type="button">
+          <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="currentColor" d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1Zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H8V7h11v14Z"/></svg>
+          Copiar nuevos
+        </button>
+      </div>
+    </div>
+
+    <div class="card" style="margin-top:14px">
+      <div class="card__head">
+        <h3>Dominios nuevos</h3>
+        <span class="badge badge--green" data-bind="result-count">0</span>
+      </div>
+      <textarea class="textarea diff-output mono" data-bind="result" readonly placeholder="Aquí aparecerán los dominios que están en la lista nueva pero no en la antigua."></textarea>
+    </div>
+  `;
+
+  const oldInput = $("[data-bind='old']", view);
+  const newInput = $("[data-bind='new']", view);
+  const result = $("[data-bind='result']", view);
+
+  const compute = () => {
+    const oldSet = parseDomainList(oldInput.value);
+    const newSet = parseDomainList(newInput.value);
+    const fresh = [...newSet].filter((domain) => !oldSet.has(domain));
+    const common = [...newSet].filter((domain) => oldSet.has(domain));
+    const removed = [...oldSet].filter((domain) => !newSet.has(domain));
+    fresh.sort((a, b) => a.localeCompare(b, "es"));
+
+    $("[data-bind='old-count']", view).textContent = `${fmtNumber(oldSet.size)} únicos`;
+    $("[data-bind='new-count']", view).textContent = `${fmtNumber(newSet.size)} únicos`;
+    $("[data-bind='stat-new']", view).textContent = fmtNumber(fresh.length);
+    $("[data-bind='stat-common']", view).textContent = fmtNumber(common.length);
+    $("[data-bind='stat-removed']", view).textContent = fmtNumber(removed.length);
+    $("[data-bind='result-count']", view).textContent = `${fmtNumber(fresh.length)} nuevos`;
+    result.value = fresh.join("\n");
+  };
+
+  oldInput.addEventListener("input", compute);
+  newInput.addEventListener("input", compute);
+  $("[data-action='diff-clear']", view).addEventListener("click", () => {
+    oldInput.value = "";
+    newInput.value = "";
+    compute();
+    oldInput.focus();
+  });
+  $("[data-action='diff-copy']", view).addEventListener("click", async (event) => {
+    const domains = result.value.split("\n").filter(Boolean);
+    if (!domains.length) return toast("No hay dominios nuevos que copiar", "error");
+    const ok = await copyToClipboard(domains.join("\n"));
+    toast(ok ? `${fmtNumber(domains.length)} dominios nuevos copiados` : "No se pudo copiar al portapapeles", ok ? "ok" : "error");
+  });
+  compute();
+}
+
 async function renderLists() {
   setCurrentCrumb("Manual");
   view.innerHTML = `
