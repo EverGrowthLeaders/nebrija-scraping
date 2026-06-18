@@ -2924,11 +2924,27 @@ function parseDomainList(text) {
   return set;
 }
 
+const DOMAIN_NEGATIVES_KEY = "nebrija.domainDiff.negatives.v1";
+
+function loadDomainNegatives() {
+  try {
+    return localStorage.getItem(DOMAIN_NEGATIVES_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+function saveDomainNegatives(value) {
+  try {
+    if (value.trim()) localStorage.setItem(DOMAIN_NEGATIVES_KEY, value);
+    else localStorage.removeItem(DOMAIN_NEGATIVES_KEY);
+  } catch {}
+}
+
 async function renderDomainDiff() {
   setCurrentCrumb("Nuevos vs antiguos");
   view.innerHTML = `
     <h1 class="headline">Restar dominios</h1>
-    <p class="subhead">Pega las dos listas y obtén los dominios <strong>nuevos</strong>: los que están en la lista nueva pero <em>no</em> estaban en la antigua. Acepta dominios o URLs (se normalizan: sin <span class="mono">https://</span> ni <span class="mono">www.</span>) y elimina duplicados.</p>
+    <p class="subhead">Obtén los dominios <strong>nuevos</strong>: los que están en la lista nueva, <em>no</em> estaban en la antigua y <em>no</em> están en tu lista negativa. Acepta dominios o URLs (se normalizan: sin <span class="mono">https://</span> ni <span class="mono">www.</span>) y elimina duplicados.</p>
 
     <div class="diff-grid">
       <div class="card">
@@ -2945,13 +2961,24 @@ async function renderDomainDiff() {
         </div>
         <textarea class="textarea diff-input" data-bind="new" placeholder="Un dominio o URL por línea…&#10;ejemplo.com&#10;nuevo-negocio.com"></textarea>
       </div>
+      <div class="card card--negatives">
+        <div class="card__head">
+          <h3>Dominios negativos</h3>
+          <div class="row" style="gap:6px;flex-wrap:nowrap;align-items:center">
+            <span class="badge badge--burgundy" data-bind="neg-count">0</span>
+            <button class="btn btn--ghost btn--sm" data-action="diff-clear-neg" type="button">Vaciar</button>
+          </div>
+        </div>
+        <textarea class="textarea diff-input" data-bind="neg" placeholder="Lista negativa (clientes, competencia, ya contactados…)&#10;Se excluyen siempre y se guarda en este navegador."></textarea>
+        <div class="form-hint">Se guarda automáticamente en este navegador y se reutiliza entre sesiones.</div>
+      </div>
     </div>
 
     <div class="diff-bar">
       <div class="diff-stats" data-bind="stats">
         <span class="diff-stat diff-stat--new"><strong data-bind="stat-new">0</strong> nuevos</span>
-        <span class="diff-stat"><strong data-bind="stat-common">0</strong> en común</span>
-        <span class="diff-stat"><strong data-bind="stat-removed">0</strong> solo en la antigua</span>
+        <span class="diff-stat"><strong data-bind="stat-common">0</strong> ya en la antigua</span>
+        <span class="diff-stat diff-stat--neg"><strong data-bind="stat-neg">0</strong> excluidos por negativos</span>
       </div>
       <div class="row" style="gap:8px;flex-wrap:nowrap">
         <button class="btn btn--ghost" data-action="diff-clear" type="button">Limpiar</button>
@@ -2967,40 +2994,55 @@ async function renderDomainDiff() {
         <h3>Dominios nuevos</h3>
         <span class="badge badge--green" data-bind="result-count">0</span>
       </div>
-      <textarea class="textarea diff-output mono" data-bind="result" readonly placeholder="Aquí aparecerán los dominios que están en la lista nueva pero no en la antigua."></textarea>
+      <textarea class="textarea diff-output mono" data-bind="result" readonly placeholder="Aquí aparecerán los dominios nuevos (nueva − antigua − negativos)."></textarea>
     </div>
   `;
 
   const oldInput = $("[data-bind='old']", view);
   const newInput = $("[data-bind='new']", view);
+  const negInput = $("[data-bind='neg']", view);
   const result = $("[data-bind='result']", view);
+  negInput.value = loadDomainNegatives();
 
   const compute = () => {
     const oldSet = parseDomainList(oldInput.value);
     const newSet = parseDomainList(newInput.value);
-    const fresh = [...newSet].filter((domain) => !oldSet.has(domain));
+    const negSet = parseDomainList(negInput.value);
+    const candidates = [...newSet].filter((domain) => !oldSet.has(domain));
+    const fresh = candidates.filter((domain) => !negSet.has(domain));
     const common = [...newSet].filter((domain) => oldSet.has(domain));
-    const removed = [...oldSet].filter((domain) => !newSet.has(domain));
+    const excludedByNeg = candidates.filter((domain) => negSet.has(domain));
     fresh.sort((a, b) => a.localeCompare(b, "es"));
 
     $("[data-bind='old-count']", view).textContent = `${fmtNumber(oldSet.size)} únicos`;
     $("[data-bind='new-count']", view).textContent = `${fmtNumber(newSet.size)} únicos`;
+    $("[data-bind='neg-count']", view).textContent = `${fmtNumber(negSet.size)} únicos`;
     $("[data-bind='stat-new']", view).textContent = fmtNumber(fresh.length);
     $("[data-bind='stat-common']", view).textContent = fmtNumber(common.length);
-    $("[data-bind='stat-removed']", view).textContent = fmtNumber(removed.length);
+    $("[data-bind='stat-neg']", view).textContent = fmtNumber(excludedByNeg.length);
     $("[data-bind='result-count']", view).textContent = `${fmtNumber(fresh.length)} nuevos`;
     result.value = fresh.join("\n");
   };
 
   oldInput.addEventListener("input", compute);
   newInput.addEventListener("input", compute);
+  negInput.addEventListener("input", () => {
+    saveDomainNegatives(negInput.value);
+    compute();
+  });
+  // "Limpiar" only clears the working lists, never the saved negative list.
   $("[data-action='diff-clear']", view).addEventListener("click", () => {
     oldInput.value = "";
     newInput.value = "";
     compute();
     oldInput.focus();
   });
-  $("[data-action='diff-copy']", view).addEventListener("click", async (event) => {
+  $("[data-action='diff-clear-neg']", view).addEventListener("click", () => {
+    negInput.value = "";
+    saveDomainNegatives("");
+    compute();
+  });
+  $("[data-action='diff-copy']", view).addEventListener("click", async () => {
     const domains = result.value.split("\n").filter(Boolean);
     if (!domains.length) return toast("No hay dominios nuevos que copiar", "error");
     const ok = await copyToClipboard(domains.join("\n"));
