@@ -677,6 +677,7 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/businesses") {
       const campaignIds = queryIdList(url, "campaignIds", "campaignId", "extractionJobIds", "extractionJobId");
       const listIds = queryIdList(url, "listIds", "listId");
+      const decisionMakers = queryIdList(url, "decisionMaker", "decision_maker");
       const result = await listBusinesses({
         ...parsePaging(url),
         tenantId: auth.tenantId,
@@ -690,7 +691,9 @@ const server = http.createServer(async (req, res) => {
         listId: listIds.length ? undefined : url.searchParams.get("listId") || undefined,
         listIds,
         phoneType: url.searchParams.get("phoneType") || undefined,
-        decisionMaker: url.searchParams.get("decisionMaker") || url.searchParams.get("decision_maker") || undefined,
+        decisionMaker: decisionMakers.length
+          ? decisionMakers
+          : url.searchParams.get("decisionMaker") || url.searchParams.get("decision_maker") || undefined,
         adsActive: url.searchParams.get("adsActive") || undefined,
         adsFunnelType: url.searchParams.get("adsFunnelType") || url.searchParams.get("adIntent") || undefined,
         hasMetaAdsEstimate: url.searchParams.get("hasMetaAdsEstimate") || undefined,

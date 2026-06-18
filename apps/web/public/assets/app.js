@@ -1277,7 +1277,7 @@ async function renderLeadsList({ search }) {
   const nationalCampaignId = search.get("nationalCampaignId") || "";
   const listIds = selectedFilterValues(search, "listIds", "listId");
   const phoneType = search.get("phoneType") || "";
-  const decisionMaker = search.get("decisionMaker") || "";
+  const decisionMakers = selectedFilterValues(search, "decisionMaker", "decision_maker");
   const adsActive = search.get("adsActive") || "";
   const adsPlatforms = selectedAdsPlatforms(adsActive);
   const adsFunnelType = search.get("adsFunnelType") || "";
@@ -1348,9 +1348,7 @@ async function renderLeadsList({ search }) {
           <option value="">Cualquier teléfono</option>
           ${renderPhoneTypeOptions(phoneType)}
         </select>
-        <select class="select" name="decisionMaker" style="max-width:190px">
-          ${renderDecisionMakerFilterOptions(decisionMaker)}
-        </select>
+        ${renderMultiFilter("Decisor", "decisionMaker", decisionMakerFilterRows(), decisionMakers, formatDecisionMakerFilterOption, { singular: "decisor", plural: "decisores" })}
         ${renderAdsPlatformFilter(adsPlatforms)}
         <select class="select" name="hasMetaAdsEstimate" style="max-width:170px">
           <option value="">Estim. Meta</option>
@@ -1482,7 +1480,7 @@ async function renderLeadsList({ search }) {
   }
   for (const listId of listIds) params.append("listIds", listId);
   if (phoneType) params.set("phoneType", phoneType);
-  if (decisionMaker) params.set("decisionMaker", decisionMaker);
+  for (const value of decisionMakers) params.append("decisionMaker", value);
   if (adsActive) params.set("adsActive", adsActive);
   if (adsFunnelType) params.set("adsFunnelType", adsFunnelType);
   if (hasMetaAdsEstimate) params.set("hasMetaAdsEstimate", hasMetaAdsEstimate);
@@ -1549,11 +1547,13 @@ function selectedFilterValues(search, pluralKey, singularKey) {
   ].map((value) => value.trim()).filter(Boolean)));
 }
 
-function renderMultiFilter(label, name, rows = [], selectedIds = [], formatter = (row) => ({ id: row.id, label: row.name || row.id })) {
+function renderMultiFilter(label, name, rows = [], selectedIds = [], formatter = (row) => ({ id: row.id, label: row.name || row.id }), summaryLabels = null) {
   const selected = new Set(selectedIds || []);
   const selectedCount = selected.size;
+  const singular = summaryLabels?.singular || label.toLowerCase();
+  const plural = summaryLabels?.plural || `${label.toLowerCase()}s`;
   const summary = selectedCount
-    ? `${fmtNumber(selectedCount)} ${label.toLowerCase()}${selectedCount === 1 ? "" : "s"}`
+    ? `${fmtNumber(selectedCount)} ${selectedCount === 1 ? singular : plural}`
     : `Todas`;
   return `
     <details class="lead-filter lead-filter--multi">
@@ -1643,18 +1643,19 @@ function renderPhoneTypeOptions(selected = "") {
     .join("");
 }
 
-function renderDecisionMakerFilterOptions(selected = "") {
+function decisionMakerFilterRows() {
   return [
-    ["", "Cualquier decisor"],
-    ["name_mobile", "Nombre + móvil"],
-    ["mobile", "Con móvil decisor"],
-    ["linkedin", "Con LinkedIn decisor"],
-    ["name", "Con nombre decisor"],
-    ["name_no_mobile", "Nombre sin móvil"],
-    ["none", "Sin decisor"]
-  ]
-    .map(([value, label]) => `<option value="${escape(value)}" ${value === selected ? "selected" : ""}>${escape(label)}</option>`)
-    .join("");
+    { id: "name_mobile", label: "Nombre + móvil" },
+    { id: "mobile", label: "Con móvil decisor" },
+    { id: "linkedin", label: "Con LinkedIn decisor" },
+    { id: "name", label: "Con nombre decisor" },
+    { id: "name_no_mobile", label: "Nombre sin móvil" },
+    { id: "none", label: "Sin decisor" }
+  ];
+}
+
+function formatDecisionMakerFilterOption(option = {}) {
+  return { id: option.id, label: option.label || option.id };
 }
 
 function renderBooleanFilterOptions(selected = "") {

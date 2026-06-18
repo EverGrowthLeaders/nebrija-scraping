@@ -1928,19 +1928,31 @@ export async function listBusinesses({
     else if (phoneType === "without_phone") where.push(`${localPhoneExpr} = ''`);
     else if (phoneType === "unknown") where.push(`${localPhoneExpr} <> '' AND ${localPhoneExpr} !~ '^[6789]'`);
   }
-  if (decisionMaker) {
+  const decisionMakerFilters = Array.isArray(decisionMaker)
+    ? decisionMaker
+    : String(decisionMaker || "").split(",");
+  const selectedDecisionMakerFilters = Array.from(new Set(
+    decisionMakerFilters.map((value) => String(value || "").trim()).filter(Boolean)
+  ));
+  if (selectedDecisionMakerFilters.length) {
     const decisionMakerNameExists = `(NULLIF(b.custom_fields #>> '{decision_maker,decisionMaker,fullName}', '') IS NOT NULL
       OR EXISTS (SELECT 1 FROM business_contacts c WHERE c.business_id = b.id AND c.kind = 'decision_maker_name' AND NULLIF(c.value, '') IS NOT NULL))`;
     const decisionMakerPhoneExists = `(NULLIF(b.custom_fields #>> '{decision_maker,decisionMaker,phone}', '') ~ '^\\+34[67][0-9]{8}$'
       OR EXISTS (SELECT 1 FROM business_contacts c WHERE c.business_id = b.id AND c.kind = 'decision_maker_phone' AND c.value ~ '^\\+34[67][0-9]{8}$'))`;
     const decisionMakerLinkedinExists = `(NULLIF(b.custom_fields #>> '{decision_maker,decisionMaker,linkedinUrl}', '') IS NOT NULL
       OR EXISTS (SELECT 1 FROM business_contacts c WHERE c.business_id = b.id AND c.kind = 'linkedin_decision_maker' AND NULLIF(c.value, '') IS NOT NULL))`;
-    if (decisionMaker === "name_mobile") where.push(`(${decisionMakerNameExists} AND ${decisionMakerPhoneExists})`);
-    else if (decisionMaker === "name") where.push(decisionMakerNameExists);
-    else if (decisionMaker === "mobile") where.push(decisionMakerPhoneExists);
-    else if (decisionMaker === "linkedin") where.push(decisionMakerLinkedinExists);
-    else if (decisionMaker === "name_no_mobile") where.push(`(${decisionMakerNameExists} AND NOT ${decisionMakerPhoneExists})`);
-    else if (decisionMaker === "none") where.push(`(NOT ${decisionMakerNameExists} AND NOT ${decisionMakerPhoneExists} AND NOT ${decisionMakerLinkedinExists})`);
+    const conditionsByDecisionMakerFilter = {
+      name_mobile: `(${decisionMakerNameExists} AND ${decisionMakerPhoneExists})`,
+      name: decisionMakerNameExists,
+      mobile: decisionMakerPhoneExists,
+      linkedin: decisionMakerLinkedinExists,
+      name_no_mobile: `(${decisionMakerNameExists} AND NOT ${decisionMakerPhoneExists})`,
+      none: `(NOT ${decisionMakerNameExists} AND NOT ${decisionMakerPhoneExists} AND NOT ${decisionMakerLinkedinExists})`
+    };
+    const decisionMakerConditions = selectedDecisionMakerFilters
+      .map((value) => conditionsByDecisionMakerFilter[value])
+      .filter(Boolean);
+    if (decisionMakerConditions.length) where.push(`(${decisionMakerConditions.join(" OR ")})`);
   }
   if (adsActive) {
     const platforms = String(adsActive)
